@@ -9,7 +9,7 @@ from src.logger import logging
 from src.exception import CustomException
 from typing import List
 
-config_path=os.path.join("D:\\Langchain Project\\config" , "config.yaml")
+config_path="D:\Langchain Project\config\config.yaml"
 
 with open(config_path) as f:
     config = yaml.safe_load(f)
@@ -21,7 +21,7 @@ class TextSplitter:
     def __init__(self):
         try:
             logging.info("initalizing TextSplitter")
-            self.embeddings=OllamaEmbeddings(model=config["ollama_model"]) #type: ignore
+            self.embeddings=OllamaEmbeddings(model="nomic-embed-text") #type: ignore
             
             self.chunker=SemanticChunker(
                 embeddings=self.embeddings,
@@ -70,4 +70,3 @@ class TextSplitter:
         except Exception as e:
             logging.error(f"Error in TextSplitter split_text: {e}")
             raise CustomException(e, sys)#type:ignore
-    

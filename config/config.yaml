@@ -1,5 +1,5 @@
 embedding:
-  model: "nomic-embed-text"
+  embed_model: "nomic-embed-text"
 
 llm:
   model: "llama3.2:3b"
