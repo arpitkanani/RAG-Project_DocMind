@@ -1,0 +1,44 @@
+embedding:
+  model: "nomic-embed-text"
+
+llm:
+  model: "llama3.2:3b"
+  temperature: 0.3   
+
+# splitting chunks of text for embedding and retrieval
+splitter:
+  breakpoint_threshold_type: "percentile"
+  breakpoint_threshold_amount: 80  
+
+# retriver use MMR for divers answer
+retriever:
+  search_type: "mmr"      # mmr = diverse + relevant results
+  k: 3                    # return top 3 chunks
+  fetch_k: 10             # fetch 10 candidates, pick best 3
+  lambda_mult: 0.5        # 0.5 = balanced relevance + diversity
+
+#vectore database used chroma
+vectorstore:
+  persist_directory: "data/vectorstore"   # saved here on disk
+  collection_name: "docmind"              # name of collection
+
+memory:
+  persist_directory: "data/memory"          # saved here on disk
+  window_size: 7                          # how many past interactions to remember
+
+upload:
+  allowed_extensions:
+    - ".pdf"
+    - ".txt"
+    - ".docx"
+    - ".csv"
+    - ".md"
+    - ".xlsx"
+  upload_dir: "data/uploads"
+  max_file_size_mb: 20      
+  max_files_count: 5  
+
+youtube:
+  language: ["en","hi","gu"]   # language for YouTube video transcription
+  max_chars: 70000
+

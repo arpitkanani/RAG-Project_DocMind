@@ -1,0 +1,14 @@
+[2026-04-11 22:59:54,815] 48 root - INFO - loading document from source: test.txt
+[2026-04-11 22:59:54,816] 103 root - INFO - Txt Loaded: [Document(metadata={'source': 'test.txt'}, page_content='This is a test document.\nIt contains information about machine learning and AI.\nRAG stands for Retrieval Augmented Generation.')]
+[2026-04-11 22:59:54,816] 68 root - INFO - Loaded 1 documents from test.txt
+[2026-04-11 22:59:54,817] 48 root - INFO - loading document from source: sample.pdf
+[2026-04-11 22:59:54,957] 87 root - INFO - Pdf Loaded: [Document(metadata={'producer': 'Apache FOP Version 2.3', 'creator': 'PyPDF', 'creationdate': '2026-03-15T09:33:03+00:00', 'title': 'Resume', 'author': 'LinkedIn', 'subject': 'Resume generated from profile', 'source': 'sample.pdf', 'total_pages': 1, 'page': 0, 'page_label': '1'}, page_content='Contact\n+91 76219 25088 (Mobile)\nkananiarpit1411@gmail.com\nwww.linkedin.com/in/arpit-\nkanani-5b4995292 (LinkedIn)\nTop Skills\nTensorFlow\nCascading Style Sheets (CSS)\nHTML\nCertifications\nFoundations of Data Science\nApplied Statistics for Data Analytics\nData Analytics Foundations\nArpit Kanani\nAspiring Machine Learning and AI | ML & Deep Learning |\nTransformer | NLP | CNN | MLOps (DVC, DagsHub) | Flask\nDeployment\nGandhinagar, Gujarat, India\nEducation\nGovernment Engineering College,Gandhinagar\nBachelor of Technology - BTech,\xa0Computer Engineering\xa0·\xa0(August\n2023\xa0-\xa0December 2027)\n\xa0 Page 1 of 1')]
+[2026-04-11 22:59:54,970] 68 root - INFO - Loaded 1 documents from sample.pdf
+[2026-04-11 22:59:54,970] 48 root - INFO - loading document from source: test.csv
+[2026-04-11 22:59:54,972] 135 root - INFO - Csv Loaded: [Document(metadata={'source': 'test.csv', 'row': 0}, page_content='name: Karan\nage: 21\ncourse: Machine Learning\ngrade: A'), Document(metadata={'source': 'test.csv', 'row': 1}, page_content='name: Priya\nage: 22\ncourse: Deep Learning\ngrade: B'), Document(metadata={'source': 'test.csv', 'row': 2}, page_content='name: Rahul\nage: 20\ncourse: NLP\ngrade: A')]
+[2026-04-11 22:59:54,972] 68 root - INFO - Loaded 3 documents from test.csv
+[2026-04-11 22:59:54,973] 48 root - INFO - loading document from source: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+[2026-04-11 22:59:54,974] 41 root - INFO - Extracted video ID: dQw4w9WgXcQ from URL: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+[2026-04-11 22:59:54,974] 53 root - INFO - Fetching transcript for video: dQw4w9WgXcQ
+[2026-04-11 22:59:56,725] 73 root - INFO - Transcript fetched: 2089 chars
+[2026-04-11 22:59:56,728] 206 root - INFO - YouTube Loaded: Transcript fetched for https://www.youtube.com/watch?v=dQw4w9WgXcQ

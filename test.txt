@@ -1,0 +1,70 @@
+This is a test document.
+It contains information about machine learning and AI.
+RAG stands for Retrieval Augmented Generation.
+I have three directories which are in the root directory of my machine: yaml, data and json.
+
+Within my yaml directory I have a configuration yaml file which points to the json directory. Now I want to be able to get out of the yaml directory and then in to the json directory in order to point the json_location to this.
+
+So far I have the following in my yaml file, but it is an absolute path. If someone else was to use my code, they would need to change the file path to meet their User profile name.
+
+# configuration
+config:
+  json_location: /Users/jaymiee/Desktop/json/
+configurationyamlfilepath
+Share
+Improve this question
+Follow
+edited Jan 14, 2019 at 10:54
+barbsan's user avatar
+barbsan
+3,4581111 gold badges2424 silver badges2929 bronze badges
+asked Jan 14, 2019 at 9:39
+shell dude's user avatar
+shell dude
+9922 gold badges22 silver badges88 bronze badges
+Add a comment
+2 Answers
+Sorted by:
+
+Highest score (default)
+0
+
+If you have something that processes the yaml check the documentation for variables. For Instance on serverless they use variables to make it dynamic, it involves using "$" but other systems use different notation:
+
+# configuration
+config:
+  json_location: ${file(./config.json):PATH}
+Share
+Improve this answer
+Follow
+edited Sep 29, 2022 at 14:00
+answered Aug 16, 2022 at 11:30
+bluecombats's user avatar
+bluecombats
+2144 bronze badges
+Sign up to request clarification or add additional context in comments.
+
+4 Comments
+
+
+Yunnosch
+Over a year ago
+bluecombats, I do not see how this answers the question at the top of this page, but it should. Please edit according to How to Answer or delete the answer. Otherwise it risks being flagged as "not an answer" and being deleted.
+
+bluecombats
+Over a year ago
+@Yunnosch should I provide some code from the link I mentioned to answer this question?
+
+Yunnosch
+Over a year ago
+Please phrase this as an explained conditional answer, in order to avoid the impression of asking a clarification question instead of answering (for which a comment should be used instead of an answer, compare meta.stackexchange.com/questions/214173/… ). For example like "If your problem is ... then the solution is to .... because .... ."
+
+Yunnosch
+Over a year ago
+And the solution should at least be summarised directly here, while still providing the reference to what you are quoting. Linked content is not considered part of the answer.
+Add a comment
+-1
+
+Option 1. Get the user's home path as a variable and store that into your config
+
+Option 2. let your app code handle directory changes. In Python, you could do something like:
