@@ -21,7 +21,7 @@ class Embedder:
 
             )
             logging.info(
-                f"Embedder ready: {config['embedding']['model']}"
+                f"Embedder ready: {config['embedding']['embed_model']}"
             )
 
         except Exception as e:
