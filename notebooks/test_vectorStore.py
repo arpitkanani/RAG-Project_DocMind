@@ -43,3 +43,7 @@ for i, doc in enumerate(results):
 
 
 print("ALL VECTORSTORE TESTS COMPLETE!")
+for i,doc in enumerate(docs):
+    print(f"content{i+1}:")
+    print(f"{docs[i]}")
+    print("\n")

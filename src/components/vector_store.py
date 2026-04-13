@@ -151,43 +151,36 @@ class VectorStore:
         
 
     def get_retriever(self, collection_name: str = None,
-                  search_across_all: bool = False):
+                  search_across_all: bool = False,
+                  score_threshold: float = 0.5):
         """
-        Get retriever for specific doc or all docs
-
-        search_across_all=True  → searches all uploaded documents
-        search_across_all=False → searches specific collection
+        score_threshold → minimum similarity score
+        results below this are filtered out
+        0.5 means at least 50% similar to query
+        range is 0.0 to 1.0
+        higher = stricter filtering
         """
         try:
-            search_type = config["retriever"]["search_type"]
-            k           = config["retriever"]["k"]
-            fetch_k     = config["retriever"]["fetch_k"]
-            lambda_mult = config["retriever"]["lambda_mult"]
-
-            # decide which DB to load
             if search_across_all:
                 db = self.load_all()
             else:
                 db = self.load(collection_name)
-
+           
             retriever = db.as_retriever(
-                search_type=search_type,
+                search_type="similarity_score_threshold",
                 search_kwargs={
-                    "k": k,
-                    "fetch_k": fetch_k,
-                    "lambda_mult": lambda_mult
+                    "k": config["retriever"]["k"],
+                    "score_threshold": config["retriever"].get(
+                        "score_threshold", 0.4
+                    )
                 }
             )
 
-            logging.info(
-                f"Retriever ready | "
-                f"all_docs: {search_across_all} | "
-                f"collection: {collection_name}"
-            )
+            logging.info("Retriever with score threshold ready")
             return retriever
 
         except Exception as e:
-            raise CustomException(e, sys)#type:ignore
+            raise CustomException(e, sys)
         
     def list_collections(self) -> list:
         """
