@@ -24,7 +24,7 @@ vectorstore:
 
 memory:
   persist_directory: "data/memory"          # saved here on disk
-  window_size: 7                          # how many past interactions to remember
+  window_days: 7                          # how many past interactions to remember
 
 upload:
   allowed_extensions:
