@@ -1,7 +1,11 @@
-Machine learning is a subset of artificial intelligence.
-It enables computers to learn from data automatically.
-ML algorithms improve their performance over time.
-Common ML types include supervised and unsupervised learning.
+Machine learning is a subset of artificial intelligence.It enables computers to learn from data automatically.
+ML algorithms improve their performance over time.Common ML types include supervised and unsupervised learning.
+
+Machine Learning is a technique of artificial intelligence to find pattern in Historical Dataset by once programming. it's very interesting
+to find patterns in dataset cause dataset is may be messy but first we clean  dataset then perform on this EDA and then Feature Engineering and then modeling
+so that's whole process is machine Learning process we done this far.after building model we inference on new data point that;s beautiful part of machine Learning
+because predicting on new data is very unrealasitc with good accuracy of performance .
+
 
 Neural networks are inspired by the human brain structure.
 They consist of layers of interconnected nodes called neurons.
