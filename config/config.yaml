@@ -42,3 +42,31 @@ youtube:
   language: ["en","hi","gu"]   # language for YouTube video transcription
   max_chars: 70000
 
+# add these new sections
+quiz:
+  default_easy: 5
+  default_medium: 3
+  default_hard: 2
+  max_questions: 10
+
+intent:
+  summary_keywords:
+    - "summarize"
+    - "summary"
+    - "overview"
+    - "brief"
+    - "tldr"
+    - "condense"
+  quiz_keywords:
+    - "quiz"
+    - "questions"
+    - "generate questions"
+    - "test me"
+    - "make questions"
+    - "create questions"
+  detail_keywords:
+    - "detailed"
+    - "structured"
+    - "in depth"
+    - "elaborate"
+    - "comprehensive"
