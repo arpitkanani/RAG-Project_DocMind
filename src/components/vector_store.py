@@ -2,206 +2,127 @@ import sys
 import os
 import yaml
 import shutil
-from src.logger import logging
-from src.exception import CustomException
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from src.components.embedder import Embedder
+from src.logger import logging
+from src.exception import CustomException
 from typing import List
 
-with open("D:\Langchain Project\config\config.yaml") as f:
+with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
 
 class VectorStore:
+    """Manages ChromaDB vector storage for DocMind."""
 
-    """Manages ChromaDB vector database"""
-    def __init__(self):
+    def __init__(self, collection_name: str = None):
         try:
-            logging.info("Initalizing VectorStore ")
-
-            self.persist_dir=config["vectorstore"]['persist_directory']
-            self.collection_name = config["vectorstore"]["collection_name"]
-
-            embedder=Embedder()
-
-            self.embeddings=embedder.get_embedding()
-
-            os.makedirs(self.persist_dir,exist_ok=True)
-            logging.info(
-                f"VectorStore config ready | "
-                f"dir: {self.persist_dir} | "
-                f"collection: {self.collection_name}"
+            logging.info("Initializing VectorStore")
+            self.persist_dir = config["vectorstore"]["persist_directory"]
+            self.collection_name = (
+                collection_name or
+                config["vectorstore"]["collection_name"]
             )
-
+            embedder = Embedder()
+            self.embedding_model = embedder.get_embedding_model()
+            os.makedirs(self.persist_dir, exist_ok=True)
+            logging.info(f"VectorStore ready | collection: {self.collection_name}")
         except Exception as e:
-            raise CustomException(e, sys)#type:ignore
-        
-    def store(self,chunks:List[Document],collection_name: str = None) -> Chroma:
+            raise CustomException(e, sys)
 
-        """
-        Embed all chunks and store in Chroma
-        input:  List[Document] from TextSplitter
-        output: Chroma DB object ready for search
-        """
-
+    def _initialize_vectordb(self) -> Chroma:
+        """Load existing ChromaDB from disk."""
         try:
-            collection = collection_name or self.collection_name
-
-            logging.info(
-                f"Storing {len(chunks)} chunks in ChromaDB"
-            )
-
-            db= Chroma.from_documents(
-                documents=chunks,
-                embedding=self.embeddings,
-                persist_directory=self.persist_dir,
-                collection_name=collection
-            )
-
-            logging.info(f"Stored successfully in collection: {collection}")
-            return db
-        except Exception as e:
-            raise CustomException(e, sys)#type:ignore
-        
-    def load(self,collection_name: str = None) -> Chroma:
-
-        """
-        load Existing Data of ChromaDB from disk
-
-        called EVERY TIME user asks a question
-        because we need DB to search against
-
-        raises error if DB doesn't exist yet
-        meaning no document uploaded yet
-        """
-        try:
-            collection = collection_name or self.collection_name
-            if not self.exists(): 
+            if not self.exists():
                 raise FileNotFoundError(
                     f"No vector store found at {self.persist_dir}. "
-                    f"Please upload and process a document first."
+                    "Upload a document first."
                 )
-
-            logging.info(f"Loading collection: {collection}")
-
             db = Chroma(
                 persist_directory=self.persist_dir,
-                embedding_function=self.embeddings,
-                collection_name=collection
+                embedding_function=self.embedding_model,
+                collection_name=self.collection_name
             )
-            count =db._collection.count()
-            logging.info(f"ChromaDB loaded | {count} vectors available ")
-
+            logging.info(f"ChromaDB loaded: {db._collection.count()} vectors")
             return db
         except Exception as e:
-            raise CustomException(e,sys)#type:ignore
-        
-    def load_all(self) -> Chroma:
-        """
-        Load ALL documents across all collections
-        used when user asks question across multiple docs
+            raise CustomException(e, sys)
 
-        ChromaDB trick:
-        use same persist_dir but no collection filter
-        searches across everything stored 
-        """
+    def add_documents(self, chunks: List[Document]) -> Chroma:
+        """Embed and store document chunks in ChromaDB."""
         try:
-            logging.info("Loading all collections for cross-doc search")
+            logging.info(f"Adding {len(chunks)} chunks | collection: {self.collection_name}")
 
-            db = Chroma(
+            # enrich metadata with position and size info
+            for i, chunk in enumerate(chunks):
+                chunk.metadata["doc_index"] = i
+                chunk.metadata["content_length"] = len(chunk.page_content)
+
+            db = Chroma.from_documents(
+                documents=chunks,
+                embedding=self.embedding_model,
                 persist_directory=self.persist_dir,
-                embedding_function=self.embeddings
-                # no collection_name → searches ALL 
+                collection_name=self.collection_name
             )
-
-            count = db._collection.count()
-            logging.info(f"All collections loaded: {count} total vectors")
+            logging.info(f"Successfully added {len(chunks)} chunks")
             return db
-
         except Exception as e:
-            raise CustomException(e, sys)#type:ignore
+            raise CustomException(e, sys)
 
-
-    def exists(self)->bool:
-        """ Check if vector store has alredy data or not."""
+    def get_all_documents(self) -> List[Document]:
+        """Fetch all stored documents for summarization."""
         try:
-            exists=(
+            db = self._initialize_vectordb()
+            results = db.get()
+            docs = [
+                Document(page_content=text, metadata=meta)
+                for text, meta in zip(
+                    results["documents"],
+                    results["metadatas"]
+                )
+                if text.strip()
+            ]
+            logging.info(f"Retrieved {len(docs)} total documents")
+            return docs
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def get_vectordb(self) -> Chroma:
+        """Return raw ChromaDB object for Retriever."""
+        try:
+            return self._initialize_vectordb()
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def similarity_search(self, query: str, k: int = 3) -> List[Document]:
+        """Basic similarity search for testing."""
+        try:
+            db = self._initialize_vectordb()
+            results = db.similarity_search(query, k=k)
+            logging.info(f"Search returned {len(results)} results")
+            return results
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def exists(self) -> bool:
+        """Check if vector store has data on disk."""
+        try:
+            result = (
                 os.path.exists(self.persist_dir) and
-                len(os.listdir(self.persist_dir))>0
-            )    
-            logging.info(f"VectorStore exists: {exists}")
-            return exists
+                len(os.listdir(self.persist_dir)) > 0
+            )
+            logging.info(f"VectorStore exists: {result}")
+            return result
         except Exception as e:
-            raise CustomException(e,sys)#type:ignore
-        
-    def clear(self):
-        """
-        Delete all stored Vectors
-        """
+            raise CustomException(e, sys)
+
+    def delete_collection(self):
+        """Delete all vectors and reset storage."""
         try:
             if os.path.exists(self.persist_dir):
                 shutil.rmtree(self.persist_dir)
-            
             os.makedirs(self.persist_dir, exist_ok=True)
-            logging.info("VectorStore cleared successfully")
-
-        except Exception as e:
-            raise CustomException(e, sys)#type:ignore
-        
-
-    def get_retriever(self, collection_name: str = None,
-                  search_across_all: bool = False,
-                  score_threshold: float = 0.5):
-        """
-        score_threshold → minimum similarity score
-        results below this are filtered out
-        0.5 means at least 50% similar to query
-        range is 0.0 to 1.0
-        higher = stricter filtering
-        """
-        try:
-            if search_across_all:
-                db = self.load_all()
-            else:
-                db = self.load(collection_name)
-           
-            retriever = db.as_retriever(
-                search_type="similarity_score_threshold",
-                search_kwargs={
-                    "k": config["retriever"]["k"],
-                    "score_threshold": config["retriever"].get(
-                        "score_threshold", 0.4
-                    )
-                }
-            )
-
-            logging.info("Retriever with score threshold ready")
-            return retriever
-
+            logging.info("Collection deleted successfully")
         except Exception as e:
             raise CustomException(e, sys)
-        
-    def list_collections(self) -> list:
-        """
-        List all document collections stored
-
-        WHY THIS FUNCTION?
-        frontend needs to show user which documents
-        are already uploaded and ready to query
-        this returns list of collection names 
-        """
-        try:
-            import chromadb
-            client = chromadb.PersistentClient(path=self.persist_dir)
-            collections = client.list_collections()
-            names = [col.name for col in collections]
-            logging.info(f"Collections found: {names}")
-            return names
-
-        except Exception as e:
-            raise CustomException(e, sys)#type:ignore
-
-    
-
-        

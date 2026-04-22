@@ -1,5 +1,5 @@
 embedding:
-  embed_model: "nomic-embed-text"
+  model: "nomic-embed-text"
 
 llm:
   model: "llama3.2:3b"
@@ -16,6 +16,7 @@ retriever:
   k: 3                    # return top 3 chunks
   fetch_k: 10             # fetch 10 candidates, pick best 3
   lambda_mult: 0.5        # 0.5 = balanced relevance + diversity
+  score_threshold: 0.1     # only consider chunks with score > 0.1
 
 #vectore database used chroma
 vectorstore:

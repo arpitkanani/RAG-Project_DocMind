@@ -77,13 +77,14 @@ def detect_summary_type(query:str)->str:
         if "brief" in query_lower or "short" in query_lower:
             return "brief"
         
+        
         return "bullets"
     
     except Exception as e:
         raise CustomException(e, sys)#type:ignore
     
 
-def extract_quiz_count(query:str)->int:
+def extract_quiz_count(query:str)->int: # type: ignore
     try:
         query_lower=query.lower().strip()
         match=re.search(r"\d+", query_lower)
