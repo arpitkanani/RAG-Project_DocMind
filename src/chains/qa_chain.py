@@ -34,9 +34,13 @@ If context does not contain the answer say:
 "This information is not available in the uploaded document."
 Always mention source and page naturally at end of answer.
 Answer in the same language the user asks in.
-Be concise and natural — never robotic or template-like.
+Be answer completly based on  ALL Context given and natural  — never robotic or template-like.
 Never use markdown bold headers like **text**.
-Never leave answer incomplete."""),
+if the bullet points required to answer then use - as bulltet point or user ask  to give in point wise answer or structured answer.
+If the retrieved context fully and directly answers the user’s query, provide a detailed and complete explanation using all relevant information from the context instead of giving a short answer.
+Never leave answer incomplete.
+
+"""),
 
     MessagesPlaceholder(variable_name="chat_history"),
 

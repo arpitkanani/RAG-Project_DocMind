@@ -99,9 +99,27 @@ class DocumentLoader:
         {"source": "file.txt"}
         """
         try:
-            loader=TextLoader(path)
-            logging.info(f"Txt Loaded: {loader.load()}")
-            return loader.load()
+            encodings = ["utf-8", "cp1252", "latin-1"]
+
+            for encoding in encodings:
+                try:
+                    loader = TextLoader(path, encoding=encoding)
+                    docs = loader.load()
+                    logging.info(
+                        f"TXT loaded with {encoding}: {len(docs)} doc"
+                    )
+                    return docs
+                except Exception:
+                    # this encoding failed → try next one
+                    logging.warning(
+                        f"Encoding {encoding} failed, trying next..."
+                    )
+                    continue
+
+            raise ValueError(
+                f"Could not load {path} with any encoding. "
+                "Try saving file as UTF-8."
+            )
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
         
@@ -116,7 +134,7 @@ class DocumentLoader:
         """
         try:
             loader=Docx2txtLoader(path)
-            logging.info(f"Docx Loaded: {loader.load()}")
+            
             return loader.load()
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
@@ -132,7 +150,7 @@ class DocumentLoader:
         """
         try:
             loader=CSVLoader(path,encoding="utf-8")
-            logging.info(f"Csv Loaded: {loader.load()}")
+            
             return loader.load()
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
@@ -148,7 +166,7 @@ class DocumentLoader:
         """
         try:
             loader=UnstructuredMarkdownLoader(path)
-            logging.info(f"Md Loaded: {loader.load()}")
+            
             return loader.load()
         except Exception as e:
             raise CustomException(e, sys) # type: ignore

@@ -24,8 +24,8 @@ class TextSplitter:
             logging.info("Initializing TextSplitter")
 
             self.splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,
-                chunk_overlap=100,
+                chunk_size=800,
+                chunk_overlap=200,
                 separators=["\n\n", "\n", " ", ""]
             )
 

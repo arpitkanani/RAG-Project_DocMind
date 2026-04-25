@@ -13,8 +13,8 @@ splitter:
 # retriver use MMR for divers answer
 retriever:
   search_type: "mmr"      # mmr = diverse + relevant results
-  k: 3                    # return top 3 chunks
-  fetch_k: 10             # fetch 10 candidates, pick best 3
+  k: 5                    # return top 3 chunks
+  fetch_k: 15            # fetch 10 candidates, pick best 3
   lambda_mult: 0.5        # 0.5 = balanced relevance + diversity
   score_threshold: 0.1     # only consider chunks with score > 0.1
 
@@ -58,6 +58,11 @@ intent:
     - "brief"
     - "tldr"
     - "condense"
+    - "what is this document"
+    - "what is this file"
+    - "what is this document about"
+    - "what does this contain"
+    - "describe this document"
   quiz_keywords:
     - "quiz"
     - "questions"
@@ -71,3 +76,7 @@ intent:
     - "in depth"
     - "elaborate"
     - "comprehensive"
+  summary:
+  default_type: "bullets"
+  show_on_upload: true
+  max_chunk_size_for_direct: 10
