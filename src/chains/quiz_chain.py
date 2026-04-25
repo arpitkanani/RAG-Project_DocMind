@@ -58,15 +58,17 @@ CUSTOM_QUIZ_PROMPT = ChatPromptTemplate.from_messages([
 Generate questions ONLY from the provided document context.
 Never generate questions about topics not in the document.
 Each question must have a clear answer found in the document.
-Generate in same language as the document content."""),
+Generate in same language as the document content.
+also make sure answer is not too short like one line answer or too long like 10 line answer if user not specifically tell about answer length in question then keep 3-4 line answer .
+If user specifically tell about answer length in question like short answer or long answer then follow that instruction
+
+     """),
 
     ("human", """Document context:
 {context}
 
 Generate exactly {count} questions with answers.
 Mix difficulty levels naturally across all questions.
-also make sure answer is not too short like one line answer or too long like 10 line answer if user not specifically tell about answer length in question then keep 3-4 line answer .
-If user specifically tell about answer length in question like short answer or long answer then follow that instruction
 
 Format exactly like this:
 Q1. [question]
