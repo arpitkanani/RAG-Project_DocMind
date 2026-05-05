@@ -76,7 +76,9 @@ intent:
     - "in depth"
     - "elaborate"
     - "comprehensive"
-  summary:
+
+
+summary:
   default_type: "bullets"
   show_on_upload: true
-  max_chunk_size_for_direct: 10
+  max_chunk_size_for_direct: 45

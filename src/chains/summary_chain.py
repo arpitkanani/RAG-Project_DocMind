@@ -1,8 +1,7 @@
 import sys
-from torch import chunk
 import yaml
 from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
 from src.components.vector_store import VectorStore
