@@ -89,40 +89,40 @@ class DocumentLoader:
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
 
-    def _load_txt(self,path:str) -> List[Document]:
-        """
-        Load TXT file
-        TextLoader treats whole file as one Document
-        no splitting by line or paragraph
-
-        metadata:
-        {"source": "file.txt"}
-        """
+    def _load_txt(self, path: str) -> List[Document]:
+        """Load TXT — tries multiple encodings automatically."""
         try:
             encodings = ["utf-8", "cp1252", "latin-1"]
-
             for encoding in encodings:
                 try:
-                    loader = TextLoader(path, encoding=encoding)
-                    docs = loader.load()
-                    logging.info(
-                        f"TXT loaded with {encoding}: {len(docs)} doc"
+                    loader = TextLoader(
+                        path,
+                        encoding=encoding,
+                        autodetect_encoding=True  # ← add this
                     )
+                    docs = loader.load()
+                    logging.info(f"TXT loaded ({encoding}): {len(docs)} doc")
                     return docs
                 except Exception:
-                    # this encoding failed → try next one
-                    logging.warning(
-                        f"Encoding {encoding} failed, trying next..."
-                    )
+                    logging.warning(f"Encoding {encoding} failed, trying next...")
                     continue
 
-            raise ValueError(
-                f"Could not load {path} with any encoding. "
-                "Try saving file as UTF-8."
+            # last resort — read manually ignoring bad chars
+            # "errors=ignore" skips unreadable characters
+            # better to lose a few chars than fail completely
+            logging.warning("All encodings failed, using manual read with errors=ignore")
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+
+            doc = Document(
+                page_content=text,
+                metadata={"source": path}
             )
+            return [doc]
+
         except Exception as e:
-            raise CustomException(e, sys) # type: ignore
-        
+            raise CustomException(e, sys)#type:ignore
+
     def _load_docx(self,path:str) -> List[Document]:
         """
         Load DOCX file

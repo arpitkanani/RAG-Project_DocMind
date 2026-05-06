@@ -53,7 +53,7 @@ class IngestionPipeline:
             logging.info(f"starting Ingestion :{source}")
 
             if collection_name is None:
-                collection_name = self._get_filename(source)
+                collection_name = self._get_collection_name(source)
             logging.info(f"Collection: {collection_name}")
 
             docs = self.loader.load(source)

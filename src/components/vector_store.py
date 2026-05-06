@@ -120,9 +120,49 @@ class VectorStore:
     def delete_collection(self):
         """Delete all vectors and reset storage."""
         try:
+            import chromadb
+            import gc
+            import time
+
+            # close any open ChromaDB connections first
+            # gc.collect() forces Python garbage collector
+            # to clean up unreferenced ChromaDB objects
+            # releasing file locks on Windows 
+            gc.collect()
+
             if os.path.exists(self.persist_dir):
-                shutil.rmtree(self.persist_dir)
+                # try deleting via ChromaDB client first
+                # cleaner than deleting folder directly
+                try:
+                    client = chromadb.PersistentClient(
+                        path=self.persist_dir
+                    )
+                    collections = client.list_collections()
+                    for col in collections:
+                        client.delete_collection(col.name)
+                    del client
+                    gc.collect()
+                    # small wait for Windows to release lock
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+
+                # now safe to delete folder
+                try:
+                    shutil.rmtree(self.persist_dir)
+                except PermissionError:
+                    # if still locked → delete files individually
+                    for root, dirs, files in os.walk(
+                        self.persist_dir, topdown=False
+                    ):
+                        for file in files:
+                            try:
+                                os.remove(os.path.join(root, file))
+                            except Exception:
+                                pass
+
             os.makedirs(self.persist_dir, exist_ok=True)
             logging.info("Collection deleted successfully")
+
         except Exception as e:
-            raise CustomException(e, sys)
+            raise CustomException(e, sys)#type:ignore
