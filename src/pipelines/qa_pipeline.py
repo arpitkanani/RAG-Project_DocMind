@@ -22,11 +22,20 @@ class QAPipeline:
     """ routes user query based on intent to appropriate chain and manages memory """
 
 
-    def __init__(self,colllection_name:str=None):
-       
-
-        logging.info("Initializing QAPipeline")
-        self.collection_name = self.collection_name
+    def __init__(self, collection_name: str = None):
+        """
+        collection_name → which document to search
+        None → searches across ALL uploaded documents
+        """
+        try:
+            logging.info("Initializing QAPipeline")
+            self.collection_name = collection_name
+            logging.info(
+                f"QAPipeline ready | "
+                f"collection: {collection_name or 'all'}"
+            )
+        except Exception as e:
+            raise CustomException(e, sys)
 
     def run(self,query:str)-> dict:
         """
