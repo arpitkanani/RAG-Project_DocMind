@@ -4,6 +4,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda
+from src.components.memory_manager import MemoryManager
 from src.components.vector_store import VectorStore
 from src.utils.intent_detector import extract_quiz_count
 from src.logger import logging
@@ -234,6 +235,11 @@ def get_quiz(query: str,
             logging.info(f"Quiz request: {query[:50]}...")
             quiz_chain = QuizChain()
             result = quiz_chain.generate(query, collection_name)
+
+            memory = MemoryManager()
+            memory.save_message("human", query)
+            memory.save_message("ai", result)
+            
             logging.info("Quiz returned successfully")
             return result
 

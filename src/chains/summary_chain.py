@@ -4,6 +4,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
+from src.components.memory_manager import MemoryManager
 from src.components.vector_store import VectorStore
 from src.utils.intent_detector import detect_summary_type
 from typing import List
@@ -183,6 +184,11 @@ def get_summary(query:str,collection_name:str=None)->str:
             summary_type=summary_type,
             collection_name=collection_name
         )
+
+        memory = MemoryManager()
+        memory.save_message("human", query)
+        memory.save_message("ai", result)
+
         logging.info("Summary returned successfully")
         return result
     except Exception as e:
