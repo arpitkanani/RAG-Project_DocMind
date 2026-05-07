@@ -74,7 +74,7 @@ class IngestionPipeline:
 
             if not is_youtube_url(source):
                 if os.path.exists(source):
-                    delete_file_after_processing(source)
+                    #delete_file_after_processing(source)
                     logging.info(f"Source file deleted: {source}")
 
             result = {
