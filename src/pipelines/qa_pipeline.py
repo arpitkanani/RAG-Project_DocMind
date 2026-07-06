@@ -1,81 +1,49 @@
-import yaml
 import sys
-import os
-from src.logger import logging
-from src.exception import CustomException
+from typing import List
+
 from src.chains.qa_chain import get_answer
-from src.chains.summary_chain import get_summary
-from src.chains.quiz_chain import get_quiz
-from src.utils.intent_detector import (
-    detect_intent,
-    INTENT_SUMMARY,
-    INTENT_QUIZ,
-    INTENT_QA
-
+from src.exception import (
+    CollectionNotFoundError,
+    CustomException,
+    KnowledgeBaseEmptyError,
 )
-
-with open("config/config.yaml") as f:
-    config = yaml.safe_load(f)
+from src.logger import logging
 
 
 class QAPipeline:
-    """ routes user query based on intent to appropriate chain and manages memory """
+    """Runs every query through the RAG QA chain."""
 
-
-    def __init__(self, collection_name: str = None):
-        """
-        collection_name → which document to search
-        None → searches across ALL uploaded documents
-        """
+    def __init__(
+        self,
+        collection_names: List[str] | None = None,
+        session_id: str = "default",
+    ):
         try:
-            logging.info("Initializing QAPipeline")
-            self.collection_name = collection_name
+            self.collection_names = [name for name in (collection_names or []) if name]
+            self.session_id = session_id
             logging.info(
-                f"QAPipeline ready | "
-                f"collection: {collection_name or 'all'}"
+                "Pipeline ready | collections: %s | session: %s",
+                self.collection_names or "all",
+                session_id,
             )
         except Exception as e:
             raise CustomException(e, sys)
 
-    def run(self,query:str)-> dict:
-        """
-        main entry point for every query.
-        """
-
+    def run(self, query: str) -> dict:
         try:
-            logging.info(f"Summary request: {query[:50]}...")
-            
-            intent=detect_intent(query)
-            if intent==INTENT_SUMMARY:
-                
-                answer = get_summary(
-                    query,
-                    collection_name=self.collection_name
-                )
-            elif intent==INTENT_QUIZ:
-                
-                answer = get_quiz(
-                    query,
-                    collection_name=self.collection_name
-                )
-            else:
-                
-                answer = get_answer(
-                    query,
-                    collection_name=self.collection_name
-                
-                )
-            
-            result ={
-                "answer":answer,
-                "intent":intent,
-                "collection":self.collection_name or "all",
-                "query":query
-
+            logging.info("Processing query: %s...", query[:50])
+            answer = get_answer(
+                query,
+                collection_names=self.collection_names,
+                session_id=self.session_id,
+            )
+            return {
+                "answer": answer,
+                "collection_scope": self.collection_names or "all",
+                "query": query,
+                "session_id": self.session_id,
             }
-
-            logging.info(f"Query Processed |Intent: {intent}")
-            return result
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
+            raise
         except Exception as e:
-            raise CustomException(e, sys)#type:ignore
-        
+            raise CustomException(e, sys)

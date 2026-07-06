@@ -1,227 +1,137 @@
-import pandas as pd
 import sys
-import os
-from typer.cli import docs
+from typing import List
+
+import pandas as pd
 import yaml
-from langchain_community.document_loaders import PyPDFLoader,TextLoader,Docx2txtLoader,UnstructuredMarkdownLoader,CSVLoader
+from langchain_community.document_loaders import (
+    CSVLoader,
+    Docx2txtLoader,
+    PyPDFLoader,
+    TextLoader,
+    UnstructuredMarkdownLoader,
+)
 from langchain_core.documents import Document
+
 from src.exception import CustomException
 from src.logger import logging
 from src.utils.file_helper import get_file_extension
-from src.utils.youtube_helper import get_transcript,is_youtube_url
-from typing import List
+from src.utils.youtube_helper import get_transcript_segments, is_youtube_url
 
 with open("config/config.yaml") as f:
-    config=yaml.safe_load(f)
+    config = yaml.safe_load(f)
+
 
 class DocumentLoader:
-    """
-    Handles loading of all supported document types:
-    - PDF   → PyPDFLoader
-    - TXT   → TextLoader
-    - DOCX  → Docx2txtLoader
-    - CSV   → CSVLoader
-    - MD    → UnstructuredMarkdownLoader
-    - XLSX  → pandas based loading
-    - YouTube URL → transcript fetching
-    
-    Single entry point → .load(source)
-    Detects type automatically → calls correct loader
-    Always returns List[Document] regardless of source type
-    """
+    """Load supported files or YouTube transcripts as LangChain documents."""
 
-    def load(self,source:str)->List[Document]:
-        """
-        Main entry point for all document loading
-        
-        source = file path OR youtube URL
-        
-        flow:
-            is youtube URL? → fetch transcript
-            is file?        → detect extension → use correct loader
-        
-        always returns List[Document] ← this is critical
-        rest of pipeline doesn't care what source was
-        it just receives List[Document] and processes it
-        """
+    def load(self, source: str) -> List[Document]:
         try:
-            logging.info(f"loading document from source: {source}")
+            logging.info("Loading document from source: %s", source)
 
             if is_youtube_url(source):
                 return self._load_youtube(source)
-            
-            ext=get_file_extension(source)
-            
-            loader_map={
-                ".pdf":self._load_pdf,
-                ".txt":self._load_txt,
-                ".docx":self._load_docx,
-                ".csv":self._load_csv,
-                ".md":self._load_md,
-                ".xlsx":self._load_xlsx
+
+            extension = get_file_extension(source)
+            loader_map = {
+                ".pdf": self._load_pdf,
+                ".txt": self._load_txt,
+                ".docx": self._load_docx,
+                ".csv": self._load_csv,
+                ".md": self._load_md,
+                ".xlsx": self._load_xlsx,
             }
 
-            if ext not in loader_map:
-                raise ValueError(f"Unsupported file type: {ext}")
-            
-            docs=loader_map[ext](source)
-            logging.info(
-                f"Loaded {len(docs)} documents from {source}"
-            )
+            if extension not in loader_map:
+                raise ValueError(f"Unsupported file type: {extension}")
+
+            docs = loader_map[extension](source)
+            logging.info("Loaded %d documents from %s", len(docs), source)
             return docs
         except Exception as e:
-            raise CustomException(e, sys) # type: ignore
-        
-    def _load_pdf(self,path:str) -> List[Document]:
-        """
-        Load PDF file
-        PyPDFLoader splits by page automatically
-        each page = one Document
+            raise CustomException(e, sys)
 
-        metadata added automatically:
-        {"source": "file.pdf", "page": 0}
-        page number used later for citations
-        """
+    def _load_pdf(self, path: str) -> List[Document]:
         try:
-            loader=PyPDFLoader(path)
-            logging.info(f"Pdf Loaded: {loader.load()}")
-            return loader.load()
+            docs = PyPDFLoader(path).load()
+            logging.info("PDF loaded: %d pages", len(docs))
+            return docs
         except Exception as e:
-            raise CustomException(e, sys) # type: ignore
+            raise CustomException(e, sys)
 
     def _load_txt(self, path: str) -> List[Document]:
-        """Load TXT — tries multiple encodings automatically."""
         try:
-            encodings = ["utf-8", "cp1252", "latin-1"]
-            for encoding in encodings:
+            for encoding in ("utf-8", "cp1252", "latin-1"):
                 try:
-                    loader = TextLoader(
+                    docs = TextLoader(
                         path,
                         encoding=encoding,
-                        autodetect_encoding=True  # ← add this
-                    )
-                    docs = loader.load()
-                    logging.info(f"TXT loaded ({encoding}): {len(docs)} doc")
+                        autodetect_encoding=True,
+                    ).load()
+                    logging.info("TXT loaded (%s): %d doc", encoding, len(docs))
                     return docs
                 except Exception:
-                    logging.warning(f"Encoding {encoding} failed, trying next...")
-                    continue
+                    logging.warning("Encoding %s failed for %s", encoding, path)
 
-            # last resort — read manually ignoring bad chars
-            # "errors=ignore" skips unreadable characters
-            # better to lose a few chars than fail completely
-            logging.warning("All encodings failed, using manual read with errors=ignore")
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
+            with open(path, "r", encoding="utf-8", errors="ignore") as file_obj:
+                text = file_obj.read()
 
-            doc = Document(
-                page_content=text,
-                metadata={"source": path}
-            )
-            return [doc]
-
+            return [Document(page_content=text, metadata={"source": path})]
         except Exception as e:
-            raise CustomException(e, sys)#type:ignore
+            raise CustomException(e, sys)
 
-    def _load_docx(self,path:str) -> List[Document]:
-        """
-        Load DOCX file
-        Docx2txtLoader treats whole file as one Document
-        no splitting by line or paragraph
-
-        metadata:
-        {"source": "file.docx"}
-        """
+    def _load_docx(self, path: str) -> List[Document]:
         try:
-            loader=Docx2txtLoader(path)
-            
-            return loader.load()
+            return Docx2txtLoader(path).load()
         except Exception as e:
-            raise CustomException(e, sys) # type: ignore
-        
-    def _load_csv(self,path:str) -> List[Document]:
-        """
-        Load CSV file
-        CSVLoader treats whole file as one Document
-        no splitting by line or row
+            raise CustomException(e, sys)
 
-        metadata:
-        {"source": "file.csv"}
-        """
+    def _load_csv(self, path: str) -> List[Document]:
         try:
-            loader=CSVLoader(path,encoding="utf-8")
-            
-            return loader.load()
+            return CSVLoader(path, encoding="utf-8").load()
         except Exception as e:
-            raise CustomException(e, sys) # type: ignore
-        
-    def _load_md(self,path:str) -> List[Document]:
-        """
-        Load Markdown file
-        UnstructuredMarkdownLoader treats whole file as one Document
-        no splitting by line or paragraph
+            raise CustomException(e, sys)
 
-        metadata:
-        {"source": "file.md"}
-        """
+    def _load_md(self, path: str) -> List[Document]:
         try:
-            loader=UnstructuredMarkdownLoader(path)
-            
-            return loader.load()
+            return UnstructuredMarkdownLoader(path).load()
         except Exception as e:
-            raise CustomException(e, sys) # type: ignore
-    
-    def _load_xlsx(self,path:str) -> List[Document]:
-        """ 
-        Load Excel file using pandas
-        No direct LangChain loader for xlsx
-        so we use pandas to read it manually
-        then convert each row to Document ourselves
-        metadata:
-        {"source": "file.xlsx", "row": 0}
-        """
+            raise CustomException(e, sys)
+
+    def _load_xlsx(self, path: str) -> List[Document]:
         try:
-            df=pd.read_excel(path)
-            documents=[]
-            for index,row in df.iterrows():
-                row_text = "\n".join(
-                    f"{col}: {val}"
-                    for col, val in row.items()
+            dataframe = pd.read_excel(path)
+            documents: List[Document] = []
+            for index, row in dataframe.iterrows():
+                row_text = "\n".join(f"{column}: {value}" for column, value in row.items())
+                documents.append(
+                    Document(
+                        page_content=row_text,
+                        metadata={"source": path, "row": index},
+                    )
                 )
-                doc = Document(
-                    page_content=row_text,
-                    metadata={
-                        "source": path,
-                        "row": index  # row number for reference
-                    }
-                )
-                documents.append(doc) # type: ignore
-            logging.info(f"Xlsx Loaded: {len(documents)} documents created from {path}")
+            logging.info("XLSX loaded: %d row documents", len(documents))
             return documents
         except Exception as e:
-            raise CustomException(e, sys) # type: ignore
-        
-    def _load_youtube(self,url:str) -> List[Document]:
-        """
-        Fetch YouTube transcript and wrap as Document
-        
-        transcript = full video text as one long string
-        we wrap it in a single Document with URL as source
-        
-        metadata stores:
-            source → YouTube URL (used for citation)
-            type   → "youtube" (so we know where it came from)
-        """
+            raise CustomException(e, sys)
+
+    def _load_youtube(self, url: str) -> List[Document]:
         try:
-            transcript=get_transcript(url)
-            doc=Document(
-                page_content=transcript,
-                metadata={
-                    "source": url,
-                    "type": "youtube"
-                }
-            )
-            logging.info(f"YouTube Loaded: Transcript fetched for {url}")
-            return [doc] # return as list of one Document
+            segments = get_transcript_segments(url)
+            docs = [
+                Document(
+                    page_content=str(segment["text"]),
+                    metadata={
+                        "source": "YouTube transcript",
+                        "video_url": url,
+                        "type": "youtube",
+                        "timestamp": str(segment["timestamp"]),
+                        "start_seconds": float(segment["start"]),
+                        "duration_seconds": float(segment["duration"]),
+                    },
+                )
+                for segment in segments
+            ]
+            logging.info("YouTube transcript loaded: %d segments", len(docs))
+            return docs
         except Exception as e:
-            raise CustomException(e,sys)#type:ignore
+            raise CustomException(e, sys)

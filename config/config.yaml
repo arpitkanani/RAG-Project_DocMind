@@ -3,20 +3,28 @@ embedding:
 
 llm:
   model: "llama3.2:3b"
-  temperature: 0.3   
+  temperature: 0.5
 
 # splitting chunks of text for embedding and retrieval
 splitter:
+  strategy: "recursive"
+  chunk_size: 500
+  chunk_overlap: 80
+  separators:
+    - "\n\n"
+    - "\n"
+    - " "
+    - ""
   breakpoint_threshold_type: "percentile"
   breakpoint_threshold_amount: 80  
 
 # retriver use MMR for divers answer
 retriever:
-  search_type: "mmr"      # mmr = diverse + relevant results
-  k: 5                    # return top 3 chunks
-  fetch_k: 15            # fetch 10 candidates, pick best 3
-  lambda_mult: 0.5        # 0.5 = balanced relevance + diversity
-  score_threshold: 0.1     # only consider chunks with score > 0.1
+  search_type: "similarity"
+  k: 6
+  fetch_k: 20
+  lambda_mult: 0.7
+  score_threshold: 0.1    # only consider chunks with score > 0.1
 
 #vectore database used chroma
 vectorstore:
@@ -43,42 +51,3 @@ youtube:
   language: ["en","hi","gu"]   # language for YouTube video transcription
   max_chars: 70000
 
-# add these new sections
-quiz:
-  default_easy: 5
-  default_medium: 3
-  default_hard: 2
-  max_questions: 10
-
-intent:
-  summary_keywords:
-    - "summarize"
-    - "summary"
-    - "overview"
-    - "brief"
-    - "tldr"
-    - "condense"
-    - "what is this document"
-    - "what is this file"
-    - "what is this document about"
-    - "what does this contain"
-    - "describe this document"
-  quiz_keywords:
-    - "quiz"
-    - "questions"
-    - "generate questions"
-    - "test me"
-    - "make questions"
-    - "create questions"
-  detail_keywords:
-    - "detailed"
-    - "structured"
-    - "in depth"
-    - "elaborate"
-    - "comprehensive"
-
-
-summary:
-  default_type: "bullets"
-  show_on_upload: true
-  max_chunk_size_for_direct: 45

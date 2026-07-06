@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocMind – AI Document Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #080A0F;
+      --surface:  #111827;
+      --surface2: #161B27;
+      --border:   #1F2937;
+      --blue:     #3B82F6;
+      --indigo:   #6366F1;
+      --green:    #10B981;
+      --text:     #E5E7EB;
+      --muted:    #94A3B8;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* NAV */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    .logo { font-family: 'Syne', sans-serif; font-size: 1.3rem; color: var(--blue); letter-spacing: -0.5px; }
+    .nav-link {
+      text-decoration: none; color: var(--text);
+      background: var(--blue); padding: .5rem 1.25rem;
+      border-radius: 8px; font-size: .875rem; font-weight: 600;
+      transition: opacity .2s;
+    }
+    .nav-link:hover { opacity: .85; }
+
+    /* HERO */
+    .hero {
+      text-align: center;
+      padding: 5rem 1.5rem 3rem;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(59,130,246,.15);
+      border: 1px solid rgba(59,130,246,.35);
+      color: var(--blue);
+      padding: .3rem .9rem;
+      border-radius: 999px;
+      font-size: .8rem;
+      font-weight: 600;
+      letter-spacing: .5px;
+      margin-bottom: 1.5rem;
+    }
+    .hero h1 {
+      font-family: 'Syne', sans-serif;
+      font-size: clamp(2.2rem, 5vw, 3.5rem);
+      font-weight: 800;
+      line-height: 1.1;
+      margin-bottom: 1.25rem;
+    }
+    .hero h1 span { color: var(--blue); }
+    .hero p {
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.7;
+      margin-bottom: 2.5rem;
+    }
+    .hero-btn {
+      display: inline-block;
+      background: var(--blue);
+      color: #fff;
+      text-decoration: none;
+      padding: .875rem 2.25rem;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 1rem;
+      transition: transform .15s, box-shadow .15s;
+      box-shadow: 0 0 30px rgba(59,130,246,.3);
+    }
+    .hero-btn:hover { transform: translateY(-2px); box-shadow: 0 0 40px rgba(59,130,246,.45); }
+
+    /* WHAT IS RAG */
+    .section {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 3.5rem 1.5rem;
+    }
+    .section-label {
+      font-size: .75rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: .75rem;
+    }
+    .section h2 {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.75rem;
+      font-weight: 800;
+      margin-bottom: 1rem;
+    }
+    .section p {
+      color: var(--muted);
+      line-height: 1.75;
+      max-width: 640px;
+    }
+
+    /* RAG PIPELINE VISUAL */
+    .rag-flow {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      flex-wrap: wrap;
+      margin-top: 2rem;
+    }
+    .rag-step {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .875rem 1.25rem;
+      text-align: center;
+      flex: 1;
+      min-width: 120px;
+    }
+    .rag-step .icon { font-size: 1.5rem; margin-bottom: .4rem; }
+    .rag-step .label { font-size: .8rem; font-weight: 600; color: var(--text); }
+    .rag-step .sub { font-size: .7rem; color: var(--muted); margin-top: .2rem; }
+    .rag-arrow { color: var(--border); font-size: 1.25rem; flex-shrink: 0; }
+
+    /* USE CASES */
+    .use-cases {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    .use-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem 1.25rem;
+      transition: border-color .2s, transform .2s;
+    }
+    .use-card:hover { border-color: var(--blue); transform: translateY(-3px); }
+    .use-card .uc-icon { font-size: 1.75rem; margin-bottom: .75rem; }
+    .use-card h3 { font-size: .95rem; font-weight: 700; margin-bottom: .4rem; }
+    .use-card p { font-size: .82rem; color: var(--muted); line-height: 1.6; }
+
+    /* DIVIDER */
+    hr { border: none; border-top: 1px solid var(--border); }
+
+    /* FOOTER */
+    footer {
+      text-align: center;
+      padding: 2rem;
+      color: var(--muted);
+      font-size: .8rem;
+      border-top: 1px solid var(--border);
+    }
+    footer a { color: var(--blue); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <span class="logo">📄 DocMind</span>
+    <a class="nav-link" href="/app">Open App →</a>
+  </nav>
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="badge">🎓 Student Project · RAG Pipeline</div>
+    <h1>Chat with your<br /><span>documents</span> using AI</h1>
+    <p>
+      Upload a PDF, paste a YouTube link, and just ask questions in plain English.
+      DocMind reads your documents and answers — no copy-paste needed.
+    </p>
+    <a class="hero-btn" href="/app">Try it now →</a>
+  </section>
+
+  <hr />
+
+  <!-- WHAT IS RAG -->
+  <section class="section">
+    <div class="section-label">How It Works</div>
+    <h2>What is a RAG Pipeline?</h2>
+    <p>
+      RAG stands for <strong style="color:var(--text)">Retrieval-Augmented Generation</strong>.
+      Instead of the AI guessing from memory, it first <em>finds</em> the relevant
+      parts of your document, then <em>generates</em> an answer using only that content.
+      Think of it like giving the AI an open-book exam.
+    </p>
+
+    <div class="rag-flow">
+      <div class="rag-step">
+        <div class="icon">📄</div>
+        <div class="label">Your Document</div>
+        <div class="sub">PDF / YouTube / TXT</div>
+      </div>
+      <div class="rag-arrow">→</div>
+      <div class="rag-step">
+        <div class="icon">✂️</div>
+        <div class="label">Split into chunks</div>
+        <div class="sub">Smaller pieces</div>
+      </div>
+      <div class="rag-arrow">→</div>
+      <div class="rag-step">
+        <div class="icon">🔢</div>
+        <div class="label">Embeddings</div>
+        <div class="sub">Turned into numbers</div>
+      </div>
+      <div class="rag-arrow">→</div>
+      <div class="rag-step">
+        <div class="icon">🔍</div>
+        <div class="label">Search</div>
+        <div class="sub">Find relevant parts</div>
+      </div>
+      <div class="rag-arrow">→</div>
+      <div class="rag-step">
+        <div class="icon">🤖</div>
+        <div class="label">AI Answer</div>
+        <div class="sub">Based on your doc</div>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <!-- USE CASES -->
+  <section class="section">
+    <div class="section-label">What You Can Do</div>
+    <h2>Use Cases</h2>
+    <p>DocMind focuses on grounded document Q&amp;A across uploaded files and YouTube transcripts.</p>
+
+    <div class="use-cases">
+      <div class="use-card">
+        <div class="uc-icon">❓</div>
+        <h3>Q&amp;A</h3>
+        <p>Ask any question about your document and get a direct answer with context from the source.</p>
+      </div>
+      <div class="use-card">
+        <div class="uc-icon">🔗</div>
+        <h3>Source Citations</h3>
+        <p>Answers point back to the supporting filename, page, row, or transcript timestamp when available.</p>
+      </div>
+      <div class="use-card">
+        <div class="uc-icon">🧭</div>
+        <h3>Multi-Document Search</h3>
+        <p>Keep multiple uploads in one chat and search across them together instead of being limited to only the latest file.</p>
+      </div>
+      <div class="use-card">
+        <div class="uc-icon">🎥</div>
+        <h3>YouTube Videos</h3>
+        <p>Paste any YouTube URL. DocMind grabs the transcript and lets you chat with the video content.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Built as a student project · Powered by local AI &amp; RAG ·
+    <a href="/app">Open the App →</a>
+  </footer>
+
+</body>
+</html>

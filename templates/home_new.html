@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocMind - Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-brand-wrap">
+        <div class="sidebar-brand-mark">DM</div>
+        <div>
+          <div class="sidebar-brand">DocMind</div>
+          <div class="sidebar-subtitle">Intelligent document analysis</div>
+        </div>
+      </div>
+
+      <button class="new-chat-btn" id="newChatBtn" title="New Chat">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"><path d="M12 5v14M5 12h14"/></svg>
+        New Chat
+      </button>
+
+      <div class="search-wrap">
+        <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="searchInput" class="search-input" placeholder="Search chats..." />
+      </div>
+    </div>
+
+    <div class="sidebar-chats" id="sidebarChats">
+      <div class="chat-group-label">Today</div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="footer-btn" id="clearAllBtn">Clear All</button>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    
+
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-logo">DM</div>
+        <h2>Analyze documents with a calm, focused workspace</h2>
+        <p>Upload a file or YouTube transcript, then ask grounded questions without losing your document context.</p>
+        <div class="suggestions">
+          <button class="suggest-card" onclick="insertSuggestion('Summarize the main ideas in this document')">
+            <span>01</span> Summarize the document
+          </button>
+          <button class="suggest-card" onclick="insertSuggestion('List the key points and action items')">
+            <span>02</span> Extract key points
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="prompt-area">
+      <div class="prompt-box">
+        <button class="attach-btn" id="attachBtn" title="Upload document or YouTube video">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
+        <div class="prompt-content">
+          <textarea id="queryInput" rows="1" placeholder="Upload a document, then ask anything..."></textarea>
+        </div>
+        <button class="send-btn" id="sendBtn" title="Send" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4Z"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal" id="uploadModal">
+      <div class="modal-header">
+        <span>Upload Content</span>
+        <button class="modal-close" id="modalClose">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-tab="file">Upload Document</button>
+        <button class="modal-tab" data-tab="yt">Add YouTube Video</button>
+      </div>
+
+      <div class="tab-panel active" id="tab-file">
+        <div class="drop-zone" id="dropZone">
+          <div class="drop-icon">PDF</div>
+          <p>Drag and drop files here, or <span class="drop-link">click to browse</span></p>
+          <small>PDF, TXT, DOCX, CSV, XLSX, MD</small>
+          <input type="file" id="fileInput" multiple accept=".pdf,.txt,.docx,.csv,.xlsx,.md" hidden />
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-yt">
+        <div class="yt-input-wrap">
+          <span class="yt-icon">YT</span>
+          <input type="text" id="ytInput" placeholder="https://youtube.com/watch?v=..." />
+        </div>
+        <p class="modal-note">Fetches the video transcript and indexes it for chat.</p>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-ghost" id="cancelUpload">Cancel</button>
+        <button class="btn-primary" id="submitUpload">Upload</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="processing-overlay" id="processingOverlay" style="display:none;">
+    <div class="processing-card">
+      <div class="proc-spinner"></div>
+      <div class="proc-text" id="procText">Processing document...</div>
+      <div class="proc-bar-track"><div class="proc-bar" id="procBar"></div></div>
+      <div class="proc-stage" id="procStage">Uploading...</div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toastStack"></div>
+
+  <script src="/static/js/app_new.js"></script>
+</body>
+</html>

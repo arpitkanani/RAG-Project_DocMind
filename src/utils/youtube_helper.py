@@ -1,77 +1,105 @@
 import sys
-import os
-import shutil
+from urllib.parse import parse_qs, urlparse
+
 import yaml
 from youtube_transcript_api import YouTubeTranscriptApi
+
 from src.exception import CustomException
-from urllib.parse import urlparse, parse_qs
 from src.logger import logging
-from youtube_transcript_api import YouTubeTranscriptApi, FetchedTranscript
 
-
-with open("D:\\Langchain Project\\config\\config.yaml") as f:
+with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
-LANGUAGES = config['youtube']['language']
-MAX_CHARS = config['youtube']['max_chars']
+LANGUAGES = config["youtube"]["language"]
+MAX_CHARS = config["youtube"]["max_chars"]
+
 
 def is_youtube_url(url: str) -> bool:
-    """check if it's youtube URL or not."""
-
+    """Check whether a string looks like a YouTube URL."""
     try:
         return "youtube.com" in url or "youtu.be" in url
     except Exception as e:
-        logging.error(f"Error occurred while checking YouTube URL: {e}")
-        raise CustomException(e, sys)# type: ignore
-    
-def extract_video_id(url:str)->str:
-    """Extracts the video ID from a Youtube link provided by the user."""
+        logging.error("Error while checking YouTube URL: %s", e)
+        raise CustomException(e, sys)
+
+
+def extract_video_id(url: str) -> str:
+    """Extract the canonical YouTube video ID."""
     try:
-        parsed=urlparse(url)
-        if parsed.hostname=="youtu.be":
-            video_id=parsed.path[1:]
-            logging.info(f"Extracted video ID: {video_id} from URL: {url}")
-            
+        parsed = urlparse(url)
+        if parsed.hostname == "youtu.be":
+            video_id = parsed.path[1:]
+            logging.info("Extracted video ID: %s from %s", video_id, url)
             return video_id
-        if parsed.hostname in ("www.youtube.com", "youtube.com") :
-            query=parse_qs(parsed.query)
-            video_id=query.get("v",[None])[0]
+
+        if parsed.hostname in ("www.youtube.com", "youtube.com"):
+            query = parse_qs(parsed.query)
+            video_id = query.get("v", [None])[0]
             if not video_id:
                 raise ValueError(f"No video ID found in URL: {url}")
-            logging.info(f"Extracted video ID: {video_id} from URL: {url}")
+            logging.info("Extracted video ID: %s from %s", video_id, url)
             return video_id
-        raise ValueError(f"Invalid YouTube URL: {url}")
-        
-    except Exception as e:
-        logging.error(f"Error occurred while extracting video ID: {e}")
-        raise CustomException(e, sys) # type: ignore
-    
 
-def get_transcript(url: str) -> str:
+        raise ValueError(f"Invalid YouTube URL: {url}")
+    except Exception as e:
+        logging.error("Error while extracting YouTube video ID: %s", e)
+        raise CustomException(e, sys)
+
+
+def format_timestamp(seconds: float) -> str:
+    total_seconds = max(int(seconds), 0)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def get_transcript_segments(url: str) -> list[dict[str, str | float]]:
+    """Fetch transcript chunks with timestamps preserved."""
     try:
         video_id = extract_video_id(url)
-        logging.info(f"Fetching transcript for video: {video_id}")
+        logging.info("Fetching transcript for video: %s", video_id)
 
-        # newer API — create instance first, then call fetch
-        ytt_api = YouTubeTranscriptApi()
-        transcript_list = ytt_api.fetch(
-            video_id,
-            languages=LANGUAGES
+        transcript_items = YouTubeTranscriptApi().fetch(video_id, languages=LANGUAGES)
+
+        segments: list[dict[str, str | float]] = []
+        total_chars = 0
+        for item in transcript_items:
+            text = (item.text or "").strip()
+            if not text:
+                continue
+
+            if total_chars >= MAX_CHARS:
+                break
+
+            allowed_text = text[: max(MAX_CHARS - total_chars, 0)]
+            if not allowed_text:
+                break
+
+            segments.append(
+                {
+                    "text": allowed_text,
+                    "start": float(item.start),
+                    "duration": float(item.duration),
+                    "timestamp": format_timestamp(float(item.start)),
+                }
+            )
+            total_chars += len(allowed_text) + 1
+
+        logging.info(
+            "Transcript fetched | segments: %d | chars: %d",
+            len(segments),
+            total_chars,
         )
-
-        # join all text chunks
-        full_transcript = " ".join(
-            chunk.text for chunk in transcript_list
-        )
-        # note: chunk.text not chunk["text"]
-        # newer version returns objects not dictionaries
-
-        if len(full_transcript) > MAX_CHARS:
-            full_transcript = full_transcript[:MAX_CHARS]
-            logging.warning(f"Transcript trimmed to {MAX_CHARS} chars")
-
-        logging.info(f"Transcript fetched: {len(full_transcript)} chars")
-        return full_transcript
-
+        return segments
     except Exception as e:
-        raise CustomException(e, sys) # type: ignore
+        raise CustomException(e, sys)
+
+
+def get_transcript(url: str) -> str:
+    """Fetch transcript as plain text for backward compatibility."""
+    try:
+        return " ".join(str(segment["text"]) for segment in get_transcript_segments(url))
+    except Exception as e:
+        raise CustomException(e, sys)

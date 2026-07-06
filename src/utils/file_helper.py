@@ -1,13 +1,14 @@
 import os 
 import shutil
 import sys 
+import uuid
 import yaml
 from pathlib import Path
 from src.exception import CustomException
 from src.logger import logging
 
 
-with open("D:\\Langchain Project\\config\\config.yaml") as f:
+with open("config/config.yaml") as f:
     config=yaml.safe_load(f)
 
 
@@ -25,8 +26,9 @@ def validate_file(filename: str) -> bool:
     try:
         ext=Path(filename).suffix.lower()
         is_valid=ext in ALLOWED_EXTENSIONS
-        
-        logging.error(f"File extension {ext} is not allowed.")
+
+        if not is_valid:
+            logging.error(f"File extension {ext} is not allowed.")
         return is_valid
     
     except Exception as e:
@@ -96,14 +98,12 @@ def save_uploaded_file(file_bytes:bytes, filename:str) -> str:
             raise ValueError(
                 f"File too large. Maximum size: {MAX_FILE_SIZE_MB}MB"
             )
-        if not validate_files_count():
-            raise ValueError(
-                f"Too many files uploaded. "
-                f"Maximum {MAX_FILES_COUNT} files at once."
-            )
-        
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        file_path = os.path.join(UPLOAD_DIR, filename)
+        original_name = Path(filename).name
+        stem = Path(original_name).stem
+        suffix = Path(original_name).suffix
+        safe_name = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+        file_path = os.path.join(UPLOAD_DIR, safe_name)
         with open(file_path, "wb") as f:
             f.write(file_bytes)
 
@@ -148,7 +148,7 @@ def get_filename(file_path:str) -> str:
     returns the name of the file."""
     return Path(file_path).name
 
-def read_config(config_path:str ="D:\\Langchain Project\\config\\config.yaml")-> dict:
+def read_config(config_path:str ="config/config.yaml")-> dict:
     """ 
     Reads  the configuration file and returns the configuration as a dictionary.
     

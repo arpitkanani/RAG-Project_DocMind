@@ -20,3 +20,18 @@ class CustomException(Exception):
 
     def __str__(self):
         return self.error_message
+
+
+class CollectionNotFoundError(Exception):
+    """Raised when one or more requested Chroma collections do not exist."""
+
+    def __init__(self, missing_collections: list[str]):
+        self.missing_collections = missing_collections
+        joined = ", ".join(missing_collections)
+        super().__init__(f"Collection not found: {joined}")
+
+
+class KnowledgeBaseEmptyError(Exception):
+    """Raised when a query is attempted before any collection exists."""
+
+    pass

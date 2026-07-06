@@ -1,11 +1,16 @@
 import sys
 import yaml
 import os
-import shutil
+import re
 from src.components.document_loader import DocumentLoader
 from src.components.text_splitter import TextSplitter
 from src.components.vector_store import VectorStore
-from src.utils.file_helper import (validate_file, validate_file_size, delete_file_after_processing,get_filename,save_uploaded_file)
+from src.utils.file_helper import (
+    validate_file,
+    validate_file_size,
+    delete_file_after_processing,
+    save_uploaded_file,
+)
 from src.utils.youtube_helper import is_youtube_url,extract_video_id
 from src.exception import CustomException
 from src.logger import logging
@@ -18,12 +23,12 @@ class IngestionPipeline:
     Connects all ingestion components into one clean pipeline.
 
     source (file path or YouTube URL)
-        ↓
-    DocumentLoader  → List[Document]
-        ↓
-    TextSplitter    → List[Document] (chunks)
-        ↓
-    VectorStore     → stored in ChromaDB
+        |
+    DocumentLoader -> List[Document]
+        |
+    TextSplitter -> List[Document] (chunks)
+        |
+    VectorStore -> stored in ChromaDB
 
     """
     def __init__(self) :
@@ -74,7 +79,7 @@ class IngestionPipeline:
 
             if not is_youtube_url(source):
                 if os.path.exists(source):
-                    #delete_file_after_processing(source)
+                    delete_file_after_processing(source)
                     logging.info(f"Source file deleted: {source}")
 
             result = {
@@ -96,12 +101,17 @@ class IngestionPipeline:
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
         
-    def run_from_bytes(self, file_bytes: bytes,
-                       filename: str) -> dict:
+    def run_from_bytes(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        collection_name: str | None = None,
+    ) -> dict:
         
         """
         Run ingestion from raw file bytes.
         """
+        file_path = None
         try:
             logging.info(f"Ingesting from bytes: {filename}")
 
@@ -122,11 +132,14 @@ class IngestionPipeline:
             logging.info(f"File saved: {file_path}")
 
             # run normal pipeline on saved file
-            result = self.run(file_path)
+            result = self.run(file_path, collection_name=collection_name)
             return result
 
         except Exception as e:
             raise CustomException(e, sys)#type:ignore
+        finally:
+            if file_path and os.path.exists(file_path):
+                delete_file_after_processing(file_path)
         
     
     def _get_collection_name(self, source:str) -> str:
@@ -140,7 +153,8 @@ class IngestionPipeline:
             filename = os.path.basename(source)
             name     = os.path.splitext(filename)[0]
 
-            name = name.replace(" ", "_").lower()
+            name = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip().lower())
+            name = re.sub(r"_+", "_", name).strip("_") or "document"
 
             logging.info(f"Collection name: {name}")
             return name
