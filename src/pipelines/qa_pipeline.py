@@ -1,5 +1,5 @@
 import sys
-from typing import List
+from typing import List, Optional
 
 from src.chains.qa_chain import get_answer
 from src.exception import (
@@ -29,13 +29,18 @@ class QAPipeline:
         except Exception as e:
             raise CustomException(e, sys)
 
-    def run(self, query: str) -> dict:
+    def run(
+        self,
+        query: str,
+        message_attachments: Optional[List[dict]] = None,
+    ) -> dict:
         try:
             logging.info("Processing query: %s...", query[:50])
             answer = get_answer(
                 query,
                 collection_names=self.collection_names,
                 session_id=self.session_id,
+                message_attachments=message_attachments,
             )
             return {
                 "answer": answer,

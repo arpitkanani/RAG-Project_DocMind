@@ -8,8 +8,8 @@ llm:
 # splitting chunks of text for embedding and retrieval
 splitter:
   strategy: "recursive"
-  chunk_size: 500
-  chunk_overlap: 80
+  chunk_size: 700
+  chunk_overlap: 120
   separators:
     - "\n\n"
     - "\n"
@@ -21,10 +21,10 @@ splitter:
 # retriver use MMR for divers answer
 retriever:
   search_type: "similarity"
-  k: 6
-  fetch_k: 20
+  k: 5
+  fetch_k: 14
   lambda_mult: 0.7
-  score_threshold: 0.1    # only consider chunks with score > 0.1
+  score_threshold: 0.35
 
 #vectore database used chroma
 vectorstore:

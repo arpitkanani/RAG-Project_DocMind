@@ -33,7 +33,6 @@ class IngestionPipeline:
     """
     def __init__(self) :
         try:
-
             logging.info("Initializing Ingestion Pipeline components...")
             self.loader = DocumentLoader()
             self.splitter = TextSplitter()
@@ -60,14 +59,11 @@ class IngestionPipeline:
             if collection_name is None:
                 collection_name = self._get_collection_name(source)
             logging.info(f"Collection: {collection_name}")
-
             docs = self.loader.load(source)
             logging.info(f"Loaded {len(docs)} documents")
 
-
             chunks = self.splitter.split(docs)
             logging.info(f"Created {len(chunks)} chunks")
-
 
             vs = VectorStore(collection_name=collection_name)
 
@@ -76,11 +72,6 @@ class IngestionPipeline:
                 logging.info("Existing collection cleared")
 
             vs.add_documents(chunks)
-
-            if not is_youtube_url(source):
-                if os.path.exists(source):
-                    delete_file_after_processing(source)
-                    logging.info(f"Source file deleted: {source}")
 
             result = {
                 "success":         True,
@@ -160,6 +151,3 @@ class IngestionPipeline:
             return name
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
-        
-
-

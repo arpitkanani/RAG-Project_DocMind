@@ -1,11 +1,12 @@
 import os
+import re
 import sys
 from typing import List
 
 import yaml
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnableLambda, RunnableParallel
+from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
 
 from src.components.memory_manager import MemoryManager
@@ -19,6 +20,9 @@ from src.logger import logging
 
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
+
+NOT_FOUND_TOKEN = "DOCMIND_NOT_FOUND"
+FALLBACK_ANSWER = "I couldn't find relevant information about that in the uploaded document."
 
 
 def _format_source_label(metadata: dict) -> str:
@@ -47,73 +51,105 @@ def _format_locator(metadata: dict) -> str:
     return "location unknown"
 
 
+def _format_section(metadata: dict) -> str:
+    for key in ["section", "heading", "title", "sheet_name"]:
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
 def format_docs(docs: list) -> str:
-    """Format retrieved chunks into a structured, citation-friendly context block."""
+    """Format retrieved passages into a structured source block for generation."""
     if not docs:
-        return "No relevant content found in the indexed sources."
+        return "No grounded source passages are available."
 
     formatted_docs = []
     for index, doc in enumerate(docs, start=1):
         source_label = _format_source_label(doc.metadata)
         locator = _format_locator(doc.metadata)
-        collection_name = doc.metadata.get("collection_name", "unknown")
-        formatted_docs.append(
-            "\n".join(
-                [
-                    f"Chunk {index}",
-                    f"Source: {source_label}",
-                    f"Locator: {locator}",
-                    f"Collection: {collection_name}",
-                    "Relevant text:",
-                    doc.page_content,
-                ]
-            )
-        )
+        section = _format_section(doc.metadata)
+        lines = [
+            f"Source Note {index}",
+            f"Document: {source_label}",
+            f"Location: {locator}",
+        ]
+        if section:
+            lines.append(f"Section: {section}")
+        lines.extend(["Passage:", doc.page_content])
+        formatted_docs.append("\n".join(lines))
 
     return "\n\n".join(formatted_docs)
+
+
+def build_citations(docs: list) -> str:
+    citations = set()
+    seen = set()
+
+    for doc in docs:
+        source_label = _format_source_label(doc.metadata)
+        locator = _format_locator(doc.metadata)
+        section = _format_section(doc.metadata)
+        citation = f"{source_label} - {locator}"
+        if section:
+            citation = f"{citation} - {section}"
+        if citation in seen:
+            continue
+        seen.add(citation)
+        citations.add(citation)
+        if len(citations) == 3:
+            break
+
+    if not citations:
+        return ""
+
+    return "Source:\n" + "\n".join(citations)
+
+
+def sanitize_answer(answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return FALLBACK_ANSWER
+
+    lowered = text.lower()
+    banned_fragments = [
+        "there is nothing in this chunk",
+        "the provided chunks do not contain",
+        "based on the provided context",
+        "the context does not mention",
+        "the provided context does not",
+        "i cannot find the answer to that in the provided documents",
+        "retrieved context",
+    ]
+    if text == NOT_FOUND_TOKEN or any(fragment in lowered for fragment in banned_fragments):
+        return FALLBACK_ANSWER
+
+    text = re.sub(r"(?i)^based on the provided context[:,]?\s*", "", text).strip()
+    text = re.sub(r"(?i)^according to the provided context[:,]?\s*", "", text).strip()
+    return text or FALLBACK_ANSWER
 
 
 QA_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """You are DocMind, a grounded document assistant.
+            f"""You are DocMind, a professional assistant for answering questions from uploaded materials.
 
-Use the provided context as your primary source of truth.
-You may summarize, combine, or restate information when it is clearly supported by the context, but do not invent facts that are not there.
-If the answer is not supported by the context, say:
-"This information is not available in the uploaded documents or video transcript."
-
-You are a knowledgeable and helpful AI assistant. You are given a specific set of retrieved context documents and a user's question.
-
-Your task is to answer the user's question based strictly and solely on the provided context.
-
-Guidelines:
-1. **Rely ONLY on the context**: Do not use any outside knowledge or speculate. If the answer cannot be found in the context, say exactly: "I cannot find the answer to that in the provided documents."
-2. **Be direct and factual**: Keep your answers concise, accurate, and easy to understand and informative with retrived chunks or given informations of context.
-3. **Cite sources**: Where possible, reference the specific document, section, or source name provided in the context.
-4. **Tone**: Maintain a professional, conversational, and helpful tone. Do not mention the word "context" in your response.
-5. **Structure gently**: First mentally organize the retrieved information into the most relevant facts, sections, or steps before answering.
-
-
-How to answer:
-- Match the user's language and be natural.
-- For factual questions, answer directly first.
-- Use a short paragraph, then bullet points, short sections, or numbered steps when that makes the answer clearer.
-- Do not say phrases like "the transcript says", "the context says", or "based on the provided context" unless the user asks about the source wording.
-- For YouTube transcript questions such as "what is this about", "summarize this video", or "main topic", give a short grounded summary if the transcript supports it.
-- For resume or profile questions such as "what projects were done", prioritize project sections over certificates, skills, or unrelated metadata when the retrieved context includes a project list.
-- When the retrieved details are scattered, combine them into a refined structured answer instead of copying one chunk at a time.
-- If the user asks for details, extract the relevant details completely and organize them cleanly.
-- Add a brief citation line at the end using filename or "YouTube transcript", plus page, row, or timestamp when available.
-- If multiple sources support the answer, cite each one briefly.
+Rules:
+1. Use only the supplied source notes.
+2. Do not add facts that are not supported by those notes.
+3. Never mention internal implementation details such as chunks, embeddings, vector search, retrieval, source passages, or context windows.
+4. If the answer is not clearly supported, reply with exactly {NOT_FOUND_TOKEN}
+5. Write naturally, clearly, and professionally.
+6. Structure the answer when helpful, but keep it concise and readable.
+7. Do not add a citation section yourself and add only one citation not two times okay.
 """,
         ),
         MessagesPlaceholder(variable_name="chat_history"),
         (
             "human",
-            """Context:
-{context}
+            """Uploaded material:
+{sources}
 
 Question: {question}
 
@@ -123,8 +159,8 @@ Answer naturally and structure the response in the clearest useful way for the q
 )
 
 
-def build_qa_chain(collection_names: List[str] | None = None):
-    """Build the LCEL RAG chain for one or more collections."""
+def build_qa_chain():
+    """Build the generation chain for grounded QA."""
     try:
         logging.info("Building QA chain")
 
@@ -134,21 +170,16 @@ def build_qa_chain(collection_names: List[str] | None = None):
         )
         parser = StrOutputParser()
 
-        retriever_obj = Retriever(collection_names=collection_names)
-
-        parallel_step = RunnableParallel(
+        chain = (
             {
-                "context": (
-                    RunnableLambda(lambda x: x["question"])
-                    | RunnableLambda(retriever_obj.retrieve)
-                    | RunnableLambda(format_docs)
-                ),
+                "sources": RunnableLambda(lambda x: format_docs(x["docs"])),
                 "question": RunnableLambda(lambda x: x["question"]),
                 "chat_history": RunnableLambda(lambda x: x["chat_history"]),
             }
+            | QA_PROMPT
+            | llm
+            | parser
         )
-
-        chain = parallel_step | QA_PROMPT | llm | parser
 
         logging.info("QA chain built successfully")
         return chain
@@ -162,6 +193,7 @@ def get_answer(
     question: str,
     collection_names: List[str] | None = None,
     session_id: str = "default",
+    message_attachments: List[dict] | None = None,
 ) -> str:
     """Run retrieval, generate an answer, and persist the chat history."""
     try:
@@ -169,16 +201,27 @@ def get_answer(
 
         memory = MemoryManager(session_id=session_id)
         chat_history = memory.get_history()
+        retriever = Retriever(collection_names=collection_names)
+        ranked_docs = retriever.retrieve_ranked(question)
 
-        chain = build_qa_chain(collection_names)
-        answer = chain.invoke(
-            {
-                "question": question,
-                "chat_history": chat_history,
-            }
-        )
+        memory.save_message("human", question, attachments=message_attachments)
+        if not ranked_docs:
+            answer = FALLBACK_ANSWER
+        else:
+            docs = [doc for doc, _, _ in ranked_docs]
+            chain = build_qa_chain()
+            answer = chain.invoke(
+                {
+                    "question": question,
+                    "chat_history": chat_history,
+                    "docs": docs,
+                }
+            )
+            answer = sanitize_answer(answer)
+            citations = build_citations(docs)
+            if answer != FALLBACK_ANSWER and citations:
+                answer = f"{answer}\n\n{citations}"
 
-        memory.save_message("human", question)
         memory.save_message("ai", answer)
 
         logging.info("Answer generated and saved")

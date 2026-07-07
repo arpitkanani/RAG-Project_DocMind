@@ -16,6 +16,8 @@ from src.exception import CollectionNotFoundError, CustomException, KnowledgeBas
 from src.logger import logging
 from src.pipelines.ingestion_pipeline import IngestionPipeline
 from src.pipelines.qa_pipeline import QAPipeline
+from src.utils.file_helper import clean_uploads
+from src.utils.youtube_helper import extract_video_id
 
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
@@ -44,6 +46,7 @@ class QueryRequest(BaseModel):
     query: str
     collection_name: Optional[str] = None
     collection_names: Optional[List[str]] = None
+    message_attachments: Optional[List[dict]] = None
     session_id: Optional[str] = "default"
 
 
@@ -96,12 +99,15 @@ def resolve_session_scope(session_id: str, requested_scope: Optional[List[str]])
     if requested_scope:
         return requested_scope
 
-    attachments = MemoryManager(session_id=session_id).get_attachment_collections()
+    available_collections = VectorStore().list_collections()
+    memory = MemoryManager(session_id=session_id)
+    memory.cleanup_attachments(available_collections)
+    attachments = memory.get_attachment_collections()
     if attachments:
         return attachments
 
     raise KnowledgeBaseEmptyError(
-        "You do not have an uploaded document in this chat. Please upload a document to continue."
+        "Please upload a document or add a YouTube video first."
     )
 
 
@@ -123,14 +129,39 @@ def delete_collections(collection_names: List[str]) -> List[str]:
     return deleted
 
 
+def get_available_collections() -> List[str]:
+    try:
+        return VectorStore().list_collections()
+    except Exception:
+        logging.exception("Failed to list available collections for synchronization")
+        return []
+
+
 def create_session_id() -> str:
     session_id = str(uuid.uuid4())[:8]
     logging.info("New session: %s", session_id)
     return session_id
 
 
+def render_chat_template() -> str:
+    try:
+        return read_template("home.html")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Frontend template not found")
+    except Exception as exc:
+        logging.exception("Failed to render app template")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/", response_class=HTMLResponse)
-async def root():
+@app.get("/app", response_class=HTMLResponse)
+@app.get("/home", response_class=HTMLResponse)
+async def chat_app():
+    return render_chat_template()
+
+
+@app.get("/landing", response_class=HTMLResponse)
+async def landing_page():
     try:
         return read_template("index.html")
     except FileNotFoundError:
@@ -142,18 +173,6 @@ async def root():
         """
     except Exception as exc:
         logging.exception("Failed to render landing page")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.get("/app", response_class=HTMLResponse)
-@app.get("/home", response_class=HTMLResponse)
-async def chat_app():
-    try:
-        return read_template("home_new.html")
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Frontend template not found")
-    except Exception as exc:
-        logging.exception("Failed to render app template")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -205,21 +224,44 @@ async def process_youtube(request: YouTubeRequest):
         logging.info("YouTube URL received: %s | session: %s", request.url, request.session_id)
 
         pipeline = IngestionPipeline()
+        video_id = extract_video_id(request.url)
+        memory = MemoryManager(session_id=request.session_id or "default")
+        existing_video_sources = [
+            attachment
+            for attachment in memory.get_attachments()
+            if attachment.get("type") == "yt" and attachment.get("video_id") == video_id
+        ]
+        deleted_duplicates = delete_collections(
+            [item.get("collection", "") for item in existing_video_sources]
+        )
+        for attachment in existing_video_sources:
+            collection = attachment.get("collection")
+            if collection:
+                memory.remove_attachment(collection)
+
         collection_name = request.collection_name or build_collection_name(
-            request.url,
+            video_id,
             prefix="yt",
         )
         result = pipeline.run(request.url, collection_name=collection_name)
 
         if result.get("success") and result.get("collection_name"):
-            MemoryManager(session_id=request.session_id or "default").add_attachment(
-                name=result["collection_name"],
+            memory.add_attachment(
+                name=f"YouTube {video_id}",
                 collection=result["collection_name"],
                 source_type="yt",
+                extra={"video_id": video_id, "url": request.url},
             )
 
         logging.info("YouTube transcript indexed: %s", result.get("collection_name"))
-        return result
+        return {**result, "replaced_collections": deleted_duplicates, "video_id": video_id}
+    except CustomException as exc:
+        logging.exception("YouTube processing failed with application error")
+        return build_error_response(
+            status_code=400,
+            error_code="youtube_failed",
+            message="Could not process this YouTube transcript. Please try again.",
+        )
     except Exception as exc:
         logging.exception("YouTube processing failed")
         return build_error_response(
@@ -242,7 +284,10 @@ async def query(request: QueryRequest):
             collection_names=collection_scope,
             session_id=request.session_id or "default",
         )
-        result = pipeline.run(request.query)
+        result = pipeline.run(
+            request.query,
+            message_attachments=request.message_attachments,
+        )
 
         logging.info(
             "Query succeeded | session: %s | scope: %s",
@@ -264,7 +309,14 @@ async def query(request: QueryRequest):
         return build_error_response(
             status_code=404,
             error_code="knowledge_base_empty",
-            message="Upload a document first to continue this chat.",
+            message="Please upload a document or add a YouTube video first.",
+        )
+    except CustomException as exc:
+        logging.exception("Query failed with application error")
+        return build_error_response(
+            status_code=400,
+            error_code="query_failed",
+            message="I couldn't complete that request right now. Please try again.",
         )
     except Exception as exc:
         logging.exception("Query failed")
@@ -345,7 +397,9 @@ async def new_session():
 @app.get("/sessions")
 async def list_sessions():
     try:
-        sessions = MemoryManager.list_sessions()
+        sessions = MemoryManager.list_sessions(
+            valid_collections=get_available_collections()
+        )
         return {"sessions": sessions}
     except Exception as exc:
         logging.exception("Failed to list sessions")
@@ -358,6 +412,7 @@ async def delete_all_sessions():
         logging.info("Clearing all sessions")
         MemoryManager.clear_all()
         deleted_collections = VectorStore().delete_all_collections()
+        clean_uploads()
         return {
             "success": True,
             "message": "All sessions cleared",
@@ -372,20 +427,23 @@ async def delete_all_sessions():
 async def get_session(session_id: str):
     try:
         memory = MemoryManager(session_id=session_id)
+        memory.cleanup_attachments(get_available_collections())
         messages = memory.get_messages_payload()
+        attachments = memory.get_attachments()
+        state = memory._load_state()
         title = next(
             (
                 message["content"].strip()[:60]
                 for message in messages
                 if message.get("role") == "human" and message.get("content", "").strip()
             ),
-            "New Chat",
+            state.get("title") or "New Chat",
         )
         return {
             "session_id": session_id,
             "title": title,
             "messages": messages,
-            "attachments": memory.get_attachments(),
+            "attachments": attachments,
         }
     except Exception as exc:
         logging.exception("Failed to fetch session %s", session_id)
@@ -397,6 +455,14 @@ async def delete_session(session_id: str):
     try:
         logging.info("Deleting session: %s", session_id)
         memory = MemoryManager(session_id=session_id)
+        existing_messages = memory.get_messages_payload()
+        existing_attachments = memory.get_attachments()
+        if not existing_messages and not existing_attachments:
+            return build_error_response(
+                status_code=404,
+                error_code="session_not_found",
+                message="This chat no longer exists.",
+            )
         deleted_collections = delete_collections(memory.get_attachment_collections())
         memory.clear()
         return {"success": True, "deleted_collections": deleted_collections}
@@ -411,6 +477,7 @@ async def clear_memory():
         logging.info("Clearing all memory")
         MemoryManager.clear_all()
         deleted_collections = VectorStore().delete_all_collections()
+        clean_uploads()
         return {
             "success": True,
             "message": "All memory cleared",

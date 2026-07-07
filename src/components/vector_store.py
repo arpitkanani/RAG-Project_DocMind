@@ -43,9 +43,7 @@ class VectorStore:
                     "No collections found. Upload a document first."
                 )
 
-            if self.collection_name == self.default_collection:
-                collection_name = all_collections[0]
-            elif self.collection_name in all_collections:
+            if self.collection_name in all_collections:
                 collection_name = self.collection_name
             else:
                 raise CollectionNotFoundError([self.collection_name])

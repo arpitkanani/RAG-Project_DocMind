@@ -66,7 +66,7 @@ def get_transcript_segments(url: str) -> list[dict[str, str | float]]:
         segments: list[dict[str, str | float]] = []
         total_chars = 0
         for item in transcript_items:
-            text = (item.text or "").strip()
+            text = (item.get("text", "")).strip()
             if not text:
                 continue
 
@@ -80,9 +80,9 @@ def get_transcript_segments(url: str) -> list[dict[str, str | float]]:
             segments.append(
                 {
                     "text": allowed_text,
-                    "start": float(item.start),
-                    "duration": float(item.duration),
-                    "timestamp": format_timestamp(float(item.start)),
+                    "start": float(item.get("start", 0)),
+                    "duration": float(item.get("duration", 0)),
+                    "timestamp": format_timestamp(float(item.get("start", 0))),
                 }
             )
             total_chars += len(allowed_text) + 1

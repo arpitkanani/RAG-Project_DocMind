@@ -10,7 +10,7 @@
     href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/style.css?v=2" />
 </head>
 <body>
 
@@ -49,6 +49,18 @@
 
   <!-- ══════════════════════ MAIN ══════════════════════ -->
   <main class="main" id="main">
+
+    <div class="mobile-header">
+      <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+      <div class="mobile-brand">DocMind</div>
+      <div style="width:22px"></div>
+    </div>
 
     <!-- Message thread -->
     <div class="messages" id="messages">
@@ -141,6 +153,6 @@
   <!-- Toast notifications -->
   <div class="toast-stack" id="toastStack"></div>
 
-  <script src="/static/js/app_new.js"></script>
+  <script src="/static/js/app_new.js?v=2"></script>
 </body>
 </html>

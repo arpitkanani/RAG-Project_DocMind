@@ -42,20 +42,49 @@ class Retriever:
     def retrieve(self, query: str) -> List[Document]:
         """Retrieve the best chunks across one or more collections."""
         try:
+            ranked_docs = self.retrieve_ranked(query)
+            return [doc for doc, _, _ in ranked_docs]
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
+            raise
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def retrieve_ranked(self, query: str) -> List[Tuple[Document, float, float]]:
+        """Retrieve the best chunks with final rank and semantic confidence."""
+        try:
             logging.info("Retrieving for: %s...", query[:50])
             target_collections = self._resolve_target_collections()
             query_variants = self._build_query_variants(query)
 
-            collected_docs: List[Document] = []
+            collected_docs: List[Tuple[Document, float]] = []
             for collection_name in target_collections:
                 collected_docs.extend(
                     self._search_collection(collection_name, query, query_variants)
                 )
 
-            docs = self._rerank_documents(query, collected_docs)[: self.k]
+            ranked_docs = self._rerank_documents(query, collected_docs)
+            docs = [
+                item for item in ranked_docs if item[2] >= self.score_threshold
+            ][: self.k]
+
+            if not docs and ranked_docs:
+                best_doc, best_final_score, best_semantic_score = ranked_docs[0]
+                logging.info(
+                    "No chunks met threshold %.2f. Best semantic score: %.4f | final score: %.4f",
+                    self.score_threshold,
+                    best_semantic_score,
+                    best_final_score,
+                )
+
+                if best_semantic_score >= max(self.score_threshold - 0.15, 0.2):
+                    docs = ranked_docs[: min(self.k, 3)]
+                    logging.info(
+                        "Using top %d chunks through adaptive fallback",
+                        len(docs),
+                    )
 
             logging.info(
-                "Retrieved %d chunks across %d collections",
+                "Retrieved %d grounded chunks across %d collections",
                 len(docs),
                 len(target_collections),
             )
@@ -100,38 +129,41 @@ class Retriever:
         collection_name: str,
         query: str,
         query_variants: List[str],
-    ) -> List[Document]:
+    ) -> List[Tuple[Document, float]]:
         db = Chroma(
             persist_directory=self.vs.persist_dir,
             embedding_function=self.vs.embedding_model,
             collection_name=collection_name,
         )
 
-        docs: List[Document] = []
+        docs: List[Tuple[Document, float]] = []
         for variant in query_variants:
             if self.search_type == "mmr":
-                docs.extend(
-                    db.max_marginal_relevance_search(
+                mmr_docs = db.max_marginal_relevance_search(
                         variant,
                         k=self.k,
                         fetch_k=self.fetch_k,
                         lambda_mult=self.lambda_mult,
                     )
-                )
+                docs.extend((doc, 0.0) for doc in mmr_docs)
             else:
-                docs.extend(db.similarity_search(variant, k=self.fetch_k))
+                docs.extend(self._similarity_search_with_scores(db, variant))
 
-        for doc in docs:
+        for doc, _ in docs:
             doc.metadata.setdefault("collection_name", collection_name)
 
-        return self._rerank_documents(query, docs)
+        return docs
 
-    def _rerank_documents(self, query: str, docs: List[Document]) -> List[Document]:
+    def _rerank_documents(
+        self,
+        query: str,
+        docs: List[Tuple[Document, float]],
+    ) -> List[Tuple[Document, float, float]]:
         query_terms = self._tokenize(query)
         query_phrases = self._extract_phrases(query)
         deduped = {}
 
-        for doc in docs:
+        for doc, semantic_score in docs:
             key = (
                 doc.page_content,
                 str(doc.metadata.get("source", "")),
@@ -164,18 +196,64 @@ class Retriever:
             locator_bonus = 1 if doc.metadata.get("page") is not None else 0
             heading_bonus = 2 if self._has_heading_signal(text_lower) else 0
             density_bonus = min(int(overlap_ratio * 10), 6)
-            score = term_overlap * 5 + bonus + locator_bonus + heading_bonus + density_bonus
+            lexical_score = (
+                term_overlap * 5 + bonus + locator_bonus + heading_bonus + density_bonus
+            )
+            final_score = lexical_score + (semantic_score * 12)
 
             stored = deduped.get(key)
-            if stored is None or score > stored[0]:
-                deduped[key] = (score, doc)
+            if stored is None or final_score > stored[0]:
+                deduped[key] = (final_score, doc, semantic_score)
 
         ranked = sorted(
             deduped.values(),
             key=lambda item: item[0],
             reverse=True,
         )
-        return [item[1] for item in ranked]
+        return [(item[1], item[0], item[2]) for item in ranked]
+
+    def _similarity_search_with_scores(
+        self,
+        db: Chroma,
+        query: str,
+    ) -> List[Tuple[Document, float]]:
+        try:
+            if hasattr(db, "similarity_search_with_relevance_scores"):
+                results = db.similarity_search_with_relevance_scores(
+                    query,
+                    k=self.fetch_k,
+                )
+                return [
+                    (doc, self._normalize_similarity_score(score))
+                    for doc, score in results
+                ]
+
+            results = db.similarity_search_with_score(query, k=self.fetch_k)
+            return [
+                (doc, self._distance_to_similarity(score))
+                for doc, score in results
+            ]
+        except Exception:
+            logging.exception("Similarity search with scores failed")
+            raise
+
+    @staticmethod
+    def _normalize_similarity_score(score: float | None) -> float:
+        if score is None:
+            return 0.0
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return 0.0
+        if value < 0:
+            return 0.0
+        if value <= 1:
+            return value
+        return max(0.0, min(1.0, 1 / (1 + value)))
+
+    @classmethod
+    def _distance_to_similarity(cls, score: float | None) -> float:
+        return cls._normalize_similarity_score(score)
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
