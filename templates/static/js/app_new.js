@@ -476,6 +476,12 @@ async function removeSource(collection) {
       (s) => s.collection !== collection
     );
     renderComposerChips();
+
+    // Also strip the chip out of any message bubble it appears in
+    document
+      .querySelectorAll(`.message-attachments .chip-remove[data-collection="${CSS.escape(collection)}"]`)
+      .forEach((btn) => btn.closest(".chip")?.remove());
+
     await loadSessions();
     showToast("Source removed from this workspace.", "success");
   } catch {
@@ -610,15 +616,16 @@ async function sendMessage() {
 
 function renderComposerChips() {
   const row = el("chipsRow");
+  const pending = workspaceState.sources.filter((s) => s.isNew);
 
-  if (!workspaceState.sources.length) {
+  if (!pending.length) {
     row.hidden = true;
     row.innerHTML = "";
     return;
   }
 
   row.hidden = false;
-  row.innerHTML = workspaceState.sources
+  row.innerHTML = pending
     .map((src) => {
       const processing = src.status === "processing";
       const typeLabel = src.type === "yt" ? "YT" : "DOC";
@@ -674,7 +681,14 @@ function appendMessage(content, role, attachments = []) {
     </div>`;
 
   container.appendChild(row);
+
+  // Wire up remove buttons on message-level chips (if any)
+  row.querySelectorAll(".message-attachments .chip-remove").forEach((btn) => {
+    btn.addEventListener("click", () => removeSource(btn.dataset.collection));
+  });
+
   container.scrollTop = container.scrollHeight;
+
 }
 
 function buildReadOnlyChips(chips) {
@@ -684,6 +698,12 @@ function buildReadOnlyChips(chips) {
       <div class="chip message-chip">
         <span class="chip-type">${c.type === "yt" ? "YT" : "DOC"}</span>
         <span class="chip-name" title="${escHtml(c.name)}">${escHtml(c.name)}</span>
+        <span class="chip-indicator ready" aria-label="Ready"></span>
+        <button class="chip-remove" data-collection="${escHtml(c.collection)}" title="Remove source">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
       </div>`
     )
     .join("");

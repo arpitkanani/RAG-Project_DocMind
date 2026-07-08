@@ -66,7 +66,7 @@ def get_transcript_segments(url: str) -> list[dict[str, str | float]]:
         segments: list[dict[str, str | float]] = []
         total_chars = 0
         for item in transcript_items:
-            text = (item.get("text", "")).strip()
+            text = (item.text or "").strip()
             if not text:
                 continue
 
@@ -77,12 +77,15 @@ def get_transcript_segments(url: str) -> list[dict[str, str | float]]:
             if not allowed_text:
                 break
 
+            start = float(item.start or 0)
+            duration = float(item.duration or 0)
+
             segments.append(
                 {
                     "text": allowed_text,
-                    "start": float(item.get("start", 0)),
-                    "duration": float(item.get("duration", 0)),
-                    "timestamp": format_timestamp(float(item.get("start", 0))),
+                    "start": start,
+                    "duration": duration,
+                    "timestamp": format_timestamp(start),
                 }
             )
             total_chars += len(allowed_text) + 1
@@ -95,7 +98,6 @@ def get_transcript_segments(url: str) -> list[dict[str, str | float]]:
         return segments
     except Exception as e:
         raise CustomException(e, sys)
-
 
 def get_transcript(url: str) -> str:
     """Fetch transcript as plain text for backward compatibility."""
