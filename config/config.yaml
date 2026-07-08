@@ -9,7 +9,7 @@ llm:
 splitter:
   strategy: "recursive"
   chunk_size: 700
-  chunk_overlap: 120
+  chunk_overlap: 200
   separators:
     - "\n\n"
     - "\n"
@@ -21,10 +21,11 @@ splitter:
 # retriver use MMR for divers answer
 retriever:
   search_type: "similarity"
-  k: 5
+  k: 7
   fetch_k: 14
   lambda_mult: 0.7
-  score_threshold: 0.35
+  score_threshold: 0.45
+  summary_max_chars: 6000 
 
 #vectore database used chroma
 vectorstore:
@@ -49,5 +50,5 @@ upload:
 
 youtube:
   language: ["en","hi","gu"]   # language for YouTube video transcription
-  max_chars: 70000
+  max_chars: 150000
 

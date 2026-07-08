@@ -21,8 +21,18 @@ from src.logger import logging
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
-NOT_FOUND_TOKEN = "DOCMIND_NOT_FOUND"
+NOT_FOUND_TOKEN = "DATA_NOT_FOUND"
 FALLBACK_ANSWER = "I couldn't find relevant information about that in the uploaded document."
+
+
+SUMMARY_PATTERNS = re.compile(
+    r"\b(summar(y|ize|ise)|overview|tl;?dr|gist|main points|key points|recap)\b",
+    re.IGNORECASE,
+)
+
+
+def is_summary_request(question: str) -> bool:
+    return bool(SUMMARY_PATTERNS.search(question))
 
 
 def _format_source_label(metadata: dict) -> str:
@@ -105,7 +115,6 @@ def build_citations(docs: list) -> str:
 
     return "Source:\n" + "\n".join(citations)
 
-
 def sanitize_answer(answer: str) -> str:
     text = (answer or "").strip()
     if not text:
@@ -122,6 +131,30 @@ def sanitize_answer(answer: str) -> str:
         "retrieved context",
     ]
     if text == NOT_FOUND_TOKEN or any(fragment in lowered for fragment in banned_fragments):
+        return FALLBACK_ANSWER
+
+    hedge_fragments = [
+        "it appears that",
+        "it appears",
+        "seems to",
+        "seems like",
+        "suggests that",
+        "suggesting that",
+        "implying that",
+        "could be interpreted",
+        "may be related",
+        "possibly related",
+        "without further context",
+        "without more context",
+        "it's difficult to",
+        "it is difficult to",
+        "unfortunately, i couldn't",
+        "unfortunately, without",
+        "if you have any additional details",
+        "i'll do my best to assist",
+    ]
+    hedge_count = sum(1 for fragment in hedge_fragments if fragment in lowered)
+    if hedge_count >= 2:
         return FALLBACK_ANSWER
 
     text = re.sub(r"(?i)^based on the provided context[:,]?\s*", "", text).strip()
@@ -142,7 +175,10 @@ Rules:
 4. If the answer is not clearly supported, reply with exactly {NOT_FOUND_TOKEN}
 5. Write naturally, clearly, and professionally.
 6. Structure the answer when helpful, but keep it concise and readable.
-7. Do not add a citation section yourself and add only one citation not two times okay.
+7. Do not add a citation section yourself.
+8. Never hedge or speculate. Do not use phrases like "it appears," "seems to," "suggests," "implying," "may be," "possibly," "without further context," or "it's difficult to say." If you are not confident enough to state something directly, that specific point does not belong in the answer at all — omit it rather than softening it.
+9. State facts directly and plainly, as if you simply know them from the material. Do not narrate your own uncertainty at any point in the answer.
+10. If only partial information is available, answer confidently with the part that is clearly supported, and say nothing about the part that isn't — do not apologize for incompleteness or ask the user for clarification.
 """,
         ),
         MessagesPlaceholder(variable_name="chat_history"),
@@ -153,7 +189,7 @@ Rules:
 
 Question: {question}
 
-Answer naturally and structure the response in the clearest useful way for the question.""",
+Answer directly and confidently, using only what's clearly supported above.""",
         ),
     ]
 )
@@ -195,20 +231,25 @@ def get_answer(
     session_id: str = "default",
     message_attachments: List[dict] | None = None,
 ) -> str:
-    """Run retrieval, generate an answer, and persist the chat history."""
     try:
         logging.info("Processing question: %s...", question[:50])
 
         memory = MemoryManager(session_id=session_id)
         chat_history = memory.get_history()
         retriever = Retriever(collection_names=collection_names)
-        ranked_docs = retriever.retrieve_ranked(question)
+
+        if is_summary_request(question):
+            # Full-document context, in original order — not similarity search
+            docs = retriever.get_full_context(max_chars=config["youtube"]["max_chars"])
+        else:
+            ranked_docs = retriever.retrieve_ranked(question)
+            docs = [doc for doc, _, _ in ranked_docs]
 
         memory.save_message("human", question, attachments=message_attachments)
-        if not ranked_docs:
+
+        if not docs:
             answer = FALLBACK_ANSWER
         else:
-            docs = [doc for doc, _, _ in ranked_docs]
             chain = build_qa_chain()
             answer = chain.invoke(
                 {
@@ -218,15 +259,32 @@ def get_answer(
                 }
             )
             answer = sanitize_answer(answer)
-            citations = build_citations(docs)
+
+            if is_summary_request(question):
+                # One clean citation per source document, not per chunk/timestamp
+                citations = build_source_only_citations(docs)
+            else:
+                citations = build_citations(docs)
+
             if answer != FALLBACK_ANSWER and citations:
                 answer = f"{answer}\n\n{citations}"
 
         memory.save_message("ai", answer)
-
         logging.info("Answer generated and saved")
         return answer
     except (CollectionNotFoundError, KnowledgeBaseEmptyError):
         raise
     except Exception as e:
         raise CustomException(e, sys)
+
+def build_source_only_citations(docs: list) -> str:
+    seen = set()
+    labels = []
+    for doc in docs:
+        label = _format_source_label(doc.metadata)
+        if label not in seen:
+            seen.add(label)
+            labels.append(label)
+    if not labels:
+        return ""
+    return "Source:\n" + "\n".join(labels)

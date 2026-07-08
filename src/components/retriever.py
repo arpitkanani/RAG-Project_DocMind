@@ -77,10 +77,18 @@ class Retriever:
                 )
 
                 if best_semantic_score >= max(self.score_threshold - 0.15, 0.2):
-                    docs = ranked_docs[: min(self.k, 3)]
+                    # Restrict fallback to the SAME collection as the best match only —
+                    # never mix weak matches from unrelated attached documents together.
+                    best_collection = best_doc.metadata.get("collection_name")
+                    same_collection_docs = [
+                        item for item in ranked_docs
+                        if item[0].metadata.get("collection_name") == best_collection
+                    ]
+                    docs = same_collection_docs[: min(self.k, 3)]
                     logging.info(
-                        "Using top %d chunks through adaptive fallback",
+                        "Using top %d chunks from collection '%s' through adaptive fallback",
                         len(docs),
+                        best_collection,
                     )
 
             logging.info(
@@ -315,3 +323,40 @@ class Retriever:
             return False
         first_line = lines[0]
         return len(first_line) < 80 and any(char.isalpha() for char in first_line)
+
+    def get_full_context(self, max_chars: int = 6000) -> List[Document]:
+        """
+        Return chunks in original document order, not similarity-ranked —
+        used for summary-style questions where there's no meaningful query
+        to match against ("summarize this", "give me an overview", etc).
+        """
+        try:
+            target_collections = self._resolve_target_collections()
+
+            all_docs: List[Document] = []
+            for collection_name in target_collections:
+                vs = VectorStore(collection_name=collection_name)
+                docs = vs.get_all_documents()
+                docs.sort(key=lambda d: d.metadata.get("doc_index", 0))
+                all_docs.extend(docs)
+
+            total_chars = 0
+            selected: List[Document] = []
+            for doc in all_docs:
+                doc_len = len(doc.page_content)
+                if total_chars + doc_len > max_chars and selected:
+                    break
+                selected.append(doc)
+                total_chars += doc_len
+
+            logging.info(
+                "Full-context retrieval: %d chunks (%d chars) across %d collections",
+                len(selected),
+                total_chars,
+                len(target_collections),
+            )
+            return selected
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
+            raise
+        except Exception as e:
+            raise CustomException(e, sys)

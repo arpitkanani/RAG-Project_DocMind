@@ -99,6 +99,7 @@ def get_transcript_segments(url: str) -> list[dict[str, str | float]]:
     except Exception as e:
         raise CustomException(e, sys)
 
+
 def get_transcript(url: str) -> str:
     """Fetch transcript as plain text for backward compatibility."""
     try:
