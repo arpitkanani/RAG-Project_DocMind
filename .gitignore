@@ -2,7 +2,27 @@
 __pycache__/
 *.py[codz]
 *$py.class
+# Data & runtime artifacts
+data/
+logs/
+*.log
 
+# Vector DB / local persistence
+qdrant_storage/
+*.sqlite3
+
+# Jupyter
+.ipynb_checkpoints/
+test.ipynb
+
+# Editor/OS
+.vscode/
+.DS_Store
+
+# Test/debug scratch files
+test.csv
+endpoint_regression_check.py
+UPDATE_REPORT.txt
 # C extensions
 *.so
 
@@ -154,11 +174,15 @@ venv.bak/
 # mkdocs documentation
 /site
 
+logs
+logs/
 # mypy
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
+.env
+endpoint_regression_check.py
+D:\Computer Vision\blurring\Langchain_Project1\Langchain Project\endpoint_regression_check.py
 # Pyre type checker
 .pyre/
 

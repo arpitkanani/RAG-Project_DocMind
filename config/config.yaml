@@ -2,8 +2,10 @@ embedding:
   model: "nomic-embed-text"
 
 llm:
-  model: "llama3.2:3b"
+  provider: "groq"
+  model: "llama-3.3-70b-versatile"
   temperature: 0.5
+
 
 # splitting chunks of text for embedding and retrieval
 splitter:
@@ -21,15 +23,15 @@ splitter:
 # retriver use MMR for divers answer
 retriever:
   search_type: "similarity"
-  k: 7
-  fetch_k: 14
+  k: 4
+  fetch_k: 10
   lambda_mult: 0.7
   score_threshold: 0.45
   summary_max_chars: 6000 
 
 #vectore database used chroma
 vectorstore:
-  persist_directory: "data/vectorstore"   # saved here on disk
+  url: "http://localhost:6333"
   collection_name: "docmind"              # name of collection
 
 memory:
