@@ -2,12 +2,14 @@ import os
 import re
 import sys
 from typing import List
-
+from dotenv import load_dotenv
+from langchain_core.documents import Document
 import yaml
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
+from langchain_groq import ChatGroq
 
 from src.components.memory_manager import MemoryManager
 from src.components.retriever import Retriever
@@ -18,6 +20,7 @@ from src.exception import (
 )
 from src.logger import logging
 
+load_dotenv()
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
@@ -174,11 +177,12 @@ Rules:
 3. Never mention internal implementation details such as chunks, embeddings, vector search, retrieval, source passages, or context windows.
 4. If the answer is not clearly supported, reply with exactly {NOT_FOUND_TOKEN}
 5. Write naturally, clearly, and professionally.
-6. Structure the answer when helpful, but keep it concise and readable.
+6. Structure the answer when helpful, and keep it readable — but do not shorten an answer just for brevity's sake.
 7. Do not add a citation section yourself.
 8. Never hedge or speculate. Do not use phrases like "it appears," "seems to," "suggests," "implying," "may be," "possibly," "without further context," or "it's difficult to say." If you are not confident enough to state something directly, that specific point does not belong in the answer at all — omit it rather than softening it.
 9. State facts directly and plainly, as if you simply know them from the material. Do not narrate your own uncertainty at any point in the answer.
 10. If only partial information is available, answer confidently with the part that is clearly supported, and say nothing about the part that isn't — do not apologize for incompleteness or ask the user for clarification.
+11. If the retrieved material fully and directly answers the question, give a thorough, complete explanation using all the relevant information available — do not compress a well-supported answer into a short summary. Only keep an answer brief when the source material itself is genuinely limited.
 """,
         ),
         MessagesPlaceholder(variable_name="chat_history"),
@@ -189,7 +193,7 @@ Rules:
 
 Question: {question}
 
-Answer directly and confidently, using only what's clearly supported above.""",
+Answer directly and confidently, using only what's clearly supported above. If the material fully covers the question, be thorough and complete.""",
         ),
     ]
 )
@@ -200,10 +204,12 @@ def build_qa_chain():
     try:
         logging.info("Building QA chain")
 
-        llm = ChatOllama(
-            model=config["llm"]["model"],
-            temperature=config["llm"]["temperature"],
-        )
+        llm = ChatGroq(
+        model=config["llm"]["model"],
+        temperature=config["llm"]["temperature"],
+        api_key=os.environ["GROQ_API_KEY"], # type: ignore
+        max_tokens=2048,
+    )
         parser = StrOutputParser()
 
         chain = (
@@ -244,6 +250,24 @@ def get_answer(
         else:
             ranked_docs = retriever.retrieve_ranked(question)
             docs = [doc for doc, _, _ in ranked_docs]
+            if not ranked_docs:
+                answer = FALLBACK_ANSWER
+            else:
+                docs = [doc for doc, _, _ in ranked_docs]
+                docs = merge_same_location_docs(docs)   # ← new line
+                chain = build_qa_chain()
+                answer = chain.invoke(
+                    {
+                        "question": question,
+                        "chat_history": chat_history,
+                        "docs": docs,
+                    }
+                )
+                answer = sanitize_answer(answer)
+                citations = build_citations(docs)
+                if answer != FALLBACK_ANSWER and citations:
+                    answer = f"{answer}\n\n{citations}"
+            
 
         memory.save_message("human", question, attachments=message_attachments)
 
@@ -288,3 +312,30 @@ def build_source_only_citations(docs: list) -> str:
     if not labels:
         return ""
     return "Source:\n" + "\n".join(labels)
+
+def merge_same_location_docs(docs: list) -> list:
+    """
+    Merge chunks that share the same source + locator (e.g. same PDF page)
+    into a single Document, so the LLM never sees the same page as two
+    separate 'locations' and doesn't narrate a false multi-location story.
+    """
+    merged: dict[tuple, Document] = {}
+    order: list[tuple] = []
+
+    for doc in docs:
+        source_label = _format_source_label(doc.metadata)
+        locator = _format_locator(doc.metadata)
+        key = (source_label, locator)
+
+        if key not in merged:
+            merged[key] = Document(
+                page_content=doc.page_content,
+                metadata=dict(doc.metadata),
+            )
+            order.append(key)
+        else:
+            existing = merged[key]
+            if doc.page_content not in existing.page_content:
+                existing.page_content = f"{existing.page_content}\n{doc.page_content}"
+
+    return [merged[key] for key in order]

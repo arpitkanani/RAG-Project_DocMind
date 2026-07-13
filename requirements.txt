@@ -159,3 +159,5 @@ zipp==3.23.0
 zstandard==0.25.0
 youtube-transcript-api
 tiktoken 
+qdrant-client
+langchain-qdrant

@@ -4,9 +4,9 @@ from collections import Counter
 from typing import List, Tuple
 
 import yaml
-from langchain_chroma import Chroma
+from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
-import chromadb as chroma_client
+from qdrant_client import QdrantClient
 
 from src.components.vector_store import VectorStore
 from src.exception import (
@@ -63,9 +63,48 @@ class Retriever:
                 )
 
             ranked_docs = self._rerank_documents(query, collected_docs)
-            docs = [
-                item for item in ranked_docs if item[2] >= self.score_threshold
-            ][: self.k]
+            filtered = [item for item in ranked_docs if item[2] >= self.score_threshold]
+
+            if filtered:
+                best_by_collection: dict[str, float] = {}
+                for doc, final_score, _ in filtered:
+                    coll = doc.metadata.get("collection_name")
+                    if coll not in best_by_collection or final_score > best_by_collection[coll]:
+                        best_by_collection[coll] = final_score
+
+                top_score = max(best_by_collection.values())
+                COLLECTION_MARGIN = 0.6
+                competitive_collections = {
+                    coll for coll, score in best_by_collection.items()
+                    if score >= top_score * COLLECTION_MARGIN
+                }
+
+                collection_filtered = [
+                    item for item in filtered
+                    if item[0].metadata.get("collection_name") in competitive_collections
+                ]
+
+                # Per-document margin — even within the same (competitive) collection,
+                # only keep chunks close to that collection's OWN best match. Stops
+                # weak neighboring pages from riding along with the one strong page.
+                DOC_MARGIN = 0.55
+                docs = []
+                for coll in competitive_collections:
+                    coll_docs = sorted(
+                        [item for item in collection_filtered if item[0].metadata.get("collection_name") == coll],
+                        key=lambda item: item[1],
+                        reverse=True,
+                    )
+                    if not coll_docs:
+                        continue
+                    coll_best = coll_docs[0][1]
+                    docs.extend(
+                        item for item in coll_docs if item[1] >= coll_best * DOC_MARGIN
+                    )
+
+                docs = sorted(docs, key=lambda item: item[1], reverse=True)[: self.k]
+            else:
+                docs = []
 
             if not docs and ranked_docs:
                 best_doc, best_final_score, best_semantic_score = ranked_docs[0]
@@ -77,8 +116,6 @@ class Retriever:
                 )
 
                 if best_semantic_score >= max(self.score_threshold - 0.15, 0.2):
-                    # Restrict fallback to the SAME collection as the best match only —
-                    # never mix weak matches from unrelated attached documents together.
                     best_collection = best_doc.metadata.get("collection_name")
                     same_collection_docs = [
                         item for item in ranked_docs
@@ -114,10 +151,11 @@ class Retriever:
             raise CustomException(e, sys)
 
     def _resolve_target_collections(self) -> List[str]:
-        
-
-        client = chroma_client.PersistentClient(path=self.vs.persist_dir)
-        available = [collection.name for collection in client.list_collections()]
+        client = QdrantClient(url=self.vs.qdrant_url)
+        try:
+            available = [c.name for c in client.get_collections().collections]
+        finally:
+            client.close()
 
         if not available:
             raise KnowledgeBaseEmptyError(
@@ -138,21 +176,21 @@ class Retriever:
         query: str,
         query_variants: List[str],
     ) -> List[Tuple[Document, float]]:
-        db = Chroma(
-            persist_directory=self.vs.persist_dir,
-            embedding_function=self.vs.embedding_model,
+        db = QdrantVectorStore.from_existing_collection(
+            embedding=self.vs.embedding_model,
             collection_name=collection_name,
+            url=self.vs.qdrant_url,
         )
 
         docs: List[Tuple[Document, float]] = []
         for variant in query_variants:
             if self.search_type == "mmr":
                 mmr_docs = db.max_marginal_relevance_search(
-                        variant,
-                        k=self.k,
-                        fetch_k=self.fetch_k,
-                        lambda_mult=self.lambda_mult,
-                    )
+                    variant,
+                    k=self.k,
+                    fetch_k=self.fetch_k,
+                    lambda_mult=self.lambda_mult,
+                )
                 docs.extend((doc, 0.0) for doc in mmr_docs)
             else:
                 docs.extend(self._similarity_search_with_scores(db, variant))
@@ -222,23 +260,13 @@ class Retriever:
 
     def _similarity_search_with_scores(
         self,
-        db: Chroma,
+        db: QdrantVectorStore,
         query: str,
     ) -> List[Tuple[Document, float]]:
         try:
-            if hasattr(db, "similarity_search_with_relevance_scores"):
-                results = db.similarity_search_with_relevance_scores(
-                    query,
-                    k=self.fetch_k,
-                )
-                return [
-                    (doc, self._normalize_similarity_score(score))
-                    for doc, score in results
-                ]
-
             results = db.similarity_search_with_score(query, k=self.fetch_k)
             return [
-                (doc, self._distance_to_similarity(score))
+                (doc, self._normalize_similarity_score(score))
                 for doc, score in results
             ]
         except Exception:
@@ -258,10 +286,6 @@ class Retriever:
         if value <= 1:
             return value
         return max(0.0, min(1.0, 1 / (1 + value)))
-
-    @classmethod
-    def _distance_to_similarity(cls, score: float | None) -> float:
-        return cls._normalize_similarity_score(score)
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
@@ -300,16 +324,8 @@ class Retriever:
     @staticmethod
     def _looks_like_structured_answer(query_terms: set[str], text_lower: str) -> bool:
         structured_terms = {
-            "list",
-            "steps",
-            "points",
-            "summary",
-            "table",
-            "responsibilities",
-            "skills",
-            "experience",
-            "projects",
-            "education",
+            "list", "steps", "points", "summary", "table",
+            "responsibilities", "skills", "experience", "projects", "education",
         }
         return bool(query_terms & structured_terms) and any(
             marker in text_lower
@@ -325,11 +341,7 @@ class Retriever:
         return len(first_line) < 80 and any(char.isalpha() for char in first_line)
 
     def get_full_context(self, max_chars: int = 6000) -> List[Document]:
-        """
-        Return chunks in original document order, not similarity-ranked —
-        used for summary-style questions where there's no meaningful query
-        to match against ("summarize this", "give me an overview", etc).
-        """
+        """Return chunks in original document order, not similarity-ranked."""
         try:
             target_collections = self._resolve_target_collections()
 

@@ -1,10 +1,10 @@
-import os
 import sys
 from typing import List
 
 import yaml
-from langchain_chroma import Chroma
+from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
+from qdrant_client import QdrantClient
 
 from src.components.embedder import Embedder
 from src.exception import (
@@ -19,23 +19,30 @@ with open("config/config.yaml") as f:
 
 
 class VectorStore:
-    """Manages ChromaDB vector storage for DocMind."""
+    """Manages Qdrant vector storage for DocMind."""
 
     def __init__(self, collection_name: str | None = None):
         try:
             logging.info("Initializing VectorStore")
-            self.persist_dir = config["vectorstore"]["persist_directory"]
+            self.qdrant_url = config["vectorstore"]["url"]
             self.default_collection = config["vectorstore"]["collection_name"]
             self.collection_name = collection_name or self.default_collection
             embedder = Embedder()
             self.embedding_model = embedder.get_embedding_model()
-            os.makedirs(self.persist_dir, exist_ok=True)
-            logging.info("VectorStore ready | collection: %s", self.collection_name)
+            logging.info(
+                "VectorStore ready | collection: %s | url: %s",
+                self.collection_name,
+                self.qdrant_url,
+            )
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _initialize_vectordb(self) -> Chroma:
-        """Load an existing Chroma collection from disk."""
+    def _client(self) -> QdrantClient:
+        """Short-lived client — always closed after use."""
+        return QdrantClient(url=self.qdrant_url)
+
+    def _initialize_vectordb(self) -> QdrantVectorStore:
+        """Load an existing Qdrant collection."""
         try:
             all_collections = self.list_collections()
             if not all_collections:
@@ -43,30 +50,23 @@ class VectorStore:
                     "No collections found. Upload a document first."
                 )
 
-            if self.collection_name in all_collections:
-                collection_name = self.collection_name
-            else:
+            if self.collection_name not in all_collections:
                 raise CollectionNotFoundError([self.collection_name])
 
-            db = Chroma(
-                persist_directory=self.persist_dir,
-                embedding_function=self.embedding_model,
-                collection_name=collection_name,
+            db = QdrantVectorStore.from_existing_collection(
+                embedding=self.embedding_model,
+                collection_name=self.collection_name,
+                url=self.qdrant_url,
             )
-
-            logging.info(
-                "ChromaDB loaded | collection: %s | vectors: %s",
-                collection_name,
-                db._collection.count(),
-            )
+            logging.info("Qdrant collection loaded | collection: %s", self.collection_name)
             return db
         except (CollectionNotFoundError, KnowledgeBaseEmptyError):
             raise
         except Exception as e:
             raise CustomException(e, sys)
 
-    def add_documents(self, chunks: List[Document]) -> Chroma:
-        """Embed and store document chunks in ChromaDB."""
+    def add_documents(self, chunks: List[Document]) -> QdrantVectorStore:
+        """Embed and store document chunks in Qdrant."""
         try:
             logging.info(
                 "Adding %d chunks | collection: %s",
@@ -79,10 +79,10 @@ class VectorStore:
                 chunk.metadata["content_length"] = len(chunk.page_content)
                 chunk.metadata["collection_name"] = self.collection_name
 
-            db = Chroma.from_documents(
+            db = QdrantVectorStore.from_documents(
                 documents=chunks,
                 embedding=self.embedding_model,
-                persist_directory=self.persist_dir,
+                url=self.qdrant_url,
                 collection_name=self.collection_name,
             )
             logging.info("Successfully added %d chunks", len(chunks))
@@ -91,43 +91,52 @@ class VectorStore:
             raise CustomException(e, sys)
 
     def get_all_documents(self) -> List[Document]:
-        """Fetch all stored documents for a collection or all collections."""
+        """Fetch all stored documents for this collection, or all collections."""
         try:
-            import chromadb
+            client = self._client()
+            try:
+                all_collections = self.list_collections()
+                if not all_collections:
+                    return []
 
-            client = chromadb.PersistentClient(path=self.persist_dir)
-            all_collections = client.list_collections()
-            if not all_collections:
-                return []
+                if self.collection_name != self.default_collection:
+                    collections_to_search = (
+                        [self.collection_name]
+                        if self.collection_name in all_collections
+                        else []
+                    )
+                else:
+                    collections_to_search = all_collections
 
-            if self.collection_name != self.default_collection:
-                collections_to_search = [self.collection_name]
-            else:
-                collections_to_search = [collection.name for collection in all_collections]
+                docs: List[Document] = []
+                for collection_name in collections_to_search:
+                    offset = None
+                    while True:
+                        points, offset = client.scroll(
+                            collection_name=collection_name,
+                            limit=256,
+                            offset=offset,
+                            with_payload=True,
+                            with_vectors=False,
+                        )
+                        for point in points:
+                            payload = point.payload or {}
+                            text = payload.get("page_content", "")
+                            metadata = payload.get("metadata", {}) or {}
+                            if text and text.strip():
+                                docs.append(Document(page_content=text, metadata=metadata))
+                        if offset is None:
+                            break
 
-            docs: List[Document] = []
-            for collection_name in collections_to_search:
-                if collection_name not in [c.name for c in all_collections]:
-                    continue
-
-                db = Chroma(
-                    persist_directory=self.persist_dir,
-                    embedding_function=self.embedding_model,
-                    collection_name=collection_name,
-                )
-                results = db.get()
-
-                for text, metadata in zip(results["documents"], results["metadatas"]):
-                    if text and text.strip():
-                        docs.append(Document(page_content=text, metadata=metadata))
-
-            logging.info("Retrieved %d documents from vector store", len(docs))
-            return docs
+                logging.info("Retrieved %d documents from vector store", len(docs))
+                return docs
+            finally:
+                client.close()
         except Exception as e:
             raise CustomException(e, sys)
 
-    def get_vectordb(self) -> Chroma:
-        """Return raw ChromaDB object for Retriever."""
+    def get_vectordb(self) -> QdrantVectorStore:
+        """Return raw Qdrant vector store object for Retriever."""
         try:
             return self._initialize_vectordb()
         except (CollectionNotFoundError, KnowledgeBaseEmptyError):
@@ -161,60 +170,46 @@ class VectorStore:
             raise CustomException(e, sys)
 
     def list_collections(self) -> List[str]:
-        """Return all collection names in vectorstore."""
+        """Return all collection names in the vector store."""
         try:
-            import chromadb
-
-            client = chromadb.PersistentClient(path=self.persist_dir)
-            names = [collection.name for collection in client.list_collections()]
-            logging.info("Collections found: %s", names)
-            return names
+            client = self._client()
+            try:
+                names = [c.name for c in client.get_collections().collections]
+                logging.info("Collections found: %s", names)
+                return names
+            finally:
+                client.close()
         except Exception as e:
             raise CustomException(e, sys)
 
     def delete_collection(self) -> bool:
         """Delete only the configured collection and return whether it existed."""
         try:
-            import chromadb
-            import gc
-            import time
-
-            gc.collect()
-            client = chromadb.PersistentClient(path=self.persist_dir)
-            collections = [collection.name for collection in client.list_collections()]
-
-            if self.collection_name not in collections:
-                logging.info("Collection not found: %s", self.collection_name)
-                return False
-
-            client.delete_collection(self.collection_name)
-            logging.info("Collection deleted: %s", self.collection_name)
-
-            del client
-            gc.collect()
-            time.sleep(0.3)
-            return True
+            client = self._client()
+            try:
+                collections = [c.name for c in client.get_collections().collections]
+                if self.collection_name not in collections:
+                    logging.info("Collection not found: %s", self.collection_name)
+                    return False
+                client.delete_collection(self.collection_name)
+                logging.info("Collection deleted: %s", self.collection_name)
+                return True
+            finally:
+                client.close()
         except Exception as e:
             raise CustomException(e, sys)
 
     def delete_all_collections(self) -> list[str]:
         """Delete every collection from the vector store."""
         try:
-            import chromadb
-            import gc
-            import time
-
-            gc.collect()
-            client = chromadb.PersistentClient(path=self.persist_dir)
-            names = [collection.name for collection in client.list_collections()]
-
-            for name in names:
-                client.delete_collection(name)
-                logging.info("Collection deleted during reset: %s", name)
-
-            del client
-            gc.collect()
-            time.sleep(0.3)
-            return names
+            client = self._client()
+            try:
+                names = [c.name for c in client.get_collections().collections]
+                for name in names:
+                    client.delete_collection(name)
+                    logging.info("Collection deleted during reset: %s", name)
+                return names
+            finally:
+                client.close()
         except Exception as e:
             raise CustomException(e, sys)

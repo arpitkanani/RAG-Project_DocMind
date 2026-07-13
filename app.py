@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 from src.components.memory_manager import MemoryManager
 from src.components.vector_store import VectorStore
@@ -18,6 +19,7 @@ from src.pipelines.ingestion_pipeline import IngestionPipeline
 from src.pipelines.qa_pipeline import QAPipeline
 from src.utils.file_helper import clean_uploads
 from src.utils.youtube_helper import extract_video_id
+load_dotenv()
 
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
