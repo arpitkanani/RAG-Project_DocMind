@@ -1,12 +1,12 @@
-import json
-import os
 import sys
 from datetime import datetime, timedelta
 from typing import Any, List, Optional
 
 import yaml
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from psycopg2.extras import Json
 
+from src.database.db import get_db_cursor
 from src.exception import CustomException
 from src.logger import logging
 
@@ -15,67 +15,88 @@ with open("config/config.yaml") as f:
 
 
 class MemoryManager:
-    """Manage persistent multi-session chat history and session attachments."""
+    """
+    Manage persistent multi-session chat history and session attachments,
+    backed by PostgreSQL. Every operation is scoped to (session_id, user_id)
+    so one user can never read, modify, or delete another user's data.
+    """
 
-    DEFAULT_STATE = {
-        "attachments": [],
-        "title": "New Chat",
-        "created_at": None,
-        "updated_at": None,
-    }
-
-    def __init__(self, session_id: str = "default"):
+    def __init__(self, session_id: str = "default", user_id: str = None):
+        if not user_id:
+            raise CustomException(
+                ValueError("MemoryManager requires a user_id"), sys
+            )
         try:
-            logging.info("Initializing MemoryManager | session: %s", session_id)
-            self.persist_dir = config["memory"]["persist_directory"]
-            self.window_days = config["memory"]["window_days"]
+            logging.info(
+                "Initializing MemoryManager | session: %s | user: %s",
+                session_id,
+                user_id,
+            )
             self.session_id = session_id
-            self.memory_file = os.path.join(
-                self.persist_dir,
-                f"chat_history_{session_id}.json",
-            )
-            self.state_file = os.path.join(
-                self.persist_dir,
-                f"session_state_{session_id}.json",
-            )
-            os.makedirs(self.persist_dir, exist_ok=True)
+            self.user_id = user_id
+            self.window_days = config["memory"]["window_days"]
         except Exception as e:
             raise CustomException(e, sys)
 
+    # ------------------------------------------------------------------
+    # Session ownership / existence
+    # ------------------------------------------------------------------
+    def _ensure_session(self, cur, title: Optional[str] = None):
+        """Create the session row if it doesn't exist yet (upsert on touch)."""
+        cur.execute(
+            """
+            INSERT INTO sessions (session_id, user_id, title)
+            VALUES (%s, %s, COALESCE(%s, 'New Chat'))
+            ON CONFLICT (session_id) DO UPDATE
+                SET title = COALESCE(%s, sessions.title),
+                    updated_at = now()
+            """,
+            (self.session_id, self.user_id, title, title),
+        )
+
+    def _owns_session(self, cur) -> bool:
+        cur.execute(
+            "SELECT 1 FROM sessions WHERE session_id = %s AND user_id = %s",
+            (self.session_id, self.user_id),
+        )
+        return cur.fetchone() is not None
+
+    # ------------------------------------------------------------------
+    # Messages
+    # ------------------------------------------------------------------
     def save_message(
         self,
         role: str,
         content: str,
         attachments: Optional[List[dict[str, Any]]] = None,
     ):
-        """Append one message to the active session file."""
         try:
-            history = self._load_raw(prune_expired=True)
-            timestamp = datetime.now().isoformat()
-            payload = {
-                "role": role,
-                "content": content,
-                "timestamp": timestamp,
-            }
+            title = content.strip()[:60] if (role == "human" and content.strip()) else None
+            attachments_json = None
             if attachments and role == "human":
-                payload["attachments"] = [
-                    item for item in attachments if isinstance(item, dict)
-                ]
-            history.append(payload)
-            self._write_raw(history)
-            title = None
-            if role == "human" and content.strip():
-                title = content.strip()[:60]
-            self.touch(title=title, timestamp=timestamp)
+                attachments_json = Json(
+                    [item for item in attachments if isinstance(item, dict)]
+                )
+
+            with get_db_cursor() as cur:
+                self._ensure_session(cur, title=title)
+                cur.execute(
+                    """
+                    INSERT INTO messages (session_id, role, content, attachments)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (self.session_id, role, content, attachments_json),
+                )
+                self._prune_expired(cur)
+
             logging.info("Message saved | role: %s | session: %s", role, self.session_id)
         except Exception as e:
             raise CustomException(e, sys)
 
     def get_history(self) -> List[BaseMessage]:
-        """Load active-session history from the configured retention window."""
         try:
             messages: List[BaseMessage] = []
-            for msg in self._load_raw(prune_expired=True):
+            for msg in self.get_messages_payload():
                 if msg["role"] == "human":
                     messages.append(HumanMessage(content=msg["content"]))
                 elif msg["role"] == "ai":
@@ -91,12 +112,55 @@ class MemoryManager:
             raise CustomException(e, sys)
 
     def get_messages_payload(self) -> List[dict[str, Any]]:
-        """Return recent raw messages for the frontend history viewer."""
+        """Return recent raw messages (within retention window) for this user's session."""
         try:
-            return self._load_raw(prune_expired=True)
+            cutoff = datetime.now() - timedelta(days=self.window_days)
+            with get_db_cursor(commit=False) as cur:
+                cur.execute(
+                    """
+                    SELECT m.role, m.content, m.attachments, m.created_at
+                    FROM messages m
+                    JOIN sessions s ON s.session_id = m.session_id
+                    WHERE m.session_id = %s
+                      AND s.user_id = %s
+                      AND m.created_at >= %s
+                    ORDER BY m.created_at ASC
+                    """,
+                    (self.session_id, self.user_id, cutoff),
+                )
+                rows = cur.fetchall()
+
+            result = []
+            for row in rows:
+                payload = {
+                    "role": row["role"],
+                    "content": row["content"],
+                    "timestamp": row["created_at"].isoformat(),
+                }
+                if row["attachments"]:
+                    payload["attachments"] = row["attachments"]
+                result.append(payload)
+            return result
         except Exception as e:
             raise CustomException(e, sys)
 
+    def get_message_count(self) -> int:
+        try:
+            return len(self.get_messages_payload())
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def _prune_expired(self, cur):
+        """Delete messages older than the retention window for this session."""
+        cutoff = datetime.now() - timedelta(days=self.window_days)
+        cur.execute(
+            "DELETE FROM messages WHERE session_id = %s AND created_at < %s",
+            (self.session_id, cutoff),
+        )
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
     def add_attachment(
         self,
         name: str,
@@ -104,27 +168,20 @@ class MemoryManager:
         source_type: str,
         extra: Optional[dict[str, Any]] = None,
     ):
-        """Persist attachment metadata so each session knows its document scope."""
         try:
-            state = self._load_state()
-            attachments = state.get("attachments", [])
-            filtered = [
-                item for item in attachments if item.get("collection") != collection
-            ]
-            attachment = {
-                "name": name,
-                "collection": collection,
-                "type": source_type,
-            }
-            if extra:
-                attachment.update(extra)
-            filtered.append(attachment)
-            state["attachments"] = filtered
-            self._ensure_state_defaults(state)
-            timestamp = datetime.now().isoformat()
-            state["created_at"] = state.get("created_at") or timestamp
-            state["updated_at"] = timestamp
-            self._write_state(state)
+            with get_db_cursor() as cur:
+                self._ensure_session(cur)
+                cur.execute(
+                    """
+                    INSERT INTO attachments (session_id, name, collection, source_type, extra)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (session_id, collection) DO UPDATE
+                        SET name = EXCLUDED.name,
+                            source_type = EXCLUDED.source_type,
+                            extra = EXCLUDED.extra
+                    """,
+                    (self.session_id, name, collection, source_type, Json(extra) if extra else None),
+                )
             logging.info(
                 "Attachment saved | session: %s | collection: %s",
                 self.session_id,
@@ -135,25 +192,47 @@ class MemoryManager:
 
     def get_attachments(self) -> List[dict[str, str]]:
         try:
-            state = self._load_state()
-            attachments = state.get("attachments", [])
-            return [item for item in attachments if isinstance(item, dict)]
+            with get_db_cursor(commit=False) as cur:
+                cur.execute(
+                    """
+                    SELECT a.name, a.collection, a.source_type AS type, a.extra
+                    FROM attachments a
+                    JOIN sessions s ON s.session_id = a.session_id
+                    WHERE a.session_id = %s AND s.user_id = %s
+                    ORDER BY a.created_at ASC
+                    """,
+                    (self.session_id, self.user_id),
+                )
+                rows = cur.fetchall()
+
+            results = []
+            for row in rows:
+                item = {"name": row["name"], "collection": row["collection"], "type": row["type"]}
+                if row["extra"]:
+                    item.update(row["extra"])
+                results.append(item)
+            return results
         except Exception as e:
             raise CustomException(e, sys)
 
     def remove_attachment(self, collection: str) -> bool:
-        """Remove one attachment from the active session state."""
         try:
-            state = self._load_state()
-            attachments = state.get("attachments", [])
-            filtered = [
-                item for item in attachments if item.get("collection") != collection
-            ]
-            removed = len(filtered) != len(attachments)
-            state["attachments"] = filtered
-            if removed:
-                state["updated_at"] = datetime.now().isoformat()
-            self._write_state(state)
+            with get_db_cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM attachments
+                    WHERE session_id = %s
+                      AND collection = %s
+                      AND session_id IN (SELECT session_id FROM sessions WHERE user_id = %s)
+                    """,
+                    (self.session_id, collection, self.user_id),
+                )
+                removed = cur.rowcount > 0
+                if removed:
+                    cur.execute(
+                        "UPDATE sessions SET updated_at = now() WHERE session_id = %s",
+                        (self.session_id,),
+                    )
             logging.info(
                 "Attachment removed | session: %s | collection: %s | removed: %s",
                 self.session_id,
@@ -165,187 +244,140 @@ class MemoryManager:
             raise CustomException(e, sys)
 
     def get_attachment_collections(self) -> List[str]:
-        """Return collection ids linked to the active session."""
         try:
-            return [
-                item["collection"]
-                for item in self.get_attachments()
-                if item.get("collection")
-            ]
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    def touch(
-        self,
-        *,
-        title: Optional[str] = None,
-        timestamp: Optional[str] = None,
-    ):
-        """Persist lightweight workspace metadata for refresh recovery."""
-        try:
-            state = self._load_state()
-            self._ensure_state_defaults(state)
-            now = timestamp or datetime.now().isoformat()
-            state["created_at"] = state.get("created_at") or now
-            state["updated_at"] = now
-            if title:
-                state["title"] = title[:60]
-            self._write_state(state, keep_if_empty=True)
+            return [item["collection"] for item in self.get_attachments() if item.get("collection")]
         except Exception as e:
             raise CustomException(e, sys)
 
     def cleanup_attachments(self, valid_collections: List[str]) -> List[str]:
-        """Remove attachment metadata that points to missing vector collections."""
+        """Remove attachment rows that point to vector collections that no longer exist."""
         try:
-            state = self._load_state()
-            attachments = state.get("attachments", [])
             valid_set = set(valid_collections)
-            filtered = [
-                item
-                for item in attachments
-                if item.get("collection") and item.get("collection") in valid_set
+            current = self.get_attachments()
+            to_remove = [
+                item["collection"] for item in current
+                if item.get("collection") and item["collection"] not in valid_set
             ]
-            removed = [
-                item.get("collection")
-                for item in attachments
-                if item.get("collection") and item.get("collection") not in valid_set
-            ]
+            for collection in to_remove:
+                self.remove_attachment(collection)
+            return to_remove
+        except Exception as e:
+            raise CustomException(e, sys)
 
-            if len(filtered) != len(attachments):
-                state["attachments"] = filtered
-                state["updated_at"] = datetime.now().isoformat()
-                self._write_state(
-                    state,
-                    keep_if_empty=bool(filtered or self._load_raw(prune_expired=True)),
+    # ------------------------------------------------------------------
+    # Session metadata / lifecycle
+    # ------------------------------------------------------------------
+    def touch(self, *, title: Optional[str] = None, timestamp: Optional[str] = None):
+        try:
+            with get_db_cursor() as cur:
+                self._ensure_session(cur, title=title[:60] if title else None)
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def get_title(self) -> str:
+        """Return the session's stored title (used when no human message exists yet)."""
+        try:
+            with get_db_cursor(commit=False) as cur:
+                cur.execute(
+                    "SELECT title FROM sessions WHERE session_id = %s AND user_id = %s",
+                    (self.session_id, self.user_id),
                 )
-
-            return [item for item in removed if item]
+                row = cur.fetchone()
+                return row["title"] if row else "New Chat"
         except Exception as e:
             raise CustomException(e, sys)
 
     def has_persisted_state(self) -> bool:
         try:
-            has_history = bool(self._load_raw(prune_expired=True))
-            state = self._load_state()
-            attachments = state.get("attachments", [])
-            metadata_only = bool(
-                state.get("created_at") or state.get("updated_at") or state.get("title")
-            )
-            return has_history or bool(attachments) or metadata_only
+            with get_db_cursor(commit=False) as cur:
+                cur.execute(
+                    "SELECT 1 FROM sessions WHERE session_id = %s AND user_id = %s",
+                    (self.session_id, self.user_id),
+                )
+                return cur.fetchone() is not None
         except Exception as e:
             raise CustomException(e, sys)
 
     def clear(self):
-        """Delete only the active session's chat history and attachment state."""
+        """Delete only the active session (messages + attachments cascade automatically)."""
         try:
-            for path in (self.memory_file, self.state_file):
-                if os.path.exists(path):
-                    os.remove(path)
+            with get_db_cursor() as cur:
+                cur.execute(
+                    "DELETE FROM sessions WHERE session_id = %s AND user_id = %s",
+                    (self.session_id, self.user_id),
+                )
             logging.info("Session cleared: %s", self.session_id)
         except Exception as e:
             raise CustomException(e, sys)
 
-    def get_message_count(self) -> int:
+    @staticmethod
+    def clear_all(user_id: str):
+        """Delete every session (and cascading messages/attachments) for ONE user only."""
         try:
-            return len(self.get_history())
+            with get_db_cursor() as cur:
+                cur.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+            logging.info("All chat history cleared | user: %s", user_id)
         except Exception as e:
             raise CustomException(e, sys)
 
     @staticmethod
-    def clear_all(persist_dir: str | None = None):
-        """Delete every saved session history and session-state file."""
+    def list_sessions(user_id: str, valid_collections: Optional[List[str]] = None) -> List[dict]:
+        """List all non-expired sessions belonging to ONE user, for the sidebar."""
         try:
-            persist_dir, _ = MemoryManager._resolve_settings(persist_dir)
-            if not os.path.exists(persist_dir):
-                return
+            window_days = config["memory"]["window_days"]
+            cutoff = datetime.now() - timedelta(days=window_days)
 
-            for filename in os.listdir(persist_dir):
-                if (
-                    filename.startswith("chat_history_")
-                    or filename.startswith("session_state_")
-                ) and filename.endswith(".json"):
-                    os.remove(os.path.join(persist_dir, filename))
-
-            logging.info("All chat history cleared")
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    @staticmethod
-    def list_sessions(
-        persist_dir: str | None = None,
-        valid_collections: Optional[List[str]] = None,
-    ) -> List[dict]:
-        """List all non-expired sessions for the sidebar."""
-        try:
-            persist_dir, window_days = MemoryManager._resolve_settings(persist_dir)
-            if not os.path.exists(persist_dir):
-                return []
-
-            session_ids = set()
-            valid_collection_set = set(valid_collections or [])
-
-            for filename in os.listdir(persist_dir):
-                if filename.startswith("chat_history_") and filename.endswith(".json"):
-                    session_ids.add(
-                        filename.replace("chat_history_", "").replace(".json", "")
-                    )
-                if filename.startswith("session_state_") and filename.endswith(".json"):
-                    session_ids.add(
-                        filename.replace("session_state_", "").replace(".json", "")
-                    )
+            with get_db_cursor(commit=False) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        s.session_id,
+                        s.title,
+                        s.updated_at,
+                        s.created_at,
+                        COUNT(DISTINCT m.id) FILTER (WHERE m.created_at >= %s) AS message_count,
+                        COUNT(DISTINCT a.id) AS attachment_count,
+                        MAX(m.created_at) AS last_message_at,
+                        (
+                            SELECT content FROM messages
+                            WHERE session_id = s.session_id AND role = 'human'
+                            ORDER BY created_at ASC LIMIT 1
+                        ) AS first_human_message
+                    FROM sessions s
+                    LEFT JOIN messages m ON m.session_id = s.session_id
+                    LEFT JOIN attachments a ON a.session_id = s.session_id
+                    WHERE s.user_id = %s
+                    GROUP BY s.session_id
+                    """,
+                    (cutoff, user_id),
+                )
+                rows = cur.fetchall()
 
             sessions = []
-
-            for session_id in session_ids:
-                memory = MemoryManager(session_id=session_id)
-                history = memory._load_raw(prune_expired=True)
-                state = memory._load_state()
+            for row in rows:
+                if row["message_count"] == 0 and row["attachment_count"] == 0:
+                    # Mirrors old behavior: empty, stale sessions get cleaned up
+                    MemoryManager(session_id=row["session_id"], user_id=user_id).clear()
+                    continue
 
                 if valid_collections is not None:
-                    memory.cleanup_attachments(list(valid_collection_set))
-                    state = memory._load_state()
+                    MemoryManager(
+                        session_id=row["session_id"], user_id=user_id
+                    ).cleanup_attachments(valid_collections)
 
-                attachments = [
-                    item
-                    for item in state.get("attachments", [])
-                    if isinstance(item, dict)
-                ]
-
-                if not history and not state.get("updated_at"):
-                    memory.clear()
-                    continue
-
-                timestamps = [
-                    message.get("timestamp")
-                    for message in history
-                    if message.get("timestamp")
-                ]
-                if state.get("updated_at"):
-                    timestamps.append(state["updated_at"])
-                if state.get("created_at"):
-                    timestamps.append(state["created_at"])
-                if not timestamps:
-                    memory.clear()
-                    continue
-
-                last_active = max(datetime.fromisoformat(value) for value in timestamps)
-                first_human = next(
-                    (
-                        message["content"].strip()[:60]
-                        for message in history
-                        if message.get("role") == "human"
-                        and message.get("content", "").strip()
-                    ),
-                    "",
+                last_active = row["last_message_at"] or row["updated_at"] or row["created_at"]
+                title = (
+                    (row["first_human_message"] or "").strip()[:60]
+                    or row["title"]
+                    or "New Chat"
                 )
-                title = first_human or state.get("title") or "New Chat"
 
                 sessions.append(
                     {
-                        "session_id": session_id,
+                        "session_id": row["session_id"],
                         "title": title,
-                        "message_count": len(history),
-                        "attachment_count": len(attachments),
+                        "message_count": row["message_count"],
+                        "attachment_count": row["attachment_count"],
                         "last_active": last_active.isoformat(),
                         "last_active_label": last_active.strftime("%b %d, %H:%M"),
                     }
@@ -355,129 +387,3 @@ class MemoryManager:
             return sessions
         except Exception as e:
             raise CustomException(e, sys)
-
-    @staticmethod
-    def _resolve_settings(persist_dir: str | None = None) -> tuple[str, int]:
-        if persist_dir is not None:
-            return persist_dir, config["memory"]["window_days"]
-
-        return (
-            config["memory"]["persist_directory"],
-            config["memory"]["window_days"],
-        )
-
-    @staticmethod
-    def _filter_recent_messages(history: Any, window_days: int) -> List[dict[str, Any]]:
-        cutoff = datetime.now() - timedelta(days=window_days)
-        recent_messages: List[dict[str, Any]] = []
-
-        if not isinstance(history, list):
-            return recent_messages
-
-        for message in history:
-            if not isinstance(message, dict):
-                continue
-
-            timestamp = message.get("timestamp")
-            role = message.get("role")
-            content = message.get("content")
-
-            if not timestamp or not role or content is None:
-                continue
-
-            try:
-                message_time = datetime.fromisoformat(timestamp)
-            except ValueError:
-                continue
-
-            if message_time >= cutoff:
-                normalized = {
-                    "role": str(role),
-                    "content": str(content),
-                    "timestamp": message_time.isoformat(),
-                }
-                attachments = message.get("attachments")
-                if isinstance(attachments, list):
-                    normalized["attachments"] = [
-                        item for item in attachments if isinstance(item, dict)
-                    ]
-                recent_messages.append(normalized)
-
-        return recent_messages
-
-    def _load_raw(self, prune_expired: bool = False) -> List[dict[str, Any]]:
-        try:
-            if not os.path.exists(self.memory_file):
-                return []
-
-            try:
-                with open(self.memory_file, "r", encoding="utf-8") as f:
-                    history = json.load(f)
-            except (json.JSONDecodeError, OSError, ValueError):
-                return []
-
-            recent_history = self._filter_recent_messages(history, self.window_days)
-
-            if prune_expired and len(recent_history) != len(history):
-                self._write_raw(recent_history)
-
-            return recent_history if prune_expired else history
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    def _write_raw(self, history: List[dict[str, Any]]):
-        try:
-            if not history:
-                if os.path.exists(self.memory_file):
-                    os.remove(self.memory_file)
-                return
-
-            os.makedirs(self.persist_dir, exist_ok=True)
-            with open(self.memory_file, "w", encoding="utf-8") as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    def _load_state(self) -> dict[str, Any]:
-        try:
-            if not os.path.exists(self.state_file):
-                return dict(self.DEFAULT_STATE)
-
-            with open(self.state_file, "r", encoding="utf-8") as f:
-                state = json.load(f)
-
-            if not isinstance(state, dict):
-                return dict(self.DEFAULT_STATE)
-
-            self._ensure_state_defaults(state)
-            return state
-        except (json.JSONDecodeError, OSError, ValueError):
-            return dict(self.DEFAULT_STATE)
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    def _write_state(self, state: dict[str, Any], keep_if_empty: bool = False):
-        try:
-            self._ensure_state_defaults(state)
-            attachments = state.get("attachments", [])
-            has_metadata = bool(
-                state.get("created_at") or state.get("updated_at") or state.get("title")
-            )
-            if not attachments and not keep_if_empty and not has_metadata:
-                if os.path.exists(self.state_file):
-                    os.remove(self.state_file)
-                return
-
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    @classmethod
-    def _ensure_state_defaults(cls, state: dict[str, Any]) -> dict[str, Any]:
-        for key, value in cls.DEFAULT_STATE.items():
-            if key not in state:
-                state[key] = value
-        if not isinstance(state.get("attachments"), list):
-            state["attachments"] = []
-        return state

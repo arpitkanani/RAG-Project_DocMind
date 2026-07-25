@@ -3,250 +3,476 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DocMind – AI Document Assistant</title>
+  <title>DocMind – AI Document & Video Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
   <style>
+    :root {
+      --bg: #f8f9fb;
+      --bg-accent: #eef0ff;
+      --surface: #ffffff;
+      --surface-soft: #f7f8fc;
+      --surface-muted: #f0efff;
+      --border: #e3e7f2;
+      --border-strong: #d4d9ea;
+      --text: #2d3142;
+      --muted: #6f768d;
+      --accent: #8a7bbf;
+      --accent-strong: #7667ad;
+      --accent-soft: #f0efff;
+      --success: #4f9d7a;
+      --shadow: 0 22px 60px rgba(117, 126, 167, 0.12);
+      --shadow-soft: 0 14px 34px rgba(117, 126, 167, 0.1);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    :root {
-      --bg:       #080A0F;
-      --surface:  #111827;
-      --surface2: #161B27;
-      --border:   #1F2937;
-      --blue:     #3B82F6;
-      --indigo:   #6366F1;
-      --green:    #10B981;
-      --text:     #E5E7EB;
-      --muted:    #94A3B8;
-    }
-
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: 'Manrope', sans-serif;
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
+      line-height: 1.6;
     }
 
-    /* NAV */
     nav {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 1.25rem 2rem;
+      padding: 1.1rem 2rem;
       border-bottom: 1px solid var(--border);
       position: sticky; top: 0;
-      background: var(--bg);
+      background: rgba(248, 249, 251, 0.88);
+      backdrop-filter: blur(14px);
       z-index: 10;
     }
-    .logo { font-family: 'Syne', sans-serif; font-size: 1.3rem; color: var(--blue); letter-spacing: -0.5px; }
-    .nav-link {
-      text-decoration: none; color: var(--text);
-      background: var(--blue); padding: .5rem 1.25rem;
-      border-radius: 8px; font-size: .875rem; font-weight: 600;
-      transition: opacity .2s;
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text);
     }
-    .nav-link:hover { opacity: .85; }
+    .logo-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: linear-gradient(145deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+    }
+    .nav-link {
+      text-decoration: none;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      padding: .6rem 1.4rem;
+      border-radius: 999px;
+      font-size: .875rem;
+      font-weight: 700;
+      box-shadow: var(--shadow-soft);
+      transition: transform .15s ease, box-shadow .15s ease;
+    }
+    .nav-link:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
 
-    /* HERO */
     .hero {
       text-align: center;
       padding: 5rem 1.5rem 3rem;
-      max-width: 720px;
+      max-width: 740px;
       margin: 0 auto;
     }
     .badge {
       display: inline-block;
-      background: rgba(59,130,246,.15);
-      border: 1px solid rgba(59,130,246,.35);
-      color: var(--blue);
-      padding: .3rem .9rem;
+      background: var(--accent-soft);
+      border: 1px solid rgba(138, 123, 191, 0.28);
+      color: var(--accent-strong);
+      padding: .35rem 1rem;
       border-radius: 999px;
       font-size: .8rem;
-      font-weight: 600;
-      letter-spacing: .5px;
+      font-weight: 700;
+      letter-spacing: .3px;
       margin-bottom: 1.5rem;
     }
     .hero h1 {
-      font-family: 'Syne', sans-serif;
-      font-size: clamp(2.2rem, 5vw, 3.5rem);
+      font-family: 'Outfit', sans-serif;
+      font-size: clamp(2.1rem, 4.6vw, 3.25rem);
       font-weight: 800;
-      line-height: 1.1;
+      line-height: 1.14;
       margin-bottom: 1.25rem;
+      color: var(--text);
     }
-    .hero h1 span { color: var(--blue); }
+    .hero h1 span {
+      background: linear-gradient(135deg, var(--accent-strong), var(--accent));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
     .hero p {
       color: var(--muted);
       font-size: 1.05rem;
-      line-height: 1.7;
-      margin-bottom: 2.5rem;
+      line-height: 1.75;
+      margin-bottom: 2.25rem;
     }
     .hero-btn {
       display: inline-block;
-      background: var(--blue);
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       color: #fff;
       text-decoration: none;
-      padding: .875rem 2.25rem;
-      border-radius: 10px;
+      padding: .9rem 2.4rem;
+      border-radius: 999px;
       font-weight: 700;
       font-size: 1rem;
-      transition: transform .15s, box-shadow .15s;
-      box-shadow: 0 0 30px rgba(59,130,246,.3);
+      box-shadow: var(--shadow);
+      transition: transform .15s ease;
     }
-    .hero-btn:hover { transform: translateY(-2px); box-shadow: 0 0 40px rgba(59,130,246,.45); }
+    .hero-btn:hover { transform: translateY(-2px); }
 
-    /* WHAT IS RAG */
     .section {
-      max-width: 900px;
+      max-width: 1000px;
       margin: 0 auto;
-      padding: 3.5rem 1.5rem;
+      padding: 3.25rem 1.5rem;
     }
     .section-label {
       font-size: .75rem;
-      font-weight: 700;
-      letter-spacing: 1.5px;
+      font-weight: 800;
+      letter-spacing: 1.4px;
       text-transform: uppercase;
-      color: var(--blue);
-      margin-bottom: .75rem;
+      color: var(--accent-strong);
+      margin-bottom: .6rem;
     }
     .section h2 {
-      font-family: 'Syne', sans-serif;
-      font-size: 1.75rem;
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.65rem;
       font-weight: 800;
-      margin-bottom: 1rem;
+      margin-bottom: .9rem;
+      color: var(--text);
     }
-    .section p {
+    .section > p {
       color: var(--muted);
-      line-height: 1.75;
-      max-width: 640px;
+      max-width: 680px;
     }
 
-    /* RAG PIPELINE VISUAL */
     .rag-flow {
       display: flex;
       align-items: center;
-      gap: .75rem;
+      gap: .7rem;
       flex-wrap: wrap;
       margin-top: 2rem;
     }
     .rag-step {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: .875rem 1.25rem;
+      border-radius: var(--radius-md);
+      padding: .9rem 1.15rem;
       text-align: center;
       flex: 1;
-      min-width: 120px;
+      min-width: 128px;
+      box-shadow: var(--shadow-soft);
     }
-    .rag-step .icon { font-size: 1.5rem; margin-bottom: .4rem; }
-    .rag-step .label { font-size: .8rem; font-weight: 600; color: var(--text); }
+    .rag-step .icon { font-size: 1.4rem; margin-bottom: .35rem; }
+    .rag-step .label { font-size: .8rem; font-weight: 700; color: var(--text); }
     .rag-step .sub { font-size: .7rem; color: var(--muted); margin-top: .2rem; }
-    .rag-arrow { color: var(--border); font-size: 1.25rem; flex-shrink: 0; }
+    .rag-arrow { color: var(--border-strong); font-size: 1.2rem; flex-shrink: 0; }
 
-    /* USE CASES */
+    .stack-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    .stack-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      box-shadow: var(--shadow-soft);
+    }
+    .stack-card .stack-role {
+      font-size: .68rem;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--accent-strong);
+      margin-bottom: .5rem;
+    }
+    .stack-card h3 {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .96rem;
+      font-weight: 500;
+      margin-bottom: .5rem;
+      color: var(--text);
+    }
+    .stack-card p {
+      font-size: .82rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .process-list {
+      margin-top: 2rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: var(--surface);
+      box-shadow: var(--shadow-soft);
+    }
+    .process-step {
+      display: flex;
+      gap: 1rem;
+      padding: 1.05rem 1.25rem;
+    }
+    .process-step:not(:last-child) {
+      border-bottom: 1px solid var(--border);
+    }
+    .process-num {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      border-radius: 9px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .78rem;
+      font-weight: 700;
+    }
+    .process-body h4 {
+      font-size: .92rem;
+      font-weight: 700;
+      margin-bottom: .3rem;
+      color: var(--text);
+    }
+    .process-body p {
+      font-size: .84rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .process-body code {
+      background: var(--surface-muted);
+      color: var(--accent-strong);
+      padding: 1px 6px;
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: .8rem;
+    }
+
     .use-cases {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
       gap: 1rem;
       margin-top: 2rem;
     }
     .use-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: var(--radius-md);
       padding: 1.5rem 1.25rem;
-      transition: border-color .2s, transform .2s;
+      box-shadow: var(--shadow-soft);
+      transition: transform .18s ease, box-shadow .18s ease;
     }
-    .use-card:hover { border-color: var(--blue); transform: translateY(-3px); }
-    .use-card .uc-icon { font-size: 1.75rem; margin-bottom: .75rem; }
-    .use-card h3 { font-size: .95rem; font-weight: 700; margin-bottom: .4rem; }
+    .use-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); }
+    .use-card .uc-icon { font-size: 1.6rem; margin-bottom: .7rem; }
+    .use-card h3 { font-size: .95rem; font-weight: 700; margin-bottom: .4rem; color: var(--text); }
     .use-card p { font-size: .82rem; color: var(--muted); line-height: 1.6; }
 
-    /* DIVIDER */
     hr { border: none; border-top: 1px solid var(--border); }
 
-    /* FOOTER */
     footer {
       text-align: center;
-      padding: 2rem;
+      padding: 2.25rem 1.5rem;
       color: var(--muted);
-      font-size: .8rem;
+      font-size: .82rem;
       border-top: 1px solid var(--border);
     }
-    footer a { color: var(--blue); text-decoration: none; }
+    footer a { color: var(--accent-strong); text-decoration: none; font-weight: 700; }
+
+    @media (max-width: 640px) {
+      .hero { padding: 3rem 1.25rem 2rem; }
+      .rag-flow { flex-direction: column; align-items: stretch; }
+      .rag-arrow { transform: rotate(90deg); align-self: center; }
+    }
   </style>
 </head>
 <body>
 
   <nav>
-    <span class="logo">📄 DocMind</span>
+    <span class="logo"><span class="logo-mark">DM</span> DocMind</span>
     <a class="nav-link" href="/app">Open App →</a>
   </nav>
 
-  <!-- HERO -->
   <section class="hero">
-    <div class="badge">🎓 Student Project · RAG Pipeline</div>
-    <h1>Chat with your<br /><span>documents</span> using AI</h1>
+    <div class="badge">Student Project · RAG Pipeline</div>
+    <h1>Chat with your<br /><span>documents & videos</span> using AI</h1>
     <p>
-      Upload a PDF, paste a YouTube link, and just ask questions in plain English.
-      DocMind reads your documents and answers — no copy-paste needed.
+      Upload a PDF, DOCX, CSV, XLSX, or Markdown file — or paste a YouTube link —
+      and ask questions in plain English. DocMind reads the source and answers
+      using only what's actually in it, with citations back to the original page,
+      row, or timestamp.
     </p>
     <a class="hero-btn" href="/app">Try it now →</a>
   </section>
 
   <hr />
 
-  <!-- WHAT IS RAG -->
   <section class="section">
     <div class="section-label">How It Works</div>
     <h2>What is a RAG Pipeline?</h2>
     <p>
-      RAG stands for <strong style="color:var(--text)">Retrieval-Augmented Generation</strong>.
-      Instead of the AI guessing from memory, it first <em>finds</em> the relevant
-      parts of your document, then <em>generates</em> an answer using only that content.
-      Think of it like giving the AI an open-book exam.
+      RAG stands for Retrieval-Augmented Generation. Instead of the AI guessing
+      from memory, it first finds the relevant parts of your document, then
+      generates an answer using only that content — like giving the AI an
+      open-book exam instead of asking it to recall from memory.
     </p>
 
     <div class="rag-flow">
       <div class="rag-step">
         <div class="icon">📄</div>
-        <div class="label">Your Document</div>
-        <div class="sub">PDF / YouTube / TXT</div>
+        <div class="label">Your Source</div>
+        <div class="sub">PDF / DOCX / CSV / XLSX / MD / YouTube</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
         <div class="icon">✂️</div>
-        <div class="label">Split into chunks</div>
-        <div class="sub">Smaller pieces</div>
+        <div class="label">Chunking</div>
+        <div class="sub">Split into ~600-char passages</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
         <div class="icon">🔢</div>
         <div class="label">Embeddings</div>
-        <div class="sub">Turned into numbers</div>
+        <div class="sub">Turned into vectors</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
         <div class="icon">🔍</div>
-        <div class="label">Search</div>
-        <div class="sub">Find relevant parts</div>
+        <div class="label">Retrieval</div>
+        <div class="sub">Ranked semantic + lexical search</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
-        <div class="icon">🤖</div>
-        <div class="label">AI Answer</div>
-        <div class="sub">Based on your doc</div>
+        <div class="icon">💬</div>
+        <div class="label">Grounded Answer</div>
+        <div class="sub">With source citations</div>
       </div>
     </div>
   </section>
 
   <hr />
 
-  <!-- USE CASES -->
+  <section class="section">
+    <div class="section-label">Under the Hood</div>
+    <h2>Tech Stack</h2>
+    <p>Every layer of the pipeline, from ingestion to serving.</p>
+
+    <div class="stack-grid">
+      <div class="stack-card">
+        <div class="stack-role">Orchestration</div>
+        <h3>LangChain</h3>
+        <p>Document loaders, text splitters, prompt templates, and output parsing across the ingestion and QA chains.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">Vector Database</div>
+        <h3>Qdrant</h3>
+        <p>Stores chunk embeddings per source, containerized with Docker. Powers semantic similarity search at query time.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">LLM Inference</div>
+        <h3>Groq</h3>
+        <p>Low-latency hosted inference for answer generation and summarization.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">Embeddings</div>
+        <h3>Ollama · nomic-embed-text</h3>
+        <p>Converts text chunks and queries into vectors for semantic search.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">API Layer</div>
+        <h3>FastAPI</h3>
+        <p>REST endpoints for ingestion, querying, session management, and source lifecycle.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">Relational Data</div>
+        <h3>PostgreSQL</h3>
+        <p>Multi-user session isolation, chat history with time-windowed retention, and API-key authentication.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">Auth</div>
+        <h3>API Key (per-user)</h3>
+        <p>Every request is scoped to a verified user — one account's chats and documents are never visible to another.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">Infrastructure</div>
+        <h3>Docker</h3>
+        <p>Qdrant, Postgres, and the app itself run as containerized services.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <section class="section">
+    <div class="section-label">Video Ingestion</div>
+    <h2>How YouTube Processing Works</h2>
+    <p>Paste a link, DocMind does the rest — here's exactly what happens behind the scenes.</p>
+
+    <div class="process-list">
+      <div class="process-step">
+        <div class="process-num">1</div>
+        <div class="process-body">
+          <h4>URL submitted</h4>
+          <p>The video ID is extracted from the pasted YouTube URL.</p>
+        </div>
+      </div>
+      <div class="process-step">
+        <div class="process-num">2</div>
+        <div class="process-body">
+          <h4>Transcript fetched</h4>
+          <p>The video's caption track is pulled as a series of timestamped text segments.</p>
+        </div>
+      </div>
+      <div class="process-step">
+        <div class="process-num">3</div>
+        <div class="process-body">
+          <h4>Segments merged into passages</h4>
+          <p>Raw captions are short — often just a few words each. Consecutive segments are merged into ~600-character passages so each retrieval unit is a coherent thought, with a timestamp range attached (e.g. <code>1:15–2:03</code>) instead of a single instant.</p>
+        </div>
+      </div>
+      <div class="process-step">
+        <div class="process-num">4</div>
+        <div class="process-body">
+          <h4>Embedded and stored</h4>
+          <p>Each passage is embedded and stored in its own Qdrant collection, scoped to that video.</p>
+        </div>
+      </div>
+      <div class="process-step">
+        <div class="process-num">5</div>
+        <div class="process-body">
+          <h4>Ready to chat</h4>
+          <p>Ask direct questions or request a summary — answers cite the specific timestamp range they came from.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
   <section class="section">
     <div class="section-label">What You Can Do</div>
     <h2>Use Cases</h2>
-    <p>DocMind focuses on grounded document Q&amp;A across uploaded files and YouTube transcripts.</p>
+    <p>DocMind focuses on grounded Q&amp;A across uploaded files and YouTube transcripts.</p>
 
     <div class="use-cases">
       <div class="use-card">
@@ -262,18 +488,18 @@
       <div class="use-card">
         <div class="uc-icon">🧭</div>
         <h3>Multi-Document Search</h3>
-        <p>Keep multiple uploads in one chat and search across them together instead of being limited to only the latest file.</p>
+        <p>Keep multiple uploads in one chat and choose which ones apply to each question — search across all of them, or scope to just one.</p>
       </div>
       <div class="use-card">
         <div class="uc-icon">🎥</div>
         <h3>YouTube Videos</h3>
-        <p>Paste any YouTube URL. DocMind grabs the transcript and lets you chat with the video content.</p>
+        <p>Paste any YouTube URL. DocMind grabs the transcript, merges it into coherent passages, and lets you chat with the video content.</p>
       </div>
     </div>
   </section>
 
   <footer>
-    Built as a student project · Powered by local AI &amp; RAG ·
+    Built as a student project · Powered by LangChain, Qdrant, Groq &amp; PostgreSQL ·
     <a href="/app">Open the App →</a>
   </footer>
 

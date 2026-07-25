@@ -117,21 +117,90 @@ class DocumentLoader:
     def _load_youtube(self, url: str) -> List[Document]:
         try:
             segments = get_transcript_segments(url)
+            target_size = config.get("splitter", {}).get("chunk_size", 600)
+            windows = self._merge_transcript_segments(segments, target_size)
+
             docs = [
                 Document(
-                    page_content=str(segment["text"]),
+                    page_content=window["text"],
                     metadata={
                         "source": "YouTube transcript",
                         "video_url": url,
                         "type": "youtube",
-                        "timestamp": str(segment["timestamp"]),
-                        "start_seconds": float(segment["start"]),
-                        "duration_seconds": float(segment["duration"]),
+                        "timestamp": window["timestamp_range"],
+                        "start_seconds": window["start_seconds"],
+                        "duration_seconds": window["duration_seconds"],
                     },
                 )
-                for segment in segments
+                for window in windows
             ]
-            logging.info("YouTube transcript loaded: %d segments", len(docs))
+            logging.info(
+                "YouTube transcript loaded: %d segments merged into %d chunks",
+                len(segments),
+                len(docs),
+            )
             return docs
         except Exception as e:
             raise CustomException(e, sys)
+
+    @staticmethod
+    def _format_seconds(seconds: float) -> str:
+        total = int(seconds)
+        hours, remainder = divmod(total, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes}:{secs:02d}"
+
+    @classmethod
+    def _merge_transcript_segments(cls, segments: list, target_size: int) -> List[dict]:
+        """
+        Group consecutive short caption segments into ~target_size character
+        windows, so each retrieval unit is a coherent passage (matching the
+        size of chunks from every other document type) instead of a single
+        5-15 word caption fragment. Each window keeps a timestamp *range*
+        covering everything merged into it.
+        """
+        windows: List[dict] = []
+        current_texts: List[str] = []
+        current_len = 0
+        window_start = None
+        window_end = None
+
+        def flush():
+            if not current_texts:
+                return
+            windows.append(
+                {
+                    "text": " ".join(current_texts).strip(),
+                    "start_seconds": window_start,
+                    "duration_seconds": max(window_end - window_start, 0.0),
+                    "timestamp_range": (
+                        f"{cls._format_seconds(window_start)}-{cls._format_seconds(window_end)}"
+                    ),
+                }
+            )
+
+        for segment in segments:
+            text = str(segment["text"]).strip()
+            if not text:
+                continue
+
+            start = float(segment["start"])
+            duration = float(segment["duration"])
+            end = start + duration
+
+            if window_start is None:
+                window_start = start
+
+            if current_len + len(text) > target_size and current_texts:
+                flush()
+                current_texts, current_len = [], 0
+                window_start = start
+
+            current_texts.append(text)
+            current_len += len(text) + 1
+            window_end = end
+
+        flush()
+        return windows

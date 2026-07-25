@@ -49,6 +49,7 @@ const API = {
 };
 
 const SESSION_KEY = "docmind.activeSessionId";
+const API_KEY_STORAGE = "docmind.apiKey";
 
 // ═══════════════════════════════════════════════════════════════════
 //  BOOT
@@ -56,8 +57,52 @@ const SESSION_KEY = "docmind.activeSessionId";
 
 document.addEventListener("DOMContentLoaded", async () => {
   bindUI();
+  await ensureApiKey();
   await bootApp();
 });
+
+/**
+ * Shows the styled API key modal until a non-empty key is saved.
+ * Blocks bootApp() the same way the old window.prompt() loop did,
+ * just without the native browser chrome.
+ */
+function ensureApiKey() {
+  const existing = localStorage.getItem(API_KEY_STORAGE);
+  if (existing) return Promise.resolve(existing);
+
+  return new Promise((resolve) => {
+    const backdrop = el("apiKeyModalBackdrop");
+    const input = el("apiKeyInput");
+    const errorEl = el("apiKeyError");
+    const saveBtn = el("apiKeySave");
+
+    errorEl.style.display = "none";
+    input.value = "";
+    backdrop.classList.add("open");
+    setTimeout(() => input.focus(), 50);
+
+    function trySave() {
+      const key = input.value.trim();
+      if (!key) {
+        errorEl.textContent = "Please enter your API key.";
+        errorEl.style.display = "block";
+        return;
+      }
+      localStorage.setItem(API_KEY_STORAGE, key);
+      backdrop.classList.remove("open");
+      saveBtn.removeEventListener("click", trySave);
+      input.removeEventListener("keydown", onKeydown);
+      resolve(key);
+    }
+
+    function onKeydown(e) {
+      if (e.key === "Enter") trySave();
+    }
+
+    saveBtn.addEventListener("click", trySave);
+    input.addEventListener("keydown", onKeydown);
+  });
+}
 
 async function bootApp() {
   const sessions = await loadSessions();
@@ -96,7 +141,52 @@ function bindUI() {
   el("clearAllBtn").addEventListener("click", handleClearAll);
 
   // Modal triggers
-  el("attachBtn").addEventListener("click", openModal);
+  function isNarrowAttachViewport() {
+    return window.matchMedia("(max-width: 640px)").matches;
+  }
+
+  el("attachBtn").addEventListener("click", () => {
+    if (isNarrowAttachViewport()) {
+      el("mobileAttachMenu").classList.toggle("open");
+    } else {
+      openModal();
+    }
+  });
+
+  el("mobileMenuUpload").addEventListener("click", () => {
+    el("mobileAttachMenu").classList.remove("open");
+    openModal();
+  });
+  el("mobileMenuSources").addEventListener("click", () => {
+    el("mobileAttachMenu").classList.remove("open");
+    toggleSourcesPopover();
+  });
+  document.addEventListener("click", (e) => {
+    const menu = el("mobileAttachMenu");
+    const attachBtn = el("attachBtn");
+    if (
+      menu.classList.contains("open") &&
+      !menu.contains(e.target) &&
+      e.target !== attachBtn &&
+      !attachBtn.contains(e.target)
+    ) {
+      menu.classList.remove("open");
+    }
+  });
+
+  el("sourcesToggleBtn").addEventListener("click", toggleSourcesPopover);
+  document.addEventListener("click", (e) => {
+    const popover = el("sourcesPopover");
+    const toggleBtn = el("sourcesToggleBtn");
+    if (
+      popover.classList.contains("open") &&
+      !popover.contains(e.target) &&
+      e.target !== toggleBtn &&
+      !toggleBtn.contains(e.target)
+    ) {
+      popover.classList.remove("open");
+    }
+  });
   el("modalClose").addEventListener("click", closeModal);
   el("cancelUpload").addEventListener("click", closeModal);
   el("submitUpload").addEventListener("click", handleSubmitUpload);
@@ -104,13 +194,66 @@ function bindUI() {
     if (e.target === el("modalBackdrop")) closeModal();
   });
 
-  // Mobile sidebar toggle
-  const sidebarToggle = document.getElementById("sidebarToggle");
-  if (sidebarToggle) {
-    sidebarToggle.addEventListener("click", () => {
-      document.getElementById("sidebar").classList.toggle("mobile-open");
-    });
+  // Mobile sidebar — off-canvas overlay
+  const sidebarEl = el("sidebar");
+  const overlayEl = el("sidebarOverlay");
+  const sidebarToggle = el("sidebarToggle");
+
+  function isMobileViewport() {
+    return window.matchMedia("(max-width: 900px)").matches;
   }
+
+  const sidebarToggleIcon = el("sidebarToggleIcon");
+  const ICON_OPEN = // sidebar is open — show "collapse" (chevrons pointing left)
+    '<polyline points="11 5 4 12 11 19"/><polyline points="19 5 12 12 19 19"/>';
+  const ICON_CLOSED = // sidebar is closed — show "expand" (chevrons pointing right)
+    '<polyline points="13 5 20 12 13 19"/><polyline points="5 5 12 12 5 19"/>';
+
+  function openSidebar() {
+    sidebarEl.classList.remove("collapsed");
+    overlayEl.classList.add("open");
+    sidebarToggleIcon.innerHTML = ICON_OPEN;
+  }
+
+  function closeSidebar() {
+    sidebarEl.classList.add("collapsed");
+    overlayEl.classList.remove("open");
+    sidebarToggleIcon.innerHTML = ICON_CLOSED;
+  }
+
+  sidebarToggle.addEventListener("click", () => {
+    if (sidebarEl.classList.contains("collapsed")) openSidebar();
+    else closeSidebar();
+  });
+
+  const sidebarCloseBtn = el("sidebarCloseBtn");
+  if (sidebarCloseBtn) {
+    sidebarCloseBtn.addEventListener("click", closeSidebar);
+  }
+
+  overlayEl.addEventListener("click", closeSidebar);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isMobileViewport()) closeSidebar();
+  });
+
+  // Sidebar starts collapsed on phones/tablets, open on desktop.
+  // On resize (e.g. rotating a tablet), re-apply the correct default
+  // rather than leaving it stuck in whatever state it was in before.
+  function applyResponsiveSidebarDefault() {
+    if (isMobileViewport()) closeSidebar();
+    else {
+      sidebarEl.classList.remove("collapsed");
+      overlayEl.classList.remove("open");
+    }
+  }
+  applyResponsiveSidebarDefault();
+  window.addEventListener("resize", applyResponsiveSidebarDefault);
+
+  // Selecting a chat on mobile should close the sidebar so the chat is visible
+  el("sidebarChats").addEventListener("click", () => {
+    if (isMobileViewport()) closeSidebar();
+  });
 
   // Modal tabs
   document.querySelectorAll(".modal-tab").forEach((btn) =>
@@ -175,6 +318,7 @@ async function createNewSession() {
   workspaceState.sources = [];
   localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
   renderComposerChips();
+  renderSourcesPanel();
   updateSendButton();
 }
 
@@ -198,6 +342,7 @@ async function restoreSession(sessionId) {
     type: a.type || "doc",
     status: "ready",
     isNew: false, // restored sources are NOT new — they won't attach to next message
+    active: true, // included in query scope by default; user can toggle off
   }));
 
   localStorage.setItem(SESSION_KEY, sessionId);
@@ -218,6 +363,7 @@ async function restoreSession(sessionId) {
   }
 
   renderComposerChips();
+  renderSourcesPanel();
   updateSendButton();
   await loadSessions();
   return true;
@@ -245,8 +391,53 @@ async function switchSession(sessionId) {
   }
 }
 
+/**
+ * Styled replacement for window.confirm(). Resolves true/false.
+ */
+function showConfirmModal(title, message, confirmLabel = "Delete") {
+  return new Promise((resolve) => {
+    const backdrop = el("confirmModalBackdrop");
+    el("confirmModalTitle").textContent = title;
+    el("confirmModalMessage").textContent = message;
+    const confirmBtn = el("confirmModalConfirm");
+    const cancelBtn = el("confirmModalCancel");
+    const closeBtn = el("confirmModalClose");
+    confirmBtn.textContent = confirmLabel;
+
+    backdrop.classList.add("open");
+
+    function cleanup(result) {
+      backdrop.classList.remove("open");
+      confirmBtn.removeEventListener("click", onConfirm);
+      cancelBtn.removeEventListener("click", onCancel);
+      closeBtn.removeEventListener("click", onCancel);
+      backdrop.removeEventListener("click", onBackdropClick);
+      resolve(result);
+    }
+
+    function onConfirm() {
+      cleanup(true);
+    }
+    function onCancel() {
+      cleanup(false);
+    }
+    function onBackdropClick(e) {
+      if (e.target === backdrop) cleanup(false);
+    }
+
+    confirmBtn.addEventListener("click", onConfirm);
+    cancelBtn.addEventListener("click", onCancel);
+    closeBtn.addEventListener("click", onCancel);
+    backdrop.addEventListener("click", onBackdropClick);
+  });
+}
+
 async function deleteSession(sessionId) {
-  if (!confirm("Delete this chat and its related document data?")) return;
+  const ok = await showConfirmModal(
+    "Delete this chat?",
+    "This will permanently delete this chat and its related document data."
+  );
+  if (!ok) return;
 
   sidebarState.deletingIds.add(sessionId);
   renderSidebar();
@@ -283,7 +474,12 @@ async function deleteSession(sessionId) {
 }
 
 async function handleClearAll() {
-  if (!confirm("Clear all chats and all related document data?")) return;
+  const ok = await showConfirmModal(
+    "Clear all chats?",
+    "This will permanently delete every chat and all related document data.",
+    "Clear All"
+  );
+  if (!ok) return;
   try {
     const data = await apiFetch(API.memory, { method: "DELETE" });
     if (!data?.success) {
@@ -348,6 +544,49 @@ async function handleFiles(files) {
   for (const file of files) await uploadFile(file);
 }
 
+/**
+ * Polls a background job's status until it's ready or failed.
+ * Updates the source's processingMessage live so the chip can show
+ * retry/progress text (e.g. "rate limited, retrying in 20s").
+ */
+function pollJobStatus(jobId, localId, { onSuccess, defaultErrorMessage }) {
+  const POLL_INTERVAL_MS = 3000;
+
+  const poll = async () => {
+    const job = await apiFetch(`${API.upload}/status/${encodeURIComponent(jobId)}`);
+
+    if (!job || job.status === undefined) {
+      // Network hiccup polling — try again rather than giving up on one miss
+      setTimeout(poll, POLL_INTERVAL_MS);
+      return;
+    }
+
+    if (job.status === "processing") {
+      const src = workspaceState.sources.find((s) => s.localId === localId);
+      if (src) {
+        src.processingMessage = job.message || "Processing...";
+        renderComposerChips();
+      }
+      setTimeout(poll, POLL_INTERVAL_MS);
+      return;
+    }
+
+    if (job.status === "ready") {
+      onSuccess(job.result || {});
+      return;
+    }
+
+    // failed
+    removeLocalSource(localId);
+    setUploadBusy(hasProcessing());
+    renderComposerChips();
+    renderSourcesPanel();
+    showToast(job.error || defaultErrorMessage, "error");
+  };
+
+  poll();
+}
+
 async function uploadFile(file) {
   const localId = uid();
 
@@ -359,9 +598,12 @@ async function uploadFile(file) {
     type: "doc",
     status: "processing",
     isNew: true,
+    active: true,
+    processingMessage: "Uploading...",
   });
   setUploadBusy(true);
   renderComposerChips();
+  renderSourcesPanel();
 
   try {
     const form = new FormData();
@@ -370,10 +612,11 @@ async function uploadFile(file) {
 
     const data = await apiFetch(API.upload, { method: "POST", body: form });
 
-    if (!data?.success) {
+    if (!data?.job_id) {
       removeLocalSource(localId);
       setUploadBusy(hasProcessing());
       renderComposerChips();
+      renderSourcesPanel();
       showToast(
         data?.message || data?.error || `Failed to upload ${file.name}.`,
         "error"
@@ -381,22 +624,27 @@ async function uploadFile(file) {
       return;
     }
 
-    // 2. Transition chip to ready state
-    const src = workspaceState.sources.find((s) => s.localId === localId);
-    if (src) {
-      src.collection = data.collection_name;
-      src.status = "ready";
-      // isNew stays true — will attach to the NEXT message the user sends
-    }
-
-    setUploadBusy(hasProcessing());
-    renderComposerChips();
-    await loadSessions();
-    showToast(`${file.name} indexed successfully.`, "success");
+    pollJobStatus(data.job_id, localId, {
+      defaultErrorMessage: `Failed to process ${file.name}.`,
+      onSuccess: async (result) => {
+        const src = workspaceState.sources.find((s) => s.localId === localId);
+        if (src) {
+          src.collection = result.collection_name;
+          src.status = "ready";
+          // isNew stays true — will attach to the NEXT message the user sends
+        }
+        setUploadBusy(hasProcessing());
+        renderComposerChips();
+        renderSourcesPanel();
+        await loadSessions();
+        showToast(`${file.name} indexed successfully.`, "success");
+      },
+    });
   } catch {
     removeLocalSource(localId);
     setUploadBusy(hasProcessing());
     renderComposerChips();
+    renderSourcesPanel();
     showToast(`Upload failed for ${file.name}.`, "error");
   }
 }
@@ -415,9 +663,12 @@ async function handleYouTube() {
     type: "yt",
     status: "processing",
     isNew: true,
+    active: true,
+    processingMessage: "Fetching transcript...",
   });
   setUploadBusy(true);
   renderComposerChips();
+  renderSourcesPanel();
 
   try {
     const data = await apiFetch(API.youtube, {
@@ -426,29 +677,43 @@ async function handleYouTube() {
       body: JSON.stringify({ url, session_id: workspaceState.sessionId }),
     });
 
-    if (!data?.success) {
+    if (!data?.job_id) {
       removeLocalSource(localId);
       setUploadBusy(hasProcessing());
       renderComposerChips();
+      renderSourcesPanel();
       showToast(data?.message || "Could not process YouTube URL.", "error");
       return;
     }
 
     const src = workspaceState.sources.find((s) => s.localId === localId);
-    if (src) {
-      src.name = data.video_id ? `YouTube ${data.video_id}` : "YouTube transcript";
-      src.collection = data.collection_name;
-      src.status = "ready";
+    if (src && data.video_id) {
+      src.name = `YouTube ${data.video_id}`;
     }
 
-    setUploadBusy(hasProcessing());
-    renderComposerChips();
-    await loadSessions();
-    showToast("YouTube transcript indexed.", "success");
+    pollJobStatus(data.job_id, localId, {
+      defaultErrorMessage: "Could not process YouTube URL.",
+      onSuccess: async (result) => {
+        const finalSrc = workspaceState.sources.find((s) => s.localId === localId);
+        if (finalSrc) {
+          finalSrc.name = result.video_id
+            ? `YouTube ${result.video_id}`
+            : "YouTube transcript";
+          finalSrc.collection = result.collection_name;
+          finalSrc.status = "ready";
+        }
+        setUploadBusy(hasProcessing());
+        renderComposerChips();
+        renderSourcesPanel();
+        await loadSessions();
+        showToast("YouTube transcript indexed.", "success");
+      },
+    });
   } catch {
     removeLocalSource(localId);
     setUploadBusy(hasProcessing());
     renderComposerChips();
+    renderSourcesPanel();
     showToast("Could not process YouTube URL.", "error");
   }
 }
@@ -476,6 +741,7 @@ async function removeSource(collection) {
       (s) => s.collection !== collection
     );
     renderComposerChips();
+    renderSourcesPanel();
 
     // Also strip the chip out of any message bubble it appears in
     document
@@ -516,6 +782,22 @@ async function sendMessage() {
     return;
   }
 
+  const activeSources = readySources.filter((s) => s.active !== false);
+  if (!activeSources.length) {
+    showToast(
+      "All sources are excluded. Click a source chip to include it.",
+      "error"
+    );
+    return;
+  }
+  // Only send an explicit scope when the user has excluded something —
+  // otherwise omit it so the backend's default "search everything" behavior
+  // is unchanged for anyone who never touches the toggle.
+  const scopedCollectionNames =
+    activeSources.length < readySources.length
+      ? activeSources.map((s) => s.collection)
+      : null;
+
   // Collect newly-added chips — these will appear alongside this message in the chat.
   // Sources uploaded in previous messages (isNew = false) are NOT duplicated here.
   const newSources = workspaceState.sources.filter(
@@ -538,6 +820,7 @@ async function sendMessage() {
   input.value = "";
   input.style.height = "auto";
   renderComposerChips(); // re-render — chips that were isNew are now gone from composer
+  renderSourcesPanel();
   updateSendButton();
 
   conversationState.isLoading = true;
@@ -551,6 +834,7 @@ async function sendMessage() {
         query,
         session_id: workspaceState.sessionId,
         message_attachments: messageAttachments.length ? messageAttachments : null,
+        collection_names: scopedCollectionNames,
       }),
     });
 
@@ -565,6 +849,7 @@ async function sendMessage() {
           (s) => !missing.includes(s.collection)
         );
         renderComposerChips();
+        renderSourcesPanel();
         await loadSessions();
         showToast(
           "One or more sources were removed. Please upload again if needed.",
@@ -639,7 +924,8 @@ function renderComposerChips() {
            </button>`;
 
       return `
-        <div class="chip ${processing ? "processing" : ""}" data-local-id="${escHtml(src.localId)}">
+        <div class="chip ${processing ? "processing" : ""}" data-local-id="${escHtml(src.localId)}"
+             title="${processing ? escHtml(src.processingMessage || "Processing...") : ""}">
           <span class="chip-type">${typeLabel}</span>
           <span class="chip-name" title="${escHtml(src.name)}">${escHtml(src.name)}</span>
           ${removeBtn}
@@ -650,6 +936,59 @@ function renderComposerChips() {
   row.querySelectorAll(".chip-remove").forEach((btn) => {
     btn.addEventListener("click", () => removeSource(btn.dataset.collection));
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  RENDER — SOURCES PANEL (persistent toggle, separate from the
+//  pending-upload chips above). Opens as a small popover from a
+//  button next to the attach button; does NOT affect the composer's
+//  height or the send flow.
+// ═══════════════════════════════════════════════════════════════════
+
+function renderSourcesPanel() {
+  const readySources = workspaceState.sources.filter(
+    (s) => s.status === "ready" && s.collection
+  );
+  const countBtn = el("sourcesToggleBtn");
+  const countLabel = el("sourcesCount");
+  const list = el("sourcesPopoverList");
+
+  if (!readySources.length) {
+    countBtn.hidden = true;
+    return;
+  }
+  countBtn.hidden = false;
+
+  const activeCount = readySources.filter((s) => s.active !== false).length;
+  countLabel.textContent = `${activeCount}/${readySources.length}`;
+
+  list.innerHTML = readySources
+    .map((src) => {
+      const inactive = src.active === false;
+      const typeLabel = src.type === "yt" ? "YT" : "DOC";
+      return `
+        <div class="source-toggle-item ${inactive ? "inactive" : ""}" data-local-id="${escHtml(src.localId)}">
+          <span class="chip-type">${typeLabel}</span>
+          <span class="source-toggle-name" title="${escHtml(src.name)}">${escHtml(src.name)}</span>
+          <span class="source-toggle-state">${inactive ? "Excluded" : "Included"}</span>
+        </div>`;
+    })
+    .join("");
+
+  list.querySelectorAll(".source-toggle-item").forEach((itemEl) => {
+    itemEl.addEventListener("click", () => {
+      const src = workspaceState.sources.find(
+        (s) => s.localId === itemEl.dataset.localId
+      );
+      if (!src) return;
+      src.active = src.active === false ? true : false;
+      renderSourcesPanel();
+    });
+  });
+}
+
+function toggleSourcesPopover() {
+  el("sourcesPopover").classList.toggle("open");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -691,21 +1030,67 @@ function appendMessage(content, role, attachments = []) {
 
 }
 
+function truncateSourceName(name, maxLen = 12) {
+  const clean = (name || "").trim();
+  if (clean.length <= maxLen) return clean;
+  return clean.slice(0, maxLen).trim() + "…";
+}
+
+function truncateMessageChipName(name, type) {
+  const clean = (name || "").trim();
+
+  if (type === "yt") {
+    const maxLen = 14;
+    return clean.length <= maxLen ? clean : clean.slice(0, maxLen).trim() + "…";
+  }
+
+  // doc: first word in full, second word trimmed
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length <= 1) {
+    const maxLen = 14;
+    return clean.length <= maxLen ? clean : clean.slice(0, maxLen).trim() + "…";
+  }
+  const first = words[0];
+  const secondTrimmed = words[1].slice(0, 3);
+  return `${first} ${secondTrimmed}…`;
+}
+
+function isMobileChipViewport() {
+  return window.matchMedia("(max-width: 640px)").matches;
+}
+
+// function truncateChipNameDesktop(name, type) {
+//   const clean = (name || "").trim();
+//   if (type === "yt") {
+//     return clean.length <= 10 ? clean : clean.slice(0, 10) + "…";
+//   }
+//   const words = clean.split(/\s+/).filter(Boolean);
+//   if (words.length <= 1) {
+//     return clean.length <= 14 ? clean : clean.slice(0, 14) + "…";
+//   }
+//   const first = words[0];
+//   const secondTrimmed = words[1].slice(0, 3);
+//   return `${first} ${secondTrimmed}…`;
+// }
+
 function buildReadOnlyChips(chips) {
+  const mobile = isMobileChipViewport();
   return chips
-    .map(
-      (c) => `
-      <div class="chip message-chip">
+    .map((c) => {
+      const displayName = mobile
+        ? truncateSourceName(c.name)
+        : truncateMessageChipName(c.name, c.type);
+      return `
+      <div class="chip message-chip chip-hover-controls">
         <span class="chip-type">${c.type === "yt" ? "YT" : "DOC"}</span>
-        <span class="chip-name" title="${escHtml(c.name)}">${escHtml(c.name)}</span>
-        <span class="chip-indicator ready" aria-label="Ready"></span>
+        <span class="chip-name" title="${escHtml(c.name)}">${escHtml(displayName)}</span>
         <button class="chip-remove" data-collection="${escHtml(c.collection)}" title="Remove source">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
         </button>
-      </div>`
-    )
+      </div>`;
+    })
     .join("");
 }
 
@@ -987,15 +1372,47 @@ function escHtml(v) {
  */
 async function apiFetch(url, options = {}) {
   try {
-    const res = await fetch(url, options);
+    const apiKey = localStorage.getItem(API_KEY_STORAGE);
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        "X-API-Key": apiKey || "",
+      },
+    });
+
     const text = await res.text();
-    if (!text) return { ok: res.ok, status: res.status };
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { ok: res.ok, status: res.status, message: text };
+    let parsed = null;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = { message: text };
+      }
     }
-  } catch {
+
+    if (res.status === 401) {
+      // Key missing/invalid/revoked — clear it and force re-entry
+      localStorage.removeItem(API_KEY_STORAGE);
+      showToast("Your API key is invalid or missing. Please re-enter it.", "error");
+      ensureApiKey();
+      return null;
+    }
+
+    if (res.status === 422) {
+      // Framework-level validation error, not app data — surface it, don't pretend it's a result
+      console.error("Request validation failed:", parsed);
+      return null;
+    }
+
+    if (!res.ok) {
+      console.error(`Request failed (${res.status}):`, parsed);
+      return { ok: false, status: res.status, ...(parsed || {}) };
+    }
+
+    return parsed ?? { ok: res.ok, status: res.status };
+  } catch (err) {
+    console.error("Network error:", err);
     return null;
   }
 }

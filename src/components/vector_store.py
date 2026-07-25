@@ -19,7 +19,18 @@ with open("config/config.yaml") as f:
 
 
 class VectorStore:
-    """Manages Qdrant vector storage for DocMind."""
+    """Manages Qdrant vector storage for DocMind.
+
+    Embeddings are now generated LOCALLY (BGE via sentence-transformers),
+    so the rate-limit retry loop that used to wrap add_documents() for
+    Gemini's 429 errors has been removed -- there is no external quota
+    to hit anymore, and no cleanup-and-retry cycle is needed.
+
+    NOTE: the on_retry parameter is still accepted (as a no-op) purely
+    so existing callers -- ingestion_pipeline.py, and app.py's
+    _run_upload_job / _run_youtube_job background functions -- don't
+    need their call signatures changed. It's simply never invoked now.
+    """
 
     def __init__(self, collection_name: str | None = None):
         try:
@@ -28,7 +39,8 @@ class VectorStore:
             self.default_collection = config["vectorstore"]["collection_name"]
             self.collection_name = collection_name or self.default_collection
             embedder = Embedder()
-            self.embedding_model = embedder.get_embedding_model()
+            self.embedding_model = embedder.get_embedding_model(for_query=True)
+            self.document_embedding_model = embedder.get_embedding_model(for_query=False)
             logging.info(
                 "VectorStore ready | collection: %s | url: %s",
                 self.collection_name,
@@ -65,8 +77,17 @@ class VectorStore:
         except Exception as e:
             raise CustomException(e, sys)
 
-    def add_documents(self, chunks: List[Document]) -> QdrantVectorStore:
-        """Embed and store document chunks in Qdrant."""
+    def add_documents(
+        self,
+        chunks: List[Document],
+        on_retry=None,
+    ) -> QdrantVectorStore:
+        """Embed and store document chunks in Qdrant.
+
+        on_retry is unused now (kept only for signature compatibility --
+        see class docstring). Local embeddings never hit an external
+        rate limit, so this is now a single straightforward call.
+        """
         try:
             logging.info(
                 "Adding %d chunks | collection: %s",
@@ -81,7 +102,7 @@ class VectorStore:
 
             db = QdrantVectorStore.from_documents(
                 documents=chunks,
-                embedding=self.embedding_model,
+                embedding=self.document_embedding_model,
                 url=self.qdrant_url,
                 collection_name=self.collection_name,
             )
@@ -193,6 +214,8 @@ class VectorStore:
                     return False
                 client.delete_collection(self.collection_name)
                 logging.info("Collection deleted: %s", self.collection_name)
+                from src.components.retriever import invalidate_cached_db
+                invalidate_cached_db(self.collection_name)
                 return True
             finally:
                 client.close()
@@ -205,8 +228,10 @@ class VectorStore:
             client = self._client()
             try:
                 names = [c.name for c in client.get_collections().collections]
+                from src.components.retriever import invalidate_cached_db
                 for name in names:
                     client.delete_collection(name)
+                    invalidate_cached_db(name)
                     logging.info("Collection deleted during reset: %s", name)
                 return names
             finally:

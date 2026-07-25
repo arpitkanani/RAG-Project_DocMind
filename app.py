@@ -2,22 +2,31 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 import re
+import os
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
+from src.auth import get_current_user
+from src.components.embedder import Embedder
 from src.components.memory_manager import MemoryManager
 from src.components.vector_store import VectorStore
 from src.exception import CollectionNotFoundError, CustomException, KnowledgeBaseEmptyError
 from src.logger import logging
 from src.pipelines.ingestion_pipeline import IngestionPipeline
 from src.pipelines.qa_pipeline import QAPipeline
-from src.utils.file_helper import clean_uploads
+from src.utils.file_helper import clean_uploads, validate_file, validate_file_size
+from src.utils.job_manager import upload_job_manager
+from src.utils.rate_limiter import LLMRateLimitError
 from src.utils.youtube_helper import extract_video_id
 load_dotenv()
 
@@ -40,6 +49,26 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory="templates/static"), name="static")
+
+@app.get("/favicon.ico", include_in_schema=False)
+def _favicon():
+    # Browsers request this automatically on every page load. We don't ship
+    # an icon file, so just return an empty 204 instead of a 404 -- purely
+    # cosmetic, keeps the console/log clean.
+    return Response(status_code=204)
+ 
+ 
+@app.on_event("startup")
+def _preload_embedding_model() -> None:
+    """
+    Load the embedding model into memory once, during server boot, instead
+    of paying for it inside the first request that happens to touch
+    VectorStore/Embedder (e.g. GET /sessions). This is what was making the
+    first request after every reload/refresh feel slow.
+    """
+    logging.info("Preloading embedding model at startup...")
+    Embedder()
+    logging.info("Embedding model preloaded, ready to serve requests.")
 
 
 class QueryRequest(BaseModel):
@@ -97,12 +126,14 @@ def build_collection_name(source_name: str, prefix: str = "doc") -> str:
     return f"{prefix}_{safe_stem}_{uuid.uuid4().hex[:8]}"
 
 
-def resolve_session_scope(session_id: str, requested_scope: Optional[List[str]]) -> List[str]:
+def resolve_session_scope(
+    session_id: str, requested_scope: Optional[List[str]], user_id: str
+) -> List[str]:
     if requested_scope:
         return requested_scope
 
     available_collections = VectorStore().list_collections()
-    memory = MemoryManager(session_id=session_id)
+    memory = MemoryManager(session_id=session_id, user_id=user_id)
     memory.cleanup_attachments(available_collections)
     attachments = memory.get_attachment_collections()
     if attachments:
@@ -178,41 +209,90 @@ async def landing_page():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/upload")
-async def upload_file(
-    file: UploadFile = File(...),
-    session_id: str = Form("default"),
+def _run_upload_job(
+    job_id: str,
+    file_bytes: bytes,
+    filename: str,
+    collection_name: str,
+    session_id: str,
+    user_id: str,
 ):
+    """Runs in the background (FastAPI BackgroundTasks) after the request
+    has already returned a job_id to the client."""
     try:
-        logging.info("File received: %s | session: %s", file.filename, session_id)
-
-        file_bytes = await file.read()
         pipeline = IngestionPipeline()
-        collection_name = build_collection_name(file.filename or "document", prefix="doc")
+
+        def on_retry(attempt: int, wait_seconds: float):
+            upload_job_manager.update_progress(
+                job_id,
+                f"Rate limited by the embedding service — retrying in {int(wait_seconds)}s "
+                f"(attempt {attempt}). This can take a few minutes for large files.",
+            )
+
         result = pipeline.run_from_bytes(
             file_bytes,
-            file.filename,  # type: ignore[arg-type]
+            filename,
             collection_name=collection_name,
+            on_retry=on_retry,
         )
 
         if result.get("success") and result.get("collection_name"):
-            MemoryManager(session_id=session_id).add_attachment(
-                name=file.filename or result["collection_name"],
+            MemoryManager(session_id=session_id, user_id=user_id).add_attachment(
+                name=filename or result["collection_name"],
                 collection=result["collection_name"],
                 source_type="doc",
             )
 
         logging.info("File indexed: %s", result.get("collection_name"))
-        return result
-    except CustomException as exc:
-        logging.exception("Upload failed with application error")
-        return build_error_response(
-            status_code=400,
-            error_code="upload_failed",
-            message="Could not process this file. Please try uploading it again.",
+        upload_job_manager.mark_ready(job_id, result)
+    except Exception:
+        logging.exception("Background upload job failed: %s", job_id)
+        upload_job_manager.mark_failed(
+            job_id, "Could not process this file. Please try uploading it again."
         )
-    except Exception as exc:
-        logging.exception("Upload failed")
+
+
+@app.post("/upload")
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    session_id: str = Form("default"),
+    user_id: str = Depends(get_current_user),
+):
+    try:
+        logging.info("File received: %s | session: %s", file.filename, session_id)
+
+        file_bytes = await file.read()
+
+        if not validate_file(file.filename or ""):
+            return build_error_response(
+                status_code=400,
+                error_code="upload_failed",
+                message=f"File type not allowed: {file.filename}",
+            )
+        if not validate_file_size(file_bytes, file.filename or ""):
+            return build_error_response(
+                status_code=400,
+                error_code="upload_failed",
+                message="File too large.",
+            )
+
+        collection_name = build_collection_name(file.filename or "document", prefix="doc")
+        job_id = upload_job_manager.create_job()
+
+        background_tasks.add_task(
+            _run_upload_job,
+            job_id,
+            file_bytes,
+            file.filename,
+            collection_name,
+            session_id,
+            user_id,
+        )
+
+        return {"job_id": job_id, "status": "processing"}
+    except Exception:
+        logging.exception("Upload failed to start")
         return build_error_response(
             status_code=500,
             error_code="server_error",
@@ -220,14 +300,69 @@ async def upload_file(
         )
 
 
+@app.get("/upload/status/{job_id}")
+async def get_upload_status(job_id: str, user_id: str = Depends(get_current_user)):
+    job = upload_job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+def _run_youtube_job(
+    job_id: str,
+    url: str,
+    video_id: str,
+    collection_name: str,
+    session_id: str,
+    user_id: str,
+    deleted_duplicates: List[str],
+):
+    """Runs in the background after the request has already returned a
+    job_id -- same pattern as _run_upload_job."""
+    try:
+        pipeline = IngestionPipeline()
+        memory = MemoryManager(session_id=session_id, user_id=user_id)
+
+        def on_retry(attempt: int, wait_seconds: float):
+            upload_job_manager.update_progress(
+                job_id,
+                f"Rate limited by the embedding service — retrying in {int(wait_seconds)}s "
+                f"(attempt {attempt}). This can take a few minutes for long videos.",
+            )
+
+        result = pipeline.run(url, collection_name=collection_name, on_retry=on_retry)
+
+        if result.get("success") and result.get("collection_name"):
+            memory.add_attachment(
+                name=f"YouTube {video_id}",
+                collection=result["collection_name"],
+                source_type="yt",
+                extra={"video_id": video_id, "url": url},
+            )
+
+        logging.info("YouTube transcript indexed: %s", result.get("collection_name"))
+        upload_job_manager.mark_ready(
+            job_id, {**result, "replaced_collections": deleted_duplicates, "video_id": video_id}
+        )
+    except Exception:
+        logging.exception("Background YouTube job failed: %s", job_id)
+        upload_job_manager.mark_failed(
+            job_id, "Could not process this YouTube transcript. Please try again."
+        )
+
+
 @app.post("/youtube")
-async def process_youtube(request: YouTubeRequest):
+async def process_youtube(
+    request: YouTubeRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+):
     try:
         logging.info("YouTube URL received: %s | session: %s", request.url, request.session_id)
 
-        pipeline = IngestionPipeline()
         video_id = extract_video_id(request.url)
-        memory = MemoryManager(session_id=request.session_id or "default")
+        session_id = request.session_id or "default"
+        memory = MemoryManager(session_id=session_id, user_id=user_id)
         existing_video_sources = [
             attachment
             for attachment in memory.get_attachments()
@@ -245,27 +380,22 @@ async def process_youtube(request: YouTubeRequest):
             video_id,
             prefix="yt",
         )
-        result = pipeline.run(request.url, collection_name=collection_name)
+        job_id = upload_job_manager.create_job()
 
-        if result.get("success") and result.get("collection_name"):
-            memory.add_attachment(
-                name=f"YouTube {video_id}",
-                collection=result["collection_name"],
-                source_type="yt",
-                extra={"video_id": video_id, "url": request.url},
-            )
-
-        logging.info("YouTube transcript indexed: %s", result.get("collection_name"))
-        return {**result, "replaced_collections": deleted_duplicates, "video_id": video_id}
-    except CustomException as exc:
-        logging.exception("YouTube processing failed with application error")
-        return build_error_response(
-            status_code=400,
-            error_code="youtube_failed",
-            message="Could not process this YouTube transcript. Please try again.",
+        background_tasks.add_task(
+            _run_youtube_job,
+            job_id,
+            request.url,
+            video_id,
+            collection_name,
+            session_id,
+            user_id,
+            deleted_duplicates,
         )
-    except Exception as exc:
-        logging.exception("YouTube processing failed")
+
+        return {"job_id": job_id, "status": "processing", "video_id": video_id}
+    except Exception:
+        logging.exception("YouTube processing failed to start")
         return build_error_response(
             status_code=500,
             error_code="server_error",
@@ -274,17 +404,22 @@ async def process_youtube(request: YouTubeRequest):
 
 
 @app.post("/query")
-async def query(request: QueryRequest):
+async def query(
+    request: QueryRequest,
+    user_id: str = Depends(get_current_user),
+):
     try:
         logging.info("Query received: %s...", request.query[:50])
 
         collection_scope = resolve_session_scope(
             request.session_id or "default",
             normalize_collection_scope(request),
+            user_id,
         )
         pipeline = QAPipeline(
             collection_names=collection_scope,
             session_id=request.session_id or "default",
+            user_id=user_id,
         )
         result = pipeline.run(
             request.query,
@@ -297,6 +432,13 @@ async def query(request: QueryRequest):
             result["collection_scope"],
         )
         return result
+    except LLMRateLimitError as exc:
+        logging.warning("LLM rate limit hit during query | kind: %s", exc.kind)
+        return build_error_response(
+            status_code=429,
+            error_code=f"llm_rate_limit_{exc.kind}",
+            message=exc.message,
+        )
     except CollectionNotFoundError as exc:
         logging.exception("Query failed because collection is missing")
         missing = getattr(exc, "missing_collections", [])
@@ -358,14 +500,18 @@ async def delete_collection(collection_name: str):
 
 
 @app.delete("/sessions/{session_id}/attachments/{collection_name}")
-async def delete_attachment(session_id: str, collection_name: str):
+async def delete_attachment(
+    session_id: str,
+    collection_name: str,
+    user_id: str = Depends(get_current_user),
+):
     try:
         logging.info(
             "Deleting attachment | session: %s | collection: %s",
             session_id,
             collection_name,
         )
-        memory = MemoryManager(session_id=session_id)
+        memory = MemoryManager(session_id=session_id, user_id=user_id)
         removed = memory.remove_attachment(collection_name)
         deleted_collections = delete_collections([collection_name])
 
@@ -397,10 +543,11 @@ async def new_session():
 
 
 @app.get("/sessions")
-async def list_sessions():
+async def list_sessions(user_id: str = Depends(get_current_user)):
     try:
         sessions = MemoryManager.list_sessions(
-            valid_collections=get_available_collections()
+            user_id=user_id,
+            valid_collections=get_available_collections(),
         )
         return {"sessions": sessions}
     except Exception as exc:
@@ -409,11 +556,17 @@ async def list_sessions():
 
 
 @app.delete("/sessions")
-async def delete_all_sessions():
+async def delete_all_sessions(user_id: str = Depends(get_current_user)):
     try:
-        logging.info("Clearing all sessions")
-        MemoryManager.clear_all()
-        deleted_collections = VectorStore().delete_all_collections()
+        logging.info("Clearing all sessions | user: %s", user_id)
+        user_sessions = MemoryManager.list_sessions(user_id=user_id)
+        user_collections: List[str] = []
+        for session in user_sessions:
+            memory = MemoryManager(session_id=session["session_id"], user_id=user_id)
+            user_collections.extend(memory.get_attachment_collections())
+
+        deleted_collections = delete_collections(user_collections)
+        MemoryManager.clear_all(user_id=user_id)
         clean_uploads()
         return {
             "success": True,
@@ -426,20 +579,19 @@ async def delete_all_sessions():
 
 
 @app.get("/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, user_id: str = Depends(get_current_user)):
     try:
-        memory = MemoryManager(session_id=session_id)
+        memory = MemoryManager(session_id=session_id, user_id=user_id)
         memory.cleanup_attachments(get_available_collections())
         messages = memory.get_messages_payload()
         attachments = memory.get_attachments()
-        state = memory._load_state()
         title = next(
             (
                 message["content"].strip()[:60]
                 for message in messages
                 if message.get("role") == "human" and message.get("content", "").strip()
             ),
-            state.get("title") or "New Chat",
+            memory.get_title(),
         )
         return {
             "session_id": session_id,
@@ -453,10 +605,10 @@ async def get_session(session_id: str):
 
 
 @app.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user_id: str = Depends(get_current_user)):
     try:
         logging.info("Deleting session: %s", session_id)
-        memory = MemoryManager(session_id=session_id)
+        memory = MemoryManager(session_id=session_id, user_id=user_id)
         existing_messages = memory.get_messages_payload()
         existing_attachments = memory.get_attachments()
         if not existing_messages and not existing_attachments:
@@ -474,11 +626,17 @@ async def delete_session(session_id: str):
 
 
 @app.delete("/memory")
-async def clear_memory():
+async def clear_memory(user_id: str = Depends(get_current_user)):
     try:
-        logging.info("Clearing all memory")
-        MemoryManager.clear_all()
-        deleted_collections = VectorStore().delete_all_collections()
+        logging.info("Clearing all memory | user: %s", user_id)
+        user_sessions = MemoryManager.list_sessions(user_id=user_id)
+        user_collections: List[str] = []
+        for session in user_sessions:
+            memory = MemoryManager(session_id=session["session_id"], user_id=user_id)
+            user_collections.extend(memory.get_attachment_collections())
+
+        deleted_collections = delete_collections(user_collections)
+        MemoryManager.clear_all(user_id=user_id)
         clean_uploads()
         return {
             "success": True,

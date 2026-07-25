@@ -1,6 +1,7 @@
 import re
 import sys
 from collections import Counter
+import threading
 from typing import List, Tuple
 
 import yaml
@@ -19,6 +20,32 @@ from src.logger import logging
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
+# Process-wide cache: QdrantVectorStore.from_existing_collection() secretly
+# costs one embedding API call every time it's constructed (LangChain embeds
+# a "dummy_text" string to validate vector dimensions match). Caching by
+# collection name means that validation cost is paid ONCE per collection
+# per process lifetime, not once per query -- this was the single biggest
+# source of wasted embedding calls against the shared rate limit.
+_qdrant_db_cache: dict[str, QdrantVectorStore] = {}
+
+
+def invalidate_cached_db(collection_name: str):
+    """Call this whenever a collection is deleted, so a future re-upload
+    with the same name doesn't serve a stale cached connection."""
+    _qdrant_db_cache.pop(collection_name, None)
+
+from sentence_transformers import CrossEncoder
+
+_reranker = None
+_reranker_lock = threading.Lock()
+
+def _get_reranker():
+    global _reranker
+    if _reranker is None:
+        with _reranker_lock:
+            if _reranker is None:
+                _reranker = CrossEncoder("BAAI/bge-reranker-base", device="cpu")
+    return _reranker
 
 class Retriever:
     """Handles single-collection and multi-collection retrieval."""
@@ -35,6 +62,9 @@ class Retriever:
             self.fetch_k = config["retriever"].get("fetch_k", self.k)
             self.lambda_mult = config["retriever"].get("lambda_mult", 0.5)
             self.score_threshold = config["retriever"]["score_threshold"]
+            self.collection_margin = config["retriever"].get("collection_margin", 0.78)
+            self.doc_margin = config["retriever"].get("doc_margin", 0.55)
+            self.max_query_variants = config["retriever"].get("max_query_variants", 2)
             logging.info("Retriever initialized successfully")
         except Exception as e:
             raise CustomException(e, sys)
@@ -63,6 +93,7 @@ class Retriever:
                 )
 
             ranked_docs = self._rerank_documents(query, collected_docs)
+            
             filtered = [item for item in ranked_docs if item[2] >= self.score_threshold]
 
             if filtered:
@@ -73,10 +104,9 @@ class Retriever:
                         best_by_collection[coll] = final_score
 
                 top_score = max(best_by_collection.values())
-                COLLECTION_MARGIN = 0.6
                 competitive_collections = {
                     coll for coll, score in best_by_collection.items()
-                    if score >= top_score * COLLECTION_MARGIN
+                    if score >= top_score * self.collection_margin
                 }
 
                 collection_filtered = [
@@ -87,7 +117,7 @@ class Retriever:
                 # Per-document margin — even within the same (competitive) collection,
                 # only keep chunks close to that collection's OWN best match. Stops
                 # weak neighboring pages from riding along with the one strong page.
-                DOC_MARGIN = 0.55
+                DOC_MARGIN = self.doc_margin
                 docs = []
                 for coll in competitive_collections:
                     coll_docs = sorted(
@@ -115,7 +145,7 @@ class Retriever:
                     best_final_score,
                 )
 
-                if best_semantic_score >= max(self.score_threshold - 0.15, 0.2):
+                if best_semantic_score >= max(self.score_threshold - 0.05, 0.4):
                     best_collection = best_doc.metadata.get("collection_name")
                     same_collection_docs = [
                         item for item in ranked_docs
@@ -176,22 +206,33 @@ class Retriever:
         query: str,
         query_variants: List[str],
     ) -> List[Tuple[Document, float]]:
-        db = QdrantVectorStore.from_existing_collection(
-            embedding=self.vs.embedding_model,
-            collection_name=collection_name,
-            url=self.vs.qdrant_url,
-        )
+        db = self._get_cached_db(collection_name)
 
         docs: List[Tuple[Document, float]] = []
         for variant in query_variants:
             if self.search_type == "mmr":
+                # max_marginal_relevance_search() picks a diverse subset but
+                # doesn't return similarity scores -- and retrieve_ranked()
+                # later filters everything below score_threshold using that
+                # score. A hardcoded 0.0 here meant every MMR result always
+                # failed that filter, so MMR silently returned nothing.
+                # Fix: look up each selected chunk's real score from a
+                # similarity search over the same fetch_k candidate pool
+                # MMR chose from (safe to key by exact chunk text, since
+                # chunks are unique within one collection).
+                score_lookup = {
+                    doc.page_content: self._normalize_similarity_score(score)
+                    for doc, score in db.similarity_search_with_score(variant, k=self.fetch_k)
+                }
                 mmr_docs = db.max_marginal_relevance_search(
                     variant,
                     k=self.k,
                     fetch_k=self.fetch_k,
                     lambda_mult=self.lambda_mult,
                 )
-                docs.extend((doc, 0.0) for doc in mmr_docs)
+                docs.extend(
+                    (doc, score_lookup.get(doc.page_content, 0.0)) for doc in mmr_docs
+                )
             else:
                 docs.extend(self._similarity_search_with_scores(db, variant))
 
@@ -199,6 +240,18 @@ class Retriever:
             doc.metadata.setdefault("collection_name", collection_name)
 
         return docs
+
+    def _get_cached_db(self, collection_name: str) -> QdrantVectorStore:
+        """Reuse an existing connection if we've already validated this
+        collection this process lifetime -- avoids paying the hidden
+        dummy-text embedding cost on every single query."""
+        if collection_name not in _qdrant_db_cache:
+            _qdrant_db_cache[collection_name] = QdrantVectorStore.from_existing_collection(
+                embedding=self.vs.embedding_model,
+                collection_name=collection_name,
+                url=self.vs.qdrant_url,
+            )
+        return _qdrant_db_cache[collection_name]
 
     def _rerank_documents(
         self,
@@ -306,8 +359,7 @@ class Retriever:
         ]
         return phrases[:3]
 
-    @staticmethod
-    def _build_query_variants(query: str) -> List[str]:
+    def _build_query_variants(self, query: str) -> List[str]:
         normalized = " ".join((query or "").split())
         tokens = re.findall(r"[a-z0-9]+", normalized.lower())
         variants = [normalized]
@@ -319,7 +371,11 @@ class Retriever:
         if len(tokens) > 5:
             variants.append(" ".join(tokens[:5]))
 
-        return [variant for index, variant in enumerate(variants) if variant and variant not in variants[:index]]
+        deduped = [
+            variant for index, variant in enumerate(variants)
+            if variant and variant not in variants[:index]
+        ]
+        return deduped[: self.max_query_variants]
 
     @staticmethod
     def _looks_like_structured_answer(query_terms: set[str], text_lower: str) -> bool:

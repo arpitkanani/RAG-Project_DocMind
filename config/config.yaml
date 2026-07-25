@@ -1,17 +1,31 @@
 embedding:
-  model: "nomic-embed-text"
+  model: "BAAI/bge-small-en-v1.5"
+  device: "cpu"
 
 llm:
-  provider: "groq"
-  model: "llama-3.3-70b-versatile"
-  temperature: 0.5
+  provider: "google" #"groq"
+  model: "gemini-2.0-flash" #" llama-3.3-70b-versatile"
+  temperature: 0.4
+  max_tokens: 2048
+  rate_limit:
+    patterns:
+      rpd: ["requests per day", "request per day", "rpd", "daily limit", "requests_per_day"]
+      tpd: ["tokens per day", "tpd", "daily token"]
+      tpm: ["tokens per minute", "tpm", "tokens_per_minute"]
+      rpm: []   # fallback — used when nothing more specific matches
+    messages:
+      rpm: "We're getting a lot of questions right now — please wait about a minute and try again."
+      tpm: "That answer needs a bit more room to breathe — please wait a few seconds and try again."
+      rpd: "We've hit today's question limit. Please try again after midnight, or contact support if this keeps happening."
+      tpd: "We've hit today's usage limit for answers. Please try again tomorrow."
+      default: "We're experiencing high demand right now. Please wait a moment and try again."
 
 
 # splitting chunks of text for embedding and retrieval
 splitter:
   strategy: "recursive"
-  chunk_size: 700
-  chunk_overlap: 200
+  chunk_size: 900
+  chunk_overlap: 250
   separators:
     - "\n\n"
     - "\n"
@@ -22,12 +36,14 @@ splitter:
 
 # retriver use MMR for divers answer
 retriever:
-  search_type: "similarity"
-  k: 4
-  fetch_k: 10
+  search_type: "mmr"
+  k: 5
+  fetch_k: 15
   lambda_mult: 0.7
-  score_threshold: 0.45
+  score_threshold: 0.5
   summary_max_chars: 6000 
+  collection_margin: 0.74   # was hardcoded 0.6 — higher = stricter, less cross-document bleed
+  doc_margin: 0.7
 
 #vectore database used chroma
 vectorstore:
@@ -54,3 +70,9 @@ youtube:
   language: ["en","hi","gu"]   # language for YouTube video transcription
   max_chars: 150000
 
+postgres:
+  host: localhost
+  port: 5432
+  user: docmind
+  password: docmind@1411
+  database: docmind
