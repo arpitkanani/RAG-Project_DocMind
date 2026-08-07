@@ -3,9 +3,9 @@ embedding:
   device: "cpu"
 
 llm:
-  provider: "google" #"groq"
-  model: "gemini-2.0-flash" #" llama-3.3-70b-versatile"
-  temperature: 0.4
+  provider: "groq" #"google" 
+  model: "llama-3.1-8b-instant" #"gemini-2.0-flash" #
+  temperature: 0.5
   max_tokens: 2048
   rate_limit:
     patterns:
@@ -36,14 +36,14 @@ splitter:
 
 # retriver use MMR for divers answer
 retriever:
-  search_type: "mmr"
-  k: 5
-  fetch_k: 15
+  search_type: "similarity"
+  k: 4
+  fetch_k: 13
   lambda_mult: 0.7
   score_threshold: 0.5
   summary_max_chars: 6000 
-  collection_margin: 0.74   # was hardcoded 0.6 — higher = stricter, less cross-document bleed
-  doc_margin: 0.7
+  collection_margin: 0.8   # was hardcoded 0.6 — higher = stricter, less cross-document bleed
+  doc_margin: 0.778
 
 #vectore database used chroma
 vectorstore:
@@ -53,6 +53,7 @@ vectorstore:
 memory:
   persist_directory: "data/memory"          # saved here on disk
   window_days: 7                          # how many past interactions to remember
+  recent_messages_verbatim: 6
 
 upload:
   allowed_extensions:

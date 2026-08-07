@@ -164,6 +164,18 @@ def sanitize_answer(answer: str) -> str:
     if not text:
         return FALLBACK_ANSWER
 
+    # Strip any "Source:" section the model added on its own (Rule 7 asks
+    # it not to, but it doesn't always comply) -- get_answer() always
+    # appends its OWN citations further down, so leaving the model's copy
+    # in would double them up.
+    text = re.split(r"(?i)\n\s*source\s*:\s*\n", text)[0].strip()
+
+    # Catch the not-found token even wrapped inside a sentence (e.g.
+    # "...Therefore, the answer is: DATA_NOT_FOUND"), not just an exact
+    # standalone match.
+    if NOT_FOUND_TOKEN in text:
+        return FALLBACK_ANSWER
+
     lowered = text.lower()
     banned_fragments = [
         "there is nothing in this chunk",
@@ -173,8 +185,13 @@ def sanitize_answer(answer: str) -> str:
         "the provided context does not",
         "i cannot find the answer to that in the provided documents",
         "retrieved context",
+        "does not provide information on",
+        "does not provide details on",
+        "does not provide information about",
+        "are not provided in the uploaded material",
+        "is not provided in the uploaded material",
     ]
-    if text == NOT_FOUND_TOKEN or any(fragment in lowered for fragment in banned_fragments):
+    if any(fragment in lowered for fragment in banned_fragments):
         return FALLBACK_ANSWER
 
     hedge_fragments = [
@@ -201,9 +218,37 @@ def sanitize_answer(answer: str) -> str:
     if hedge_count >= 2:
         return FALLBACK_ANSWER
 
+    text = _dedupe_near_identical_sentences(text)
+
     text = re.sub(r"(?i)^based on the provided context[:,]?\s*", "", text).strip()
     text = re.sub(r"(?i)^according to the provided context[:,]?\s*", "", text).strip()
     return text or FALLBACK_ANSWER
+
+
+def _dedupe_near_identical_sentences(text: str) -> str:
+    """
+    Generations sometimes restate the exact same point twice in one reply,
+    just reworded slightly (e.g. "X is not covered here., However, X is
+    not covered in the material."). This is a GENERAL catch for that
+    pattern -- unlike the specific phrases in banned_fragments above,
+    which only catch one known wording, this compares every sentence
+    against the ones before it (ignoring case, punctuation, and filler
+    connector words) and drops any that are essentially saying the same
+    thing again.
+    """
+    connectors = {"however", "additionally", "furthermore", "also", "moreover", "therefore"}
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    seen = set()
+    kept = []
+    for sentence in sentences:
+        words = [w for w in re.findall(r"[a-z0-9]+", sentence.lower()) if w not in connectors]
+        normalized = " ".join(words)
+        if normalized and normalized in seen:
+            continue  # near-identical to a sentence already kept -- drop it
+        if normalized:
+            seen.add(normalized)
+        kept.append(sentence)
+    return " ".join(kept)
 
 
 QA_PROMPT = ChatPromptTemplate.from_messages(
@@ -224,6 +269,7 @@ Rules:
 9. State facts directly and plainly, as if you simply know them from the material. Do not narrate your own uncertainty at any point in the answer.
 10. If only partial information is available, answer confidently with the part that is clearly supported, and say nothing about the part that isn't — do not apologize for incompleteness or ask the user for clarification.
 11. If the retrieved material fully and directly answers the question, give a thorough, complete explanation using all the relevant information available — do not compress a well-supported answer into a short summary. Only keep an answer brief when the source material itself is genuinely limited.
+12. Never state the same point twice in one reply, even reworded or with a different connector word like "however" or "additionally." Say each point exactly once.
 """,
         ),
         MessagesPlaceholder(variable_name="chat_history"),
@@ -267,7 +313,7 @@ def _build_llm():
     return ChatGroq(
         model=config["llm"]["model"],
         temperature=config["llm"]["temperature"],
-        api_key=os.environ["GROQ_API_KEY"],
+        api_key=os.environ["GROQ_API_KEY"], # type: ignore
         max_tokens=max_tokens,
     )
 

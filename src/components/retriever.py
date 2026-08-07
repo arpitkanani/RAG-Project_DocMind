@@ -1,7 +1,7 @@
 import re
 import sys
 from collections import Counter
-import threading
+
 from typing import List, Tuple
 
 import yaml
@@ -34,18 +34,7 @@ def invalidate_cached_db(collection_name: str):
     with the same name doesn't serve a stale cached connection."""
     _qdrant_db_cache.pop(collection_name, None)
 
-from sentence_transformers import CrossEncoder
 
-_reranker = None
-_reranker_lock = threading.Lock()
-
-def _get_reranker():
-    global _reranker
-    if _reranker is None:
-        with _reranker_lock:
-            if _reranker is None:
-                _reranker = CrossEncoder("BAAI/bge-reranker-base", device="cpu")
-    return _reranker
 
 class Retriever:
     """Handles single-collection and multi-collection retrieval."""

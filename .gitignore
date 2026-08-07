@@ -24,6 +24,7 @@ test.csv
 .vscode/
 .DS_Store
 
+eval-env/
 # Test/debug scratch files
 test.csv
 endpoint_regression_check.py
