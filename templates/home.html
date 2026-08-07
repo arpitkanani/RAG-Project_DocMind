@@ -10,19 +10,28 @@
     href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/static/css/style.css?v=2" />
+  <link rel="stylesheet" href="/static/css/style.css?v=10" />
 </head>
 <body>
+
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
   <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-top">
-      <div class="sidebar-brand-wrap">
-        <div class="sidebar-brand-mark">DM</div>
-        <div>
-          <div class="sidebar-brand">DocMind</div>
-          <div class="sidebar-subtitle">Intelligent document analysis</div>
+      <div class="sidebar-top-row">
+        <div class="sidebar-brand-wrap">
+          <div class="sidebar-brand-mark">DM</div>
+          <div>
+            <div class="sidebar-brand">DocMind</div>
+            <div class="sidebar-subtitle">Intelligent document analysis</div>
+          </div>
         </div>
+        <button class="sidebar-close-btn" id="sidebarCloseBtn" aria-label="Close sidebar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="11 5 4 12 11 19"/><polyline points="19 5 12 12 19 19"/>
+          </svg>
+        </button>
       </div>
 
       <button class="new-chat-btn" id="newChatBtn" title="New Chat">
@@ -49,6 +58,16 @@
 
   <!-- ══════════════════════ MAIN ══════════════════════ -->
   <main class="main" id="main">
+
+    <!-- Mobile top bar — part of the layout, only shown below 900px -->
+    <div class="mobile-topbar" id="mobileTopbar">
+      <button class="sidebar-toggle-btn" id="sidebarToggle" aria-label="Toggle chat list">
+        <svg id="sidebarToggleIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="13 5 20 12 13 19"/><polyline points="5 5 12 12 5 19"/>
+        </svg>
+      </button>
+      <span class="mobile-topbar-title">DocMind</span>
+    </div>
 
     
 
@@ -77,11 +96,37 @@
 
         <!-- Input row — height NEVER changes -->
         <div class="input-row">
+          <button class="sources-toggle-btn" id="sourcesToggleBtn" title="Choose which sources apply to your next question" hidden>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 7h11a3 3 0 0 1 0 6H4"/><path d="m8 4-4 3 4 3"/><path d="M20 17H9a3 3 0 0 1 0-6h11"/><path d="m16 14 4 3-4 3"/>
+            </svg>
+            <span id="sourcesCount"></span>
+          </button>
+          <div class="sources-popover" id="sourcesPopover">
+            <div class="sources-popover-header">Sources for this question</div>
+            <div class="sources-popover-list" id="sourcesPopoverList"></div>
+          </div>
+
           <button class="attach-btn" id="attachBtn" title="Upload document or YouTube video">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
           </button>
+          <div class="mobile-attach-menu" id="mobileAttachMenu">
+            <button class="mobile-attach-menu-item" id="mobileMenuUpload">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              Upload
+            </button>
+            <button class="mobile-attach-menu-item" id="mobileMenuSources">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 7h11a3 3 0 0 1 0 6H4"/><path d="m8 4-4 3 4 3"/><path d="M20 17H9a3 3 0 0 1 0-6h11"/><path d="m16 14 4 3-4 3"/>
+              </svg>
+              Manage Sources
+            </button>
+          </div>
+
           <textarea id="queryInput" rows="1" placeholder="Ask anything about your documents..."></textarea>
           <button class="send-btn" id="sendBtn" title="Send" disabled>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -136,9 +181,56 @@
     </div>
   </div>
 
+  <!-- ══════════════════════ API KEY MODAL ══════════════════════ -->
+  <div class="modal-backdrop" id="apiKeyModalBackdrop">
+    <div class="modal" id="apiKeyModal">
+      <div class="modal-header">
+        <span>Enter API Key</span>
+      </div>
+      <div class="tab-panel active">
+        <p class="modal-note" style="margin-bottom: 12px;">
+          Enter the API key you received when your account was created.
+        </p>
+        <input
+          type="text"
+          id="apiKeyInput"
+          class="yt-input-wrap-input"
+          placeholder="dk_live_..."
+          autocomplete="off"
+          style="width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border, #ddd); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;"
+        />
+        <p class="modal-note" id="apiKeyError" style="color: #c0392b; display: none; margin-top: 8px;"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="apiKeySave">Save Key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════ CONFIRM MODAL (generic) ══════════════════════ -->
+  <div class="modal-backdrop" id="confirmModalBackdrop">
+    <div class="modal" id="confirmModal">
+      <div class="modal-header">
+        <span id="confirmModalTitle">Are you sure?</span>
+        <button class="modal-close" id="confirmModalClose">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="tab-panel active">
+        <p class="modal-note" id="confirmModalMessage"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-ghost" id="confirmModalCancel">Cancel</button>
+        <button class="btn-primary" id="confirmModalConfirm" style="background: #c0392b; color: #fff;">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast notifications -->
   <div class="toast-stack" id="toastStack"></div>
 
-  <script src="/static/js/app_new.js?v=2"></script>
+  <script src="/static/js/app_new.js?v=9"></script>
 </body>
 </html>

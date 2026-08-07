@@ -17,14 +17,19 @@ class QAPipeline:
         self,
         collection_names: List[str] | None = None,
         session_id: str = "default",
+        user_id: str | None = None,
     ):
         try:
+            if not user_id:
+                raise CustomException(ValueError("QAPipeline requires a user_id"), sys)
             self.collection_names = [name for name in (collection_names or []) if name]
             self.session_id = session_id
+            self.user_id = user_id
             logging.info(
-                "Pipeline ready | collections: %s | session: %s",
+                "Pipeline ready | collections: %s | session: %s | user: %s",
                 self.collection_names or "all",
                 session_id,
+                user_id,
             )
         except Exception as e:
             raise CustomException(e, sys)
@@ -40,6 +45,7 @@ class QAPipeline:
                 query,
                 collection_names=self.collection_names,
                 session_id=self.session_id,
+                user_id=self.user_id,
                 message_attachments=message_attachments,
             )
             return {

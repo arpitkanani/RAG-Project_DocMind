@@ -45,7 +45,8 @@ class IngestionPipeline:
         
     def run(self, source:str,
             collection_name:str=None,
-            clear_existing:bool = True) -> dict:
+            clear_existing:bool = True,
+            on_retry=None) -> dict:
         """
         Run full ingestion pipeline on any source.
 
@@ -71,7 +72,24 @@ class IngestionPipeline:
                 vs.delete_collection()
                 logging.info("Existing collection cleared")
 
-            vs.add_documents(chunks)
+            try:
+                vs.add_documents(chunks, on_retry=on_retry)
+            except Exception:
+                # Ingestion failed partway through -- don't leave a partially
+                # populated, orphaned collection behind. Best-effort cleanup;
+                # if this also fails, the original error is still what
+                # surfaces to the user (that's the one that matters).
+                try:
+                    vs.delete_collection()
+                    logging.warning(
+                        "Cleaned up partial collection after failed ingestion: %s",
+                        collection_name,
+                    )
+                except Exception:
+                    logging.warning(
+                        "Could not clean up partial collection: %s", collection_name
+                    )
+                raise
 
             result = {
                 "success":         True,
@@ -97,6 +115,7 @@ class IngestionPipeline:
         file_bytes: bytes,
         filename: str,
         collection_name: str | None = None,
+        on_retry=None,
     ) -> dict:
         
         """
@@ -123,7 +142,7 @@ class IngestionPipeline:
             logging.info(f"File saved: {file_path}")
 
             # run normal pipeline on saved file
-            result = self.run(file_path, collection_name=collection_name)
+            result = self.run(file_path, collection_name=collection_name, on_retry=on_retry)
             return result
 
         except Exception as e:
