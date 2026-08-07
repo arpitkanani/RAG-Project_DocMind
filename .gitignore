@@ -19,6 +19,9 @@ seed_user.py
 .ipynb_checkpoints/
 test.ipynb
 
+*.csv
+test.csv
+
 test.csv
 # Editor/OS
 .vscode/
