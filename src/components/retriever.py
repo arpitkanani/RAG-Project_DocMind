@@ -317,16 +317,32 @@ class Retriever:
 
     @staticmethod
     def _normalize_similarity_score(score: float | None) -> float:
+        """Normalize Qdrant scores to a 0..1 similarity scale.
+
+        Qdrant search APIs commonly return a distance score where lower values
+        mean more relevant results. The app compares these values against a
+        similarity threshold (0.5), so distance-like values such as 0.18 must
+        be converted to a similarity-like value such as 0.82 before filtering.
+        """
         if score is None:
             return 0.0
         try:
             value = float(score)
         except (TypeError, ValueError):
             return 0.0
+
         if value < 0:
             return 0.0
+
+        # Qdrant distance metrics (e.g. cosine distance, Euclidean distance)
+        # use lower numbers for stronger matches. Convert 0..1 distances to
+        # 1..0 similarity values so they can be compared to the app's
+        # score_threshold consistently.
         if value <= 1:
-            return value
+            if value >= 0.5:
+                return value
+            return 1.0 - value
+
         return max(0.0, min(1.0, 1 / (1 + value)))
 
     @staticmethod

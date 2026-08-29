@@ -4,7 +4,7 @@ embedding:
 
 llm:
   provider: "groq" #"google" 
-  model: "llama-3.1-8b-instant" #"gemini-2.0-flash" #
+  model: "openai/gpt-oss-20b" #"gemini-2.0-flash" #
   temperature: 0.5
   max_tokens: 2048
   rate_limit:
@@ -37,13 +37,13 @@ splitter:
 # retriver use MMR for divers answer
 retriever:
   search_type: "similarity"
-  k: 4
-  fetch_k: 13
-  lambda_mult: 0.7
-  score_threshold: 0.5
+  k: 7
+  fetch_k: 24
+  lambda_mult: 0.6
+  score_threshold: 0.3
   summary_max_chars: 6000 
   collection_margin: 0.8   # was hardcoded 0.6 — higher = stricter, less cross-document bleed
-  doc_margin: 0.778
+  doc_margin: 0.7
 
 #vectore database used chroma
 vectorstore:
