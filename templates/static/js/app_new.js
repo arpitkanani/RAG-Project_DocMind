@@ -826,68 +826,99 @@ async function sendMessage() {
   conversationState.isLoading = true;
   const typingId = showTyping();
 
+  let streamedText = "";
+  let messageRow = null;
+  let bubbleEl = null;
+
   try {
-    const data = await apiFetch(API.query, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    await streamQueryAnswer(
+      API.query,
+      {
         query,
         session_id: workspaceState.sessionId,
         message_attachments: messageAttachments.length ? messageAttachments : null,
         collection_names: scopedCollectionNames,
-      }),
-    });
-
-    removeTyping(typingId);
-
-    if (!data || data.error_code) {
-      if (data?.error_code === "collection_not_found") {
-        const missing = Array.isArray(data.missing_collections)
-          ? data.missing_collections
-          : [];
-        workspaceState.sources = workspaceState.sources.filter(
-          (s) => !missing.includes(s.collection)
-        );
-        renderComposerChips();
-        renderSourcesPanel();
-        await loadSessions();
-        showToast(
-          "One or more sources were removed. Please upload again if needed.",
-          "error"
-        );
-        return;
+      },
+      {
+        onToken: (token) => {
+          removeTyping(typingId);
+          streamedText += token;
+          if (!messageRow) {
+            const container = el("messages");
+            messageRow = document.createElement("div");
+            messageRow.className = "msg-row ai";
+            messageRow.innerHTML = `
+              <div class="msg-avatar">AI</div>
+              <div class="msg-body">
+                <div class="msg-bubble">${formatContent(streamedText)}</div>
+              </div>`;
+            container.appendChild(messageRow);
+            bubbleEl = messageRow.querySelector(".msg-bubble");
+          } else if (bubbleEl) {
+            bubbleEl.innerHTML = formatContent(streamedText);
+          }
+          const container = el("messages");
+          container.scrollTop = container.scrollHeight;
+        },
+        onCitations: (citations) => {
+          if (citations && bubbleEl && streamedText !== FALLBACK_ANSWER_TEXT) {
+            const fullContent = `${streamedText}\n\n${citations}`;
+            bubbleEl.innerHTML = formatContent(fullContent);
+          }
+        },
+        onDone: async (doneData) => {
+          removeTyping(typingId);
+          if (doneData.session_id) {
+            workspaceState.sessionId = doneData.session_id;
+            localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
+          }
+          if (bubbleEl && doneData.final_answer) {
+            bubbleEl.innerHTML = formatContent(doneData.final_answer);
+          }
+          try {
+            await loadSessions();
+          } catch {}
+        },
+        onError: async (errData) => {
+          removeTyping(typingId);
+          if (errData?.error_code === "collection_not_found") {
+            const missing = Array.isArray(errData.missing_collections)
+              ? errData.missing_collections
+              : [];
+            workspaceState.sources = workspaceState.sources.filter(
+              (s) => !missing.includes(s.collection)
+            );
+            renderComposerChips();
+            renderSourcesPanel();
+            await loadSessions();
+            showToast(
+              "One or more sources were removed. Please upload again if needed.",
+              "error"
+            );
+            return;
+          }
+          if (errData?.error_code === "knowledge_base_empty") {
+            showToast(
+              errData.message || "Please upload a document or add a YouTube source first.",
+              "error"
+            );
+            return;
+          }
+          showToast(errData?.message || "Could not complete that request.", "error");
+        },
       }
-      if (data?.error_code === "knowledge_base_empty") {
-        showToast(
-          data.message || "Please upload a document or add a YouTube source first.",
-          "error"
-        );
-        return;
-      }
-      showToast(data?.message || "Could not complete that request.", "error");
-      return;
-    }
-
-    workspaceState.sessionId = data.session_id || workspaceState.sessionId;
-    localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
-    appendMessage(
-      data.answer || "I couldn't generate a response. Please try again.",
-      "ai"
     );
-
-    try {
-      await loadSessions();
-    } catch {
-      // Non-critical — answer is already shown
-    }
   } catch {
     removeTyping(typingId);
     showToast("Server is down. Please try again.", "error");
   } finally {
+    removeTyping(typingId);
     conversationState.isLoading = false;
     updateSendButton();
   }
 }
+
+const FALLBACK_ANSWER_TEXT = "I couldn't find relevant information about that in the uploaded document.";
 
 // ═══════════════════════════════════════════════════════════════════
 //  RENDER — COMPOSER CHIPS
@@ -1432,4 +1463,89 @@ function formatTime(iso) {
 function autoResize() {
   this.style.height = "auto";
   this.style.height = `${Math.min(this.scrollHeight, 180)}px`;
+}
+
+/**
+ * Streams SSE events from the /query endpoint token-by-token.
+ * @param {string} url
+ * @param {object} payload
+ * @param {object} callbacks
+ * @param {(token: string) => void} callbacks.onToken
+ * @param {(citations: string) => void} callbacks.onCitations
+ * @param {(data: object) => void} callbacks.onDone
+ * @param {(err: object) => void} callbacks.onError
+ */
+async function streamQueryAnswer(url, payload, { onToken, onCitations, onDone, onError }) {
+  try {
+    const apiKey = localStorage.getItem(API_KEY_STORAGE);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": apiKey || "",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem(API_KEY_STORAGE);
+      showToast("Your API key is invalid or missing. Please re-enter it.", "error");
+      ensureApiKey();
+      onError?.({ error_code: "unauthorized", message: "API key invalid" });
+      return;
+    }
+
+    if (!res.ok) {
+      let errBody = null;
+      try {
+        errBody = await res.json();
+      } catch {}
+      onError?.(errBody || { error_code: "server_error", message: `Request failed with status ${res.status}` });
+      return;
+    }
+
+    if (!res.body) {
+      onError?.({ error_code: "no_body", message: "No response body received." });
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || ""; // Keep incomplete trailing fragment in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data:")) continue;
+
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr) continue;
+
+        try {
+          const event = JSON.parse(jsonStr);
+          if (event.type === "token") {
+            onToken?.(event.content);
+          } else if (event.type === "citations") {
+            onCitations?.(event.citations);
+          } else if (event.type === "done") {
+            onDone?.(event);
+          } else if (event.type === "error") {
+            onError?.(event);
+          }
+        } catch (parseErr) {
+          console.error("SSE parse error:", parseErr, jsonStr);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Stream network error:", err);
+    onError?.({ error_code: "network_error", message: "Server is down. Please try again." });
+  }
 }

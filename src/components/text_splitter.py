@@ -1,5 +1,5 @@
 import sys
-from typing import List
+from typing import List, Iterator
 
 import yaml
 from langchain_core.documents import Document
@@ -49,6 +49,20 @@ class TextSplitter:
             return chunks
         except Exception as e:
             logging.error("Error in TextSplitter.split: %s", e)
+            raise CustomException(e, sys)
+
+    def lazy_split(self, docs: Iterator[Document]) -> Iterator[Document]:
+        """Split document objects into chunks iteratively."""
+        try:
+            logging.info("Started streaming text splitting")
+            chunk_count = 0
+            for doc in docs:
+                for chunk in self.splitter.split_documents([doc]):
+                    chunk_count += 1
+                    yield chunk
+            logging.info("TextSplitter completed | yielded %s chunks", chunk_count)
+        except Exception as e:
+            logging.error("Error in TextSplitter.lazy_split: %s", e)
             raise CustomException(e, sys)
 
     def split_text(self, text: str) -> List[str]:

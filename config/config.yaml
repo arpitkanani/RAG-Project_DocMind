@@ -64,7 +64,7 @@ upload:
     - ".md"
     - ".xlsx"
   upload_dir: "data/uploads"
-  max_file_size_mb: 20      
+  max_file_size_mb: 100      
   max_files_count: 5  
 
 youtube:

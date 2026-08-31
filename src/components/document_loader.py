@@ -1,6 +1,5 @@
 import sys
-from typing import List
-
+from typing import List, Iterator
 import pandas as pd
 import yaml
 from langchain_community.document_loaders import (
@@ -24,12 +23,13 @@ with open("config/config.yaml") as f:
 class DocumentLoader:
     """Load supported files or YouTube transcripts as LangChain documents."""
 
-    def load(self, source: str) -> List[Document]:
+    def load(self, source: str) -> Iterator[Document]:
         try:
             logging.info("Loading document from source: %s", source)
 
             if is_youtube_url(source):
-                return self._load_youtube(source)
+                yield from self._load_youtube(source)
+                return
 
             extension = get_file_extension(source)
             loader_map = {
@@ -44,84 +44,97 @@ class DocumentLoader:
             if extension not in loader_map:
                 raise ValueError(f"Unsupported file type: {extension}")
 
-            docs = loader_map[extension](source)
-            logging.info("Loaded %d documents from %s", len(docs), source)
-            return docs
+            docs_iterator = loader_map[extension](source)
+            logging.info("Started streaming documents from %s", source)
+            yield from docs_iterator
+
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _load_pdf(self, path: str) -> List[Document]:
+    def _load_pdf(self, path: str) -> Iterator[Document]:
         try:
-            docs = PyPDFLoader(path).load()
+            # First try PyPDFLoader.load() to guarantee page reading across all pypdf versions
+            loader = PyPDFLoader(path)
+            if hasattr(loader, "lazy_load"):
+                try:
+                    pages = list(loader.lazy_load())
+                    if pages:
+                        for page in pages:
+                            yield page
+                        logging.info("PDF stream completed: %d pages", len(pages))
+                        return
+                except Exception as lazy_err:
+                    logging.warning("PyPDFLoader lazy_load failed, falling back to load(): %s", lazy_err)
+
+            docs = loader.load()
             logging.info("PDF loaded: %d pages", len(docs))
-            return docs
+            for doc in docs:
+                yield doc
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _load_txt(self, path: str) -> List[Document]:
+    def _load_txt(self, path: str) -> Iterator[Document]:
         try:
             for encoding in ("utf-8", "cp1252", "latin-1"):
                 try:
-                    docs = TextLoader(
+                    docs_iter = TextLoader(
                         path,
                         encoding=encoding,
                         autodetect_encoding=True,
-                    ).load()
-                    logging.info("TXT loaded (%s): %d doc", encoding, len(docs))
-                    return docs
+                    ).lazy_load()
+                    yield from docs_iter
+                    logging.info("TXT stream completed (%s)", encoding)
+                    return
+
                 except Exception:
                     logging.warning("Encoding %s failed for %s", encoding, path)
 
             with open(path, "r", encoding="utf-8", errors="ignore") as file_obj:
                 text = file_obj.read()
 
-            return [Document(page_content=text, metadata={"source": path})]
+            yield Document(page_content=text, metadata={"source": path})
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _load_docx(self, path: str) -> List[Document]:
+    def _load_docx(self, path: str) -> Iterator[Document]:
         try:
-            return Docx2txtLoader(path).load()
+            yield from Docx2txtLoader(path).lazy_load()
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _load_csv(self, path: str) -> List[Document]:
+    def _load_csv(self, path: str) -> Iterator[Document]:
         try:
-            return CSVLoader(path, encoding="utf-8").load()
+            yield from CSVLoader(path, encoding="utf-8").lazy_load()
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _load_md(self, path: str) -> List[Document]:
+    def _load_md(self, path: str) -> Iterator[Document]:
         try:
-            return UnstructuredMarkdownLoader(path).load()
+            yield from UnstructuredMarkdownLoader(path).lazy_load()
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _load_xlsx(self, path: str) -> List[Document]:
+    def _load_xlsx(self, path: str) -> Iterator[Document]:
         try:
             dataframe = pd.read_excel(path)
-            documents: List[Document] = []
             for index, row in dataframe.iterrows():
                 row_text = "\n".join(f"{column}: {value}" for column, value in row.items())
-                documents.append(
-                    Document(
-                        page_content=row_text,
-                        metadata={"source": path, "row": index},
-                    )
+                yield Document(
+                    page_content=row_text,
+                    metadata={"source": path, "row": index},
                 )
-            logging.info("XLSX loaded: %d row documents", len(documents))
-            return documents
+            logging.info("XLSX stream completed")
         except Exception as e:
             raise CustomException(e, sys)
 
-    def _load_youtube(self, url: str) -> List[Document]:
+    def _load_youtube(self, url: str) -> Iterator[Document]:
         try:
             segments = get_transcript_segments(url)
             target_size = config.get("splitter", {}).get("chunk_size", 600)
             windows = self._merge_transcript_segments(segments, target_size)
 
-            docs = [
-                Document(
+            for window in windows:
+                yield Document(
                     page_content=window["text"],
                     metadata={
                         "source": "YouTube transcript",
@@ -132,14 +145,12 @@ class DocumentLoader:
                         "duration_seconds": window["duration_seconds"],
                     },
                 )
-                for window in windows
-            ]
             logging.info(
-                "YouTube transcript loaded: %d segments merged into %d chunks",
+                "YouTube transcript stream completed: %d segments merged into %d chunks",
                 len(segments),
-                len(docs),
+                len(windows),
             )
-            return docs
+
         except Exception as e:
             raise CustomException(e, sys)
 

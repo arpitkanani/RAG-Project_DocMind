@@ -10,7 +10,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 import yaml
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -228,11 +228,19 @@ def _run_upload_job(
                 f"(attempt {attempt}). This can take a few minutes for large files.",
             )
 
+        def progress_callback(count: int):
+            if count > 0:
+                upload_job_manager.update_progress(
+                    job_id,
+                    f"Processing document... Embedded and stored {count} chunks so far."
+                )
+
         result = pipeline.run_from_bytes(
             file_bytes,
             filename,
             collection_name=collection_name,
             on_retry=on_retry,
+            progress_callback=progress_callback,
         )
 
         if result.get("success") and result.get("collection_name"):
@@ -329,7 +337,14 @@ def _run_youtube_job(
                 f"(attempt {attempt}). This can take a few minutes for long videos.",
             )
 
-        result = pipeline.run(url, collection_name=collection_name, on_retry=on_retry)
+        def progress_callback(count: int):
+            if count > 0:
+                upload_job_manager.update_progress(
+                    job_id,
+                    f"Processing transcript... Embedded and stored {count} chunks so far."
+                )
+
+        result = pipeline.run(url, collection_name=collection_name, on_retry=on_retry, progress_callback=progress_callback)
 
         if result.get("success") and result.get("collection_name"):
             memory.add_attachment(
@@ -420,17 +435,19 @@ async def query(
             session_id=request.session_id or "default",
             user_id=user_id,
         )
-        result = pipeline.run(
-            request.query,
-            message_attachments=request.message_attachments,
-        )
 
-        logging.info(
-            "Query succeeded | session: %s | scope: %s",
-            result["session_id"],
-            result["collection_scope"],
+        return StreamingResponse(
+            pipeline.astream(
+                request.query,
+                message_attachments=request.message_attachments,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
-        return result
     except LLMRateLimitError as exc:
         logging.warning("LLM rate limit hit during query | kind: %s", exc.kind)
         return build_error_response(

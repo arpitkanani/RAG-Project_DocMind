@@ -1,5 +1,5 @@
 import sys
-from typing import List
+from typing import List, Iterable
 
 import yaml
 from langchain_qdrant import QdrantVectorStore
@@ -79,34 +79,54 @@ class VectorStore:
 
     def add_documents(
         self,
-        chunks: List[Document],
+        chunks: Iterable[Document],
+        batch_size: int = 250,
+        progress_callback = None,
         on_retry=None,
     ) -> QdrantVectorStore:
-        """Embed and store document chunks in Qdrant.
+        """Embed and store document chunks in Qdrant in batches.
 
         on_retry is unused now (kept only for signature compatibility --
         see class docstring). Local embeddings never hit an external
         rate limit, so this is now a single straightforward call.
         """
         try:
-            logging.info(
-                "Adding %d chunks | collection: %s",
-                len(chunks),
-                self.collection_name,
-            )
+            logging.info("Starting batch ingestion | collection: %s", self.collection_name)
 
-            for index, chunk in enumerate(chunks):
-                chunk.metadata["doc_index"] = index
+            total_added = 0
+            current_batch = []
+            db = None
+
+            for chunk in chunks:
+                chunk.metadata["doc_index"] = total_added + len(current_batch)
                 chunk.metadata["content_length"] = len(chunk.page_content)
                 chunk.metadata["collection_name"] = self.collection_name
+                current_batch.append(chunk)
 
-            db = QdrantVectorStore.from_documents(
-                documents=chunks,
-                embedding=self.document_embedding_model,
-                url=self.qdrant_url,
-                collection_name=self.collection_name,
-            )
-            logging.info("Successfully added %d chunks", len(chunks))
+                if len(current_batch) >= batch_size:
+                    db = QdrantVectorStore.from_documents(
+                        documents=current_batch,
+                        embedding=self.document_embedding_model,
+                        url=self.qdrant_url,
+                        collection_name=self.collection_name,
+                    )
+                    total_added += len(current_batch)
+                    current_batch = []
+                    if progress_callback:
+                        progress_callback(total_added)
+
+            if current_batch:
+                db = QdrantVectorStore.from_documents(
+                    documents=current_batch,
+                    embedding=self.document_embedding_model,
+                    url=self.qdrant_url,
+                    collection_name=self.collection_name,
+                )
+                total_added += len(current_batch)
+                if progress_callback:
+                    progress_callback(total_added)
+
+            logging.info("Successfully added %d chunks", total_added)
             return db
         except Exception as e:
             raise CustomException(e, sys)

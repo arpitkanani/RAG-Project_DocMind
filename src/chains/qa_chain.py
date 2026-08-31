@@ -93,20 +93,33 @@ def format_docs(docs: list) -> str:
 
 
 def build_citations(docs: list) -> str:
-    citations = set()
+    """Build deterministic, cleanly formatted, and deduplicated citation labels."""
+    citations = []
     seen = set()
 
     for doc in docs:
+        if not getattr(doc, "metadata", None):
+            continue
         source_label = _format_source_label(doc.metadata)
         locator = _format_locator(doc.metadata)
         section = _format_section(doc.metadata)
-        citation = f"{source_label} - {locator}"
+
+        # Build clean citation string
+        citation_parts = [source_label]
+        if locator and locator != "location unknown":
+            citation_parts.append(locator)
         if section:
-            citation = f"{citation} - {section}"
-        if citation in seen:
+            citation_parts.append(section)
+
+        citation = " - ".join(citation_parts)
+        
+        # Deduplication check
+        canonical_key = (source_label.lower(), locator.lower(), section.lower())
+        if canonical_key in seen:
             continue
-        seen.add(citation)
-        citations.add(citation)
+        seen.add(canonical_key)
+        citations.append(citation)
+
         if len(citations) == 3:
             break
 
@@ -122,9 +135,12 @@ def build_source_only_citations(docs: list) -> str:
     seen = set()
     labels = []
     for doc in docs:
+        if not getattr(doc, "metadata", None):
+            continue
         label = _format_source_label(doc.metadata)
-        if label not in seen:
-            seen.add(label)
+        canonical = label.strip().lower()
+        if canonical not in seen:
+            seen.add(canonical)
             labels.append(label)
     if not labels:
         return ""
