@@ -4,7 +4,7 @@ embedding:
 
 llm:
   provider: "groq" #"google" 
-  model: "llama-3.1-8b-instant" #"gemini-2.0-flash" #
+  model: "openai/gpt-oss-20b" #"gemini-2.0-flash" #
   temperature: 0.5
   max_tokens: 2048
   rate_limit:
