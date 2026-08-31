@@ -283,7 +283,7 @@ async def upload_file(
             _run_upload_job,
             job_id,
             file_bytes,
-            file.filename,
+            file.filename, # type: ignore
             collection_name,
             session_id,
             user_id,
