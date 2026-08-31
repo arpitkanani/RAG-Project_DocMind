@@ -14,7 +14,6 @@ qdrant_storage/
 evaluation/
 evaluation_results.csv
 endpoint_regression_check.py
-seed_user.py
 # Jupyter
 .ipynb_checkpoints/
 test.ipynb
