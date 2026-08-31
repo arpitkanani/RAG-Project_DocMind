@@ -1,30 +1,42 @@
 # DocMind
 
-A local-first, full-stack Retrieval-Augmented Generation (RAG) application. Upload documents
-(PDF, DOCX, TXT, CSV, MD, XLSX) or a YouTube URL, and ask questions or request summaries
-grounded in that content, with multi-turn conversation memory and cited sources.
+**Local-first Retrieval-Augmented Generation (RAG) application.** Upload documents or a
+YouTube URL, then ask questions or request summaries grounded in that content — with
+multi-turn conversation memory and cited sources.
 
-Built with **FastAPI** (backend + HTML frontend), **LangChain** (RAG orchestration),
-**Qdrant** (vector search), **PostgreSQL** (users, sessions, chat history), a local embedding
-model, and a fast hosted LLM (Groq or Google) for generation.
+Built with **FastAPI** (backend + frontend), **LangChain** (RAG orchestration), **Qdrant**
+(vector search), **PostgreSQL** (users, sessions, chat history), a local embedding model, and
+a hosted LLM (Groq or Google) for generation.
 
 ---
 
-## What it does
+## Table of Contents
 
-- **Ingests documents** of several types (PDF/DOCX/TXT/CSV/MD/XLSX, up to 20MB each, 5 files at
-  once) or a YouTube URL (transcript-based), chunks them, embeds them locally, and stores them
-  in a per-document Qdrant collection.
-- **Answers questions** grounded only in the retrieved content: semantic search in Qdrant,
-  followed by a lexical/semantic-blended reranking pass, followed by generation with an
-  anti-hedging prompt that refuses to answer beyond what was retrieved.
-- **Summarizes** documents or YouTube videos on request, using a wider "full context" retrieval
-  mode instead of the query-scoped search path.
-- **Remembers conversations** per session, across multiple documents attached to that session
-  at once, with older turns automatically compressed into an LLM-generated summary so long
-  conversations don't balloon token usage.
-- **Cites its sources** in every RAG answer, tied back to the specific document/page/section a
-  claim came from.
+- [Features](#features)
+- [Architecture](#architecture)
+- [Design Decisions](#design-decisions)
+- [Tech Stack](#tech-stack)
+- [Project Layout](#project-layout)
+- [Setup](#setup)
+- [API Reference](#api-reference)
+- [Roadmap](#roadmap)
+
+---
+
+## Features
+
+- **Multi-format ingestion** — PDF, DOCX, TXT, CSV, MD, XLSX (up to 20MB each, 5 files at
+  once), plus YouTube URLs via transcript extraction.
+- **Grounded question answering** — semantic search in Qdrant, followed by a lexical/semantic
+  reranking pass, followed by generation constrained to an anti-hedging prompt that refuses to
+  answer beyond what was retrieved.
+- **Document and video summarization** — a separate, wider "full context" retrieval mode for
+  summary requests, distinct from the query-scoped search path used for regular questions.
+- **Persistent, multi-turn memory** — per-session conversation history, spanning multiple
+  documents attached to a single session, with older turns automatically compressed into an
+  LLM-generated summary to keep long conversations token-efficient.
+- **Source citations** — every RAG answer is tied back to the specific document, page, or
+  section a claim came from.
 
 ---
 
@@ -32,108 +44,111 @@ model, and a fast hosted LLM (Groq or Google) for generation.
 
 ```
 Browser (templates/static/js/app_new.js)
-        |
-        v
-FastAPI (app.py)  ---- X-API-Key header ---->  PostgreSQL (users, sessions, messages, attachments)
-        |
-        +--> IngestionPipeline  --> local embedding model --> Qdrant (per-doc collection)
-        |
-        +--> QAPipeline
-                |
-                +--> MemoryManager        (Postgres: recent turns verbatim + older turns summarized)
-                +--> Retriever            (Qdrant search -> lexical/semantic rerank -> threshold filter)
-                +--> LangChain QA chain   (prompt -> Groq/Google LLM -> answer)
+        │
+        ▼
+FastAPI (app.py) ──── X-API-Key header ────▶ PostgreSQL (users, sessions, messages, attachments)
+        │
+        ├──▶ IngestionPipeline ──▶ local embedding model ──▶ Qdrant (per-document collection)
+        │
+        └──▶ QAPipeline
+               ├──▶ MemoryManager       Postgres-backed: recent turns verbatim, older turns summarized
+               ├──▶ Retriever           Qdrant search → lexical/semantic rerank → threshold filter
+               └──▶ LangChain QA chain  prompt → Groq/Google LLM → sanitized, cited answer
 ```
-
-### Why PostgreSQL (not just files or an in-memory store)
-
-Chat sessions, messages, attachments, and user accounts are relational, multi-user data with
-real query patterns behind them — "give me this user's sessions ordered by recency," "prune
-messages older than N days," "look up a user by API key on every request." Postgres gives that
-for free (indexes, foreign keys with cascade delete, transactional writes) instead of
-hand-rolling it against flat JSON files, which is what an earlier version of this project did
-(`session_state_{id}.json`, `chat_history_{id}.json` per session). The schema
-(`database/init.sql`) explicitly mirrors that earlier JSON structure table-for-table, so the
-switch was a storage-layer change, not a data-model rewrite. It also unlocks straightforward
-multi-user support and safe concurrent access, neither of which flat files handle well once
-more than one session is being written at a time.
-
-### Why API-key auth (not a login/password flow)
-
-There's no username/password, no session cookie, no login page. Every request instead carries
-an `X-API-Key` header, which the backend hashes (SHA-256) and looks up against the `users`
-table (`src/auth.py`). Keys are minted once, offline, with `python seed_user.py "Name"` — the
-plaintext key is shown exactly once and only its hash is ever stored.
-
-This is a deliberate trade for a project of this shape: it's typically self-hosted for a person
-or a small team, not a public multi-tenant SaaS product. A full login system (password
-hashing + reset flows + session/cookie management + CSRF handling) is a lot of surface area
-and a lot of things to get wrong security-wise for a benefit — "users can set their own
-password" — that doesn't matter much when accounts are provisioned by whoever runs the server.
-An API key is simpler to reason about, works identically for a browser client and a future
-CLI/API client, and is trivial to revoke (`is_active = false`) without needing password-reset
-infrastructure at all. If this ever needs public self-serve signup, that's a real, separate
-feature to add on top — not a sign the current approach is wrong for what it's serving today.
 
 ---
 
-## Tech stack
+## Design Decisions
+
+### Why PostgreSQL
+
+Chat sessions, messages, attachments, and user accounts are relational, multi-user data with
+real query patterns behind them: *list this user's sessions by recency*, *prune messages older
+than N days*, *look up a user by API key on every request*. Postgres provides this natively —
+indexes, foreign keys with cascade delete, transactional writes — instead of hand-rolling it
+against flat JSON files, which is what an earlier version of this project did
+(`session_state_{id}.json`, `chat_history_{id}.json` per session). The schema
+(`database/init.sql`) mirrors that earlier JSON structure table-for-table, so the change was a
+storage-layer migration, not a data-model rewrite. It also gives straightforward multi-user
+support and safe concurrent writes, neither of which flat files handle well once more than one
+session is being written at a time.
+
+### Why API-key authentication (not a login/password flow)
+
+There is no username/password, session cookie, or login page. Every request carries an
+`X-API-Key` header, which the backend hashes (SHA-256) and looks up against the `users` table
+(`src/auth.py`). Keys are minted once, offline, with `python seed_user.py "Name"` — the
+plaintext key is shown exactly once; only its hash is ever stored.
+
+This is a deliberate trade-off for a project of this shape, typically self-hosted for a person
+or a small team rather than a public multi-tenant SaaS product. A full login system — password
+hashing, reset flows, session/cookie management, CSRF handling — is meaningful surface area to
+secure correctly, for a benefit ("users set their own password") that matters less when
+accounts are provisioned by whoever runs the server. An API key is simpler to reason about,
+works identically for a browser client or a future CLI/API client, and revokes trivially
+(`is_active = false`) without password-reset infrastructure. Public self-serve signup would be
+a genuine, separate feature to add on top — not a sign the current approach is wrong for what
+it serves today.
+
+---
+
+## Tech Stack
 
 | Layer | Choice |
 |---|---|
-| Backend + frontend | FastAPI, Jinja-style HTML templates, vanilla JS (`app_new.js`) |
+| Backend + frontend | FastAPI, HTML templates, vanilla JS (`app_new.js`) |
 | Vector store | Qdrant |
 | Relational store | PostgreSQL |
 | Embeddings | `BAAI/bge-small-en-v1.5`, run locally (CPU) |
 | LLM | Groq (`llama-3.1-8b-instant`) or Google Gemini — config-switchable |
-| Orchestration | LangChain (LCEL chains); LangGraph is being introduced on a separate branch |
+| Orchestration | LangChain (LCEL); LangGraph migration in progress on a separate branch |
 | Reranking | Custom lexical/semantic-blended reranker (no external reranker model) |
 | Auth | Hashed API keys, no login UI |
 
 ---
 
-## Project layout
+## Project Layout
 
 ```
-app.py                     FastAPI app: all routes, startup, request/response models
-config/config.yaml         Every tunable: embedding model, LLM provider/params, retriever
-                            thresholds, chunking, upload limits, YouTube limits, Postgres conn
-database/init.sql          Postgres schema (users, sessions, messages, attachments)
-seed_user.py                One-off script to create a user + issue an API key
+app.py                      FastAPI app: routes, startup, request/response models
+config/config.yaml          All tunables: embedding model, LLM provider/params, retriever
+                             thresholds, chunking, upload limits, YouTube limits, Postgres conn
+database/init.sql           Postgres schema (users, sessions, messages, attachments)
+seed_user.py                 One-off script: create a user, issue an API key
 src/
-  auth.py                  X-API-Key -> user_id dependency
-  logger.py, exception.py  Shared logging + custom exception types
+  auth.py                    X-API-Key → user_id dependency
+  logger.py, exception.py    Shared logging + custom exception types
   components/
-    embedder.py            Local embedding model wrapper
-    vector_store.py        Qdrant client/collection management
-    retriever.py           Search + rerank + threshold/margin filtering + full-context mode
-    memory_manager.py      Postgres-backed session/message/summary handling
+    embedder.py              Local embedding model wrapper
+    vector_store.py          Qdrant client / collection management
+    retriever.py             Search → rerank → threshold/margin filter → full-context mode
+    memory_manager.py        Postgres-backed session/message/summary handling
     document_loader.py, text_splitter.py
-  chains/qa_chain.py        Prompt, LLM factory, sanitizer, citation builder, the LCEL chain
+  chains/qa_chain.py          Prompt, LLM factory, sanitizer, citation builder, the LCEL chain
   pipelines/
-    ingestion_pipeline.py   File/YouTube -> chunks -> embeddings -> Qdrant
-    qa_pipeline.py           Orchestrates a /query request end to end
+    ingestion_pipeline.py     File/YouTube → chunks → embeddings → Qdrant
+    qa_pipeline.py             Orchestrates a /query request end to end
   utils/
-    job_manager.py           Background job tracking for uploads
-    rate_limiter.py          Proactive LLM rate-limit handling
+    job_manager.py             Background job tracking for uploads
+    rate_limiter.py            Proactive LLM rate-limit handling
     file_helper.py, youtube_helper.py
-templates/                  Frontend HTML + static/js/app_new.js
-tests/, evaluation/          Test suite and RAG evaluation scripts
+templates/                   Frontend HTML + static/js/app_new.js
+tests/, evaluation/           Test suite and RAG evaluation scripts
 ```
 
 ---
 
 ## Setup
 
-### 1. Prerequisites
+### Prerequisites
 
 - Python 3.10
-- A running **Qdrant** instance (default expected at `http://localhost:6333`) — easiest via
-  Docker: `docker run -p 6333:6333 qdrant/qdrant`
+- A running **Qdrant** instance (default: `http://localhost:6333`)
+  — `docker run -p 6333:6333 qdrant/qdrant`
 - A running **PostgreSQL** instance
 - A Groq API key (default LLM provider) and/or a Google API key
 
-### 2. Environment
+### 1. Environment variables
 
 Create a `.env` file in the project root:
 
@@ -147,55 +162,53 @@ POSTGRES_PASSWORD=your_password
 POSTGRES_DB=docmind
 ```
 
-### 3. Python environment
+### 2. Python environment
 
 ```bash
 python -m venv venv
-venv\Scripts\activate        # Windows — use `source venv/bin/activate` on macOS/Linux
+venv\Scripts\activate        # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Database
-
-Create the database, then load the schema:
+### 3. Database
 
 ```bash
 createdb docmind
 psql -d docmind -f database/init.sql
 ```
 
-### 5. Create a user (API key)
+### 4. Create a user (API key)
 
 ```bash
 python seed_user.py "Your Name"
 ```
 
-This prints a `user_id` and a plaintext API key (`dk_live_...`) — copy the key now, it's shown
-once. This is what the frontend/any client sends as `X-API-Key` on every request.
+Prints a `user_id` and a plaintext API key (`dk_live_...`) — copy it now, it is shown once.
+This is the value any client sends as `X-API-Key`.
 
-### 6. Config
+### 5. Configuration
 
-`config/config.yaml` controls everything else: which LLM provider/model, retrieval thresholds
+`config/config.yaml` controls the LLM provider/model, retrieval thresholds
 (`retriever.k`, `score_threshold`, `collection_margin`), chunking, upload limits, and YouTube
-languages. Defaults are reasonable to start; nothing here needs to change to get running.
+languages. Defaults are reasonable to start with.
 
-### 7. Run
+### 6. Run
 
 ```bash
 uvicorn app:app --reload
 ```
 
-Then open:
+| URL | Purpose |
+|---|---|
+| `http://localhost:8000/` or `/app` | Chat UI |
+| `http://localhost:8000/landing` | Landing page |
+| `http://localhost:8000/health` | Health check (no auth required) |
 
-- `http://localhost:8000/` or `/app` — the chat UI
-- `http://localhost:8000/landing` — landing page
-- `http://localhost:8000/health` — health check (no auth required)
-
-All other routes require the `X-API-Key` header from step 5.
+All other routes require the `X-API-Key` header from step 4.
 
 ---
 
-## API surface (for the frontend or any external client)
+## API Reference
 
 | Method | Route | Purpose |
 |---|---|---|
@@ -215,10 +228,10 @@ All other routes require the `X-API-Key` header from step 5.
 
 ---
 
-## Note on the `langgraph` branch
+## Roadmap
 
-`requirements.txt` already includes `langgraph`/`langgraph-checkpoint`/`langgraph-sdk` —
-orchestration is being migrated from a single LangChain LCEL chain to a LangGraph `StateGraph`
+`requirements.txt` already includes `langgraph` / `langgraph-checkpoint` / `langgraph-sdk`.
+Orchestration is being migrated from a single LangChain LCEL chain to a LangGraph `StateGraph`
 (retrieve → refine → generate, with token-by-token streaming to the frontend) on a separate
-branch. Qdrant's collection structure and Postgres's schema are unaffected by that migration;
+branch. Qdrant's collection structure and Postgres's schema are unaffected by that migration —
 only `/query`'s internal orchestration and response streaming are changing.
