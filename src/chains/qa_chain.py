@@ -353,7 +353,7 @@ def build_qa_chain():
             | QA_PROMPT
             | llm
             | parser
-        )
+        ).with_config(run_name="qa_generation")
 
         logging.info("QA chain built successfully")
         return chain

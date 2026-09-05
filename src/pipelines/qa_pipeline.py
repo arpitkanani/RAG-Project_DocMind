@@ -2,10 +2,11 @@ import asyncio
 import json
 import os
 import sys
-import uuid
 from typing import AsyncGenerator, Dict, List, Optional
+import uuid
 
 from langchain_core.messages import AIMessageChunk
+
 from src.chains.qa_chain import (
     FALLBACK_ANSWER,
     QA_PROMPT,
@@ -21,7 +22,16 @@ from src.exception import (
     CustomException,
     KnowledgeBaseEmptyError,
 )
-from src.graphs.rag_graph import rag_graph
+from src.graph import (
+    fallback_node,
+    finalize_node,
+    generate_node,
+    load_context_node,
+    rag_graph,
+    refine_node,
+    retrieve_qa_node,
+    retrieve_summary_node,
+)
 from src.logger import logging
 from src.utils.rate_limiter import (
     LLMRateLimitError,
@@ -45,12 +55,6 @@ class QAPipeline:
             self.collection_names = [name for name in (collection_names or []) if name]
             self.session_id = session_id
             self.user_id = user_id
-            logging.info(
-                "Pipeline ready | collections: %s | session: %s | user: %s",
-                self.collection_names or "all",
-                session_id,
-                user_id,
-            )
         except Exception as e:
             raise CustomException(e, sys)
 
@@ -59,9 +63,16 @@ class QAPipeline:
         query: str,
         message_attachments: Optional[List[dict]] = None,
     ) -> dict:
-        """Synchronous invocation of the LangGraph state graph."""
+        return asyncio.run(self.arun(query, message_attachments))
+
+    async def arun(
+        self,
+        query: str,
+        message_attachments: Optional[List[dict]] = None,
+    ) -> dict:
+        """Asynchronously invokes the LangGraph state graph."""
         try:
-            logging.info("Processing query via LangGraph: %s...", query[:50])
+            logging.info("Processing query via LangGraph async: %s...", query[:50])
 
             initial_state = {
                 "question": query,
@@ -71,10 +82,25 @@ class QAPipeline:
                 "message_attachments": message_attachments,
             }
 
-            thread_id = f"{self.user_id}:{self.session_id}:{uuid.uuid4()}"
-            config = {"configurable": {"thread_id": thread_id}}
+            query_type = "summary" if is_summary_request(query) else "qa"
+            config = {
+                "run_name": f"rag_{query_type}_{self.session_id[:8]}",
+                "tags": [
+                    query_type,
+                    f"user_{self.user_id}",
+                ],
+                "metadata": {
+                    "user_id": self.user_id,
+                    "session_id": self.session_id,
+                    "query_type": query_type,
+                    "collection_scope": self.collection_names or [],
+                },
+                "configurable": {
+                    "thread_id": self.session_id,
+                },
+            }
 
-            result_state = rag_graph.invoke(initial_state, config=config)
+            result_state = await rag_graph.ainvoke(initial_state, config=config)
 
             return {
                 "answer": result_state.get("final_answer", FALLBACK_ANSWER),
@@ -92,17 +118,8 @@ class QAPipeline:
         query: str,
         message_attachments: Optional[List[dict]] = None,
     ) -> AsyncGenerator[str, None]:
-        """
-        Streams token-by-token SSE events to the frontend.
-        Event Types:
-          - token: {"type": "token", "content": "..."}
-          - citations: {"type": "citations", "citations": "..."}
-          - done: {"type": "done", "session_id": "...", "collection_scope": [...], "final_answer": "..."}
-          - error: {"type": "error", "error_code": "...", "message": "..."}
-        """
+        """Asynchronously streams token-by-token SSE events to the frontend."""
         thread_id = f"{self.user_id}:{self.session_id}:{uuid.uuid4()}"
-        config_run = {"configurable": {"thread_id": thread_id}}
-
         initial_state = {
             "question": query,
             "collection_names": self.collection_names,
@@ -114,37 +131,29 @@ class QAPipeline:
         try:
             logging.info("Starting SSE stream for query: %s...", query[:50])
 
-            # Run preliminary nodes up to generate/fallback
-            # 1. Load context & memory
             memory = MemoryManager(session_id=self.session_id, user_id=self.user_id)
-            chat_history = memory.get_history()
-            memory.save_message("human", query, attachments=message_attachments)
+            chat_history = await memory.aget_history()
+            await memory.asave_message("human", query, attachments=message_attachments)
 
             is_summary = is_summary_request(query)
             docs = []
             refined_context = ""
 
             if is_summary:
-                from src.graphs.rag_graph import retrieve_summary_node
-                sum_res = retrieve_summary_node(initial_state)
+                sum_res = await retrieve_summary_node(initial_state)
                 docs = sum_res.get("docs", [])
                 refined_context = sum_res.get("refined_context", "")
             else:
-                from src.graphs.rag_graph import retrieve_qa_node, refine_node
-                qa_res = retrieve_qa_node(initial_state)
+                qa_res = await retrieve_qa_node(initial_state)
                 docs = qa_res.get("docs", [])
-                refine_state = {**initial_state, "docs": docs}
-                ref_res = await refine_node(refine_state)
-                refined_context = ref_res.get("refined_context", "")
+                refined_context = qa_res.get("refined_context", "")
 
-            # If no valid context, stream fallback
             if not docs and not refined_context.strip():
                 yield f"data: {json.dumps({'type': 'token', 'content': FALLBACK_ANSWER})}\n\n"
-                memory.save_message("ai", FALLBACK_ANSWER)
+                await memory.asave_message("ai", FALLBACK_ANSWER)
                 yield f"data: {json.dumps({'type': 'done', 'session_id': self.session_id, 'collection_scope': self.collection_names or 'all', 'final_answer': FALLBACK_ANSWER})}\n\n"
                 return
 
-            # Stream generation tokens
             llm = _build_llm()
             prompt_value = QA_PROMPT.format_prompt(
                 sources=refined_context,
@@ -152,12 +161,29 @@ class QAPipeline:
                 chat_history=chat_history,
             )
 
-            llm_rate_limiter.acquire()
+            await llm_rate_limiter.aacquire()
 
             accumulated_tokens: List[str] = []
 
+            llm_config = {
+                "run_name": f"rag_{'summary' if is_summary else 'qa'}_{self.session_id[:8]}",
+                "tags": [
+                    "summary" if is_summary else "qa",
+                    f"user_{self.user_id}",
+                ],
+                "metadata": {
+                    "user_id": self.user_id,
+                    "session_id": self.session_id,
+                    "query_type": "summary" if is_summary else "qa",
+                    "collection_scope": self.collection_names or [],
+                },
+                "configurable": {
+                    "thread_id": self.session_id,
+                },
+            }
+
             try:
-                async for chunk in llm.astream(prompt_value.to_messages()):
+                async for chunk in llm.astream(prompt_value.to_messages(), config=llm_config):
                     content = chunk.content if isinstance(chunk, AIMessageChunk) else str(chunk)
                     if content:
                         accumulated_tokens.append(content)
@@ -168,7 +194,6 @@ class QAPipeline:
             raw_answer = "".join(accumulated_tokens)
             final_answer = sanitize_answer(raw_answer)
 
-            # Build citations
             if is_summary:
                 citations = build_source_only_citations(docs)
             else:
@@ -181,7 +206,7 @@ class QAPipeline:
             if persisted_answer != FALLBACK_ANSWER and citations:
                 persisted_answer = f"{persisted_answer}\n\n{citations}"
 
-            memory.save_message("ai", persisted_answer)
+            await memory.asave_message("ai", persisted_answer)
 
             yield f"data: {json.dumps({'type': 'done', 'session_id': self.session_id, 'collection_scope': self.collection_names or 'all', 'final_answer': persisted_answer})}\n\n"
 

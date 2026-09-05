@@ -1,13 +1,13 @@
+import asyncio
+from collections import Counter
 import re
 import sys
-from collections import Counter
-
 from typing import List, Tuple
 
 import yaml
-from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
-from qdrant_client import QdrantClient
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import AsyncQdrantClient
 
 from src.components.vector_store import VectorStore
 from src.exception import (
@@ -20,28 +20,18 @@ from src.logger import logging
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
-# Process-wide cache: QdrantVectorStore.from_existing_collection() secretly
-# costs one embedding API call every time it's constructed (LangChain embeds
-# a "dummy_text" string to validate vector dimensions match). Caching by
-# collection name means that validation cost is paid ONCE per collection
-# per process lifetime, not once per query -- this was the single biggest
-# source of wasted embedding calls against the shared rate limit.
 _qdrant_db_cache: dict[str, QdrantVectorStore] = {}
 
 
 def invalidate_cached_db(collection_name: str):
-    """Call this whenever a collection is deleted, so a future re-upload
-    with the same name doesn't serve a stale cached connection."""
     _qdrant_db_cache.pop(collection_name, None)
 
 
-
 class Retriever:
-    """Handles single-collection and multi-collection retrieval."""
+    """Handles single-collection and multi-collection retrieval with async search."""
 
     def __init__(self, collection_names: List[str] | None = None):
         try:
-            logging.info("Initializing Retriever")
             self.collection_names = [name for name in (collection_names or []) if name]
             self.vs = VectorStore(
                 collection_name=self.collection_names[0] if self.collection_names else None
@@ -54,35 +44,34 @@ class Retriever:
             self.collection_margin = config["retriever"].get("collection_margin", 0.78)
             self.doc_margin = config["retriever"].get("doc_margin", 0.55)
             self.max_query_variants = config["retriever"].get("max_query_variants", 2)
-            logging.info("Retriever initialized successfully")
         except Exception as e:
             raise CustomException(e, sys)
 
     def retrieve(self, query: str) -> List[Document]:
-        """Retrieve the best chunks across one or more collections."""
-        try:
-            ranked_docs = self.retrieve_ranked(query)
-            return [doc for doc, _, _ in ranked_docs]
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
-            raise
-        except Exception as e:
-            raise CustomException(e, sys)
+        return asyncio.run(self.aretrieve(query))
 
-    def retrieve_ranked(self, query: str) -> List[Tuple[Document, float, float]]:
-        """Retrieve the best chunks with final rank and semantic confidence."""
+    async def aretrieve(self, query: str) -> List[Document]:
+        ranked_docs = await self.retrieve_ranked(query)
+        return [doc for doc, _, _ in ranked_docs]
+
+    async def retrieve_ranked(self, query: str) -> List[Tuple[Document, float, float]]:
+        """Retrieve the best chunks with final rank and semantic confidence asynchronously."""
         try:
-            logging.info("Retrieving for: %s...", query[:50])
-            target_collections = self._resolve_target_collections()
+            logging.info("Async Retrieving for: %s...", query[:50])
+            target_collections = await self._resolve_target_collections()
             query_variants = self._build_query_variants(query)
 
+            tasks = [
+                self._search_collection(coll, query, query_variants)
+                for coll in target_collections
+            ]
+            results = await asyncio.gather(*tasks)
+
             collected_docs: List[Tuple[Document, float]] = []
-            for collection_name in target_collections:
-                collected_docs.extend(
-                    self._search_collection(collection_name, query, query_variants)
-                )
+            for doc_list in results:
+                collected_docs.extend(doc_list)
 
             ranked_docs = self._rerank_documents(query, collected_docs)
-            
             filtered = [item for item in ranked_docs if item[2] >= self.score_threshold]
 
             if filtered:
@@ -103,10 +92,6 @@ class Retriever:
                     if item[0].metadata.get("collection_name") in competitive_collections
                 ]
 
-                # Per-document margin — even within the same (competitive) collection,
-                # only keep chunks close to that collection's OWN best match. Stops
-                # weak neighboring pages from riding along with the one strong page.
-                DOC_MARGIN = self.doc_margin
                 docs = []
                 for coll in competitive_collections:
                     coll_docs = sorted(
@@ -118,7 +103,7 @@ class Retriever:
                         continue
                     coll_best = coll_docs[0][1]
                     docs.extend(
-                        item for item in coll_docs if item[1] >= coll_best * DOC_MARGIN
+                        item for item in coll_docs if item[1] >= coll_best * self.doc_margin
                     )
 
                 docs = sorted(docs, key=lambda item: item[1], reverse=True)[: self.k]
@@ -127,13 +112,6 @@ class Retriever:
 
             if not docs and ranked_docs:
                 best_doc, best_final_score, best_semantic_score = ranked_docs[0]
-                logging.info(
-                    "No chunks met threshold %.2f. Best semantic score: %.4f | final score: %.4f",
-                    self.score_threshold,
-                    best_semantic_score,
-                    best_final_score,
-                )
-
                 if best_semantic_score >= max(self.score_threshold - 0.05, 0.4):
                     best_collection = best_doc.metadata.get("collection_name")
                     same_collection_docs = [
@@ -141,11 +119,6 @@ class Retriever:
                         if item[0].metadata.get("collection_name") == best_collection
                     ]
                     docs = same_collection_docs[: min(self.k, 3)]
-                    logging.info(
-                        "Using top %d chunks from collection '%s' through adaptive fallback",
-                        len(docs),
-                        best_collection,
-                    )
 
             logging.info(
                 "Retrieved %d grounded chunks across %d collections",
@@ -158,23 +131,13 @@ class Retriever:
         except Exception as e:
             raise CustomException(e, sys)
 
-    def retrieve_with_scores(self, query: str) -> List[Tuple[Document, float]]:
-        """Retrieve chunks with similarity scores from the primary collection."""
+    async def _resolve_target_collections(self) -> List[str]:
+        client = AsyncQdrantClient(url=self.vs.qdrant_url)
         try:
-            logging.info("Retrieving with scores: %s...", query[:50])
-            db = self.vs.get_vectordb()
-            results = db.similarity_search_with_score(query, k=self.k)
-            logging.info("Retrieved %d chunks with scores", len(results))
-            return results
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    def _resolve_target_collections(self) -> List[str]:
-        client = QdrantClient(url=self.vs.qdrant_url)
-        try:
-            available = [c.name for c in client.get_collections().collections]
+            colls = await client.get_collections()
+            available = [c.name for c in colls.collections]
         finally:
-            client.close()
+            await client.close()
 
         if not available:
             raise KnowledgeBaseEmptyError(
@@ -189,31 +152,23 @@ class Retriever:
 
         return available
 
-    def _search_collection(
+    async def _search_collection(
         self,
         collection_name: str,
         query: str,
         query_variants: List[str],
     ) -> List[Tuple[Document, float]]:
         db = self._get_cached_db(collection_name)
-
         docs: List[Tuple[Document, float]] = []
+
         for variant in query_variants:
             if self.search_type == "mmr":
-                # max_marginal_relevance_search() picks a diverse subset but
-                # doesn't return similarity scores -- and retrieve_ranked()
-                # later filters everything below score_threshold using that
-                # score. A hardcoded 0.0 here meant every MMR result always
-                # failed that filter, so MMR silently returned nothing.
-                # Fix: look up each selected chunk's real score from a
-                # similarity search over the same fetch_k candidate pool
-                # MMR chose from (safe to key by exact chunk text, since
-                # chunks are unique within one collection).
+                sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
                 score_lookup = {
                     doc.page_content: self._normalize_similarity_score(score)
-                    for doc, score in db.similarity_search_with_score(variant, k=self.fetch_k)
+                    for doc, score in sim_res
                 }
-                mmr_docs = db.max_marginal_relevance_search(
+                mmr_docs = await db.amax_marginal_relevance_search(
                     variant,
                     k=self.k,
                     fetch_k=self.fetch_k,
@@ -223,7 +178,11 @@ class Retriever:
                     (doc, score_lookup.get(doc.page_content, 0.0)) for doc in mmr_docs
                 )
             else:
-                docs.extend(self._similarity_search_with_scores(db, variant))
+                sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                docs.extend(
+                    (doc, self._normalize_similarity_score(score))
+                    for doc, score in sim_res
+                )
 
         for doc, _ in docs:
             doc.metadata.setdefault("collection_name", collection_name)
@@ -231,9 +190,6 @@ class Retriever:
         return docs
 
     def _get_cached_db(self, collection_name: str) -> QdrantVectorStore:
-        """Reuse an existing connection if we've already validated this
-        collection this process lifetime -- avoids paying the hidden
-        dummy-text embedding cost on every single query."""
         if collection_name not in _qdrant_db_cache:
             _qdrant_db_cache[collection_name] = QdrantVectorStore.from_existing_collection(
                 embedding=self.vs.embedding_model,
@@ -300,30 +256,8 @@ class Retriever:
         )
         return [(item[1], item[0], item[2]) for item in ranked]
 
-    def _similarity_search_with_scores(
-        self,
-        db: QdrantVectorStore,
-        query: str,
-    ) -> List[Tuple[Document, float]]:
-        try:
-            results = db.similarity_search_with_score(query, k=self.fetch_k)
-            return [
-                (doc, self._normalize_similarity_score(score))
-                for doc, score in results
-            ]
-        except Exception:
-            logging.exception("Similarity search with scores failed")
-            raise
-
     @staticmethod
     def _normalize_similarity_score(score: float | None) -> float:
-        """Normalize Qdrant scores to a 0..1 similarity scale.
-
-        Qdrant search APIs commonly return a distance score where lower values
-        mean more relevant results. The app compares these values against a
-        similarity threshold (0.5), so distance-like values such as 0.18 must
-        be converted to a similarity-like value such as 0.82 before filtering.
-        """
         if score is None:
             return 0.0
         try:
@@ -333,16 +267,10 @@ class Retriever:
 
         if value < 0:
             return 0.0
-
-        # Qdrant distance metrics (e.g. cosine distance, Euclidean distance)
-        # use lower numbers for stronger matches. Convert 0..1 distances to
-        # 1..0 similarity values so they can be compared to the app's
-        # score_threshold consistently.
         if value <= 1:
             if value >= 0.5:
                 return value
             return 1.0 - value
-
         return max(0.0, min(1.0, 1 / (1 + value)))
 
     @staticmethod
@@ -372,7 +300,6 @@ class Retriever:
         significant = [token for token in tokens if len(token) > 3]
         if significant:
             variants.append(" ".join(significant[:8]))
-
         if len(tokens) > 5:
             variants.append(" ".join(tokens[:5]))
 
@@ -401,15 +328,15 @@ class Retriever:
         first_line = lines[0]
         return len(first_line) < 80 and any(char.isalpha() for char in first_line)
 
-    def get_full_context(self, max_chars: int = 6000) -> List[Document]:
-        """Return chunks in original document order, not similarity-ranked."""
+    async def get_full_context(self, max_chars: int = 6000) -> List[Document]:
+        """Return chunks in original document order asynchronously."""
         try:
-            target_collections = self._resolve_target_collections()
+            target_collections = await self._resolve_target_collections()
 
             all_docs: List[Document] = []
             for collection_name in target_collections:
                 vs = VectorStore(collection_name=collection_name)
-                docs = vs.get_all_documents()
+                docs = await vs.aget_all_documents()
                 docs.sort(key=lambda d: d.metadata.get("doc_index", 0))
                 all_docs.extend(docs)
 
@@ -422,12 +349,6 @@ class Retriever:
                 selected.append(doc)
                 total_chars += doc_len
 
-            logging.info(
-                "Full-context retrieval: %d chunks (%d chars) across %d collections",
-                len(selected),
-                total_chars,
-                len(target_collections),
-            )
             return selected
         except (CollectionNotFoundError, KnowledgeBaseEmptyError):
             raise

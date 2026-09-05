@@ -1,10 +1,11 @@
-import sys
+import asyncio
 from datetime import datetime, timedelta, timezone
+import sys
 from typing import Any, List, Optional
 
-import yaml
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from psycopg2.extras import Json
+import yaml
 
 from src.database.db import get_db_cursor
 from src.exception import CustomException
@@ -15,39 +16,17 @@ with open("config/config.yaml") as f:
 
 
 class MemoryManager:
-    """
-    Manage persistent multi-session chat history and session attachments,
-    backed by PostgreSQL. Every operation is scoped to (session_id, user_id)
-    so one user can never read, modify, or delete another user's data.
-    """
+    """Manages multi-session chat history and attachments with sync and async interfaces."""
 
     def __init__(self, session_id: str = "default", user_id: str = None):
         if not user_id:
-            raise CustomException(
-                ValueError("MemoryManager requires a user_id"), sys
-            )
-        try:
-            logging.info(
-                "Initializing MemoryManager | session: %s | user: %s",
-                session_id,
-                user_id,
-            )
-            self.session_id = session_id
-            self.user_id = user_id
-            self.window_days = config["memory"]["window_days"]
-            # How many of the MOST RECENT messages get sent to the LLM verbatim,
-            # in full. Anything older than this gets folded into one short
-            # cached summary instead of being resent raw every single turn --
-            # that's what actually cuts the token cost as a session grows long.
-            self.recent_turns_to_keep = config["memory"].get("recent_messages_verbatim", 6)
-        except Exception as e:
-            raise CustomException(e, sys)
+            raise CustomException(ValueError("MemoryManager requires a user_id"), sys)
+        self.session_id = session_id
+        self.user_id = user_id
+        self.window_days = config["memory"]["window_days"]
+        self.recent_turns_to_keep = config["memory"].get("recent_messages_verbatim", 6)
 
-    # ------------------------------------------------------------------
-    # Session ownership / existence
-    # ------------------------------------------------------------------
     def _ensure_session(self, cur, title: Optional[str] = None):
-        """Create the session row if it doesn't exist yet (upsert on touch)."""
         cur.execute(
             """
             INSERT INTO sessions (session_id, user_id, title)
@@ -59,16 +38,6 @@ class MemoryManager:
             (self.session_id, self.user_id, title, title),
         )
 
-    def _owns_session(self, cur) -> bool:
-        cur.execute(
-            "SELECT 1 FROM sessions WHERE session_id = %s AND user_id = %s",
-            (self.session_id, self.user_id),
-        )
-        return cur.fetchone() is not None
-
-    # ------------------------------------------------------------------
-    # Messages
-    # ------------------------------------------------------------------
     def save_message(
         self,
         role: str,
@@ -77,11 +46,11 @@ class MemoryManager:
     ):
         try:
             title = content.strip()[:60] if (role == "human" and content.strip()) else None
-            attachments_json = None
-            if attachments and role == "human":
-                attachments_json = Json(
-                    [item for item in attachments if isinstance(item, dict)]
-                )
+            attachments_json = (
+                Json([item for item in attachments if isinstance(item, dict)])
+                if attachments and role == "human"
+                else None
+            )
 
             with get_db_cursor() as cur:
                 self._ensure_session(cur, title=title)
@@ -98,54 +67,38 @@ class MemoryManager:
         except Exception as e:
             raise CustomException(e, sys)
 
+    async def asave_message(
+        self,
+        role: str,
+        content: str,
+        attachments: Optional[List[dict[str, Any]]] = None,
+    ):
+        return await asyncio.to_thread(self.save_message, role, content, attachments)
+
     def get_history(self) -> List[BaseMessage]:
-        """
-        Returns chat history shaped for the LLM: the most recent
-        `recent_turns_to_keep` messages in full, plus -- if the session is
-        longer than that -- ONE compact summary message standing in for
-        everything older. Without this, a long session resends its ENTIRE
-        raw history on every single turn, which is pure wasted tokens once
-        a conversation runs long; only the recent messages usually matter
-        turn-to-turn.
-        """
         try:
             payload = self.get_messages_payload()
-
             if len(payload) <= self.recent_turns_to_keep:
-                messages = self._to_base_messages(payload)
-                logging.info(
-                    "History loaded | session: %s | messages: %s (no summarization needed)",
-                    self.session_id,
-                    len(messages),
-                )
-                return messages
+                return self._to_base_messages(payload)
 
             older = payload[: -self.recent_turns_to_keep]
             recent = payload[-self.recent_turns_to_keep :]
-
             summary_text = self._get_or_build_summary(older)
 
             messages: List[BaseMessage] = []
             if summary_text:
                 messages.append(
                     SystemMessage(
-                        content=(
-                            "Summary of earlier parts of this conversation "
-                            f"(not shown to the user verbatim):\n{summary_text}"
-                        )
+                        content=f"Summary of earlier parts of this conversation:\n{summary_text}"
                     )
                 )
             messages.extend(self._to_base_messages(recent))
-
-            logging.info(
-                "History loaded | session: %s | recent (verbatim): %d | older (summarized): %d",
-                self.session_id,
-                len(recent),
-                len(older),
-            )
             return messages
         except Exception as e:
             raise CustomException(e, sys)
+
+    async def aget_history(self) -> List[BaseMessage]:
+        return await asyncio.to_thread(self.get_history)
 
     @staticmethod
     def _to_base_messages(payload: List[dict[str, Any]]) -> List[BaseMessage]:
@@ -157,13 +110,8 @@ class MemoryManager:
                 messages.append(AIMessage(content=msg["content"]))
         return messages
 
-    # ------------------------------------------------------------------
-    # History summarization (older messages only -- see get_history above)
-    # ------------------------------------------------------------------
     @staticmethod
     def _ensure_summary_table(cur):
-        """Lazily create the summary-cache table -- same pattern as
-        _ensure_session, no separate migration file needed."""
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS session_summaries (
@@ -195,25 +143,11 @@ class MemoryManager:
 
     @staticmethod
     def _normalize_dt(dt: datetime) -> datetime:
-        """
-        Strip timezone info (converting to UTC first if it has one) so
-        comparisons never crash with "can't compare offset-naive and
-        offset-aware datetimes" -- Postgres can hand back either kind
-        depending on the column type, and messages.created_at (aware) and
-        session_summaries.summarized_through (naive) don't match here.
-        """
         if dt.tzinfo is not None:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         return dt
 
     def _get_or_build_summary(self, older_messages: List[dict[str, Any]]) -> str:
-        """
-        Returns a summary covering every message in `older_messages`. Reuses
-        the cached one if it already covers everything up to the newest of
-        those messages -- so a long-running session only pays for ONE new
-        summarization call per newly-aged-out message batch, not one per
-        turn.
-        """
         if not older_messages:
             return ""
 
@@ -226,14 +160,11 @@ class MemoryManager:
         if cached and self._normalize_dt(cached["summarized_through"]) >= latest_covered:
             return cached["summary"]
 
-        # Only summarize what the cached summary doesn't already cover --
-        # not the whole `older` list from scratch every time.
         already_covered_through = (
             self._normalize_dt(cached["summarized_through"]) if cached else None
         )
         to_fold_in = [
-            m
-            for m in older_messages
+            m for m in older_messages
             if already_covered_through is None
             or self._normalize_dt(datetime.fromisoformat(m["timestamp"])) > already_covered_through
         ]
@@ -250,9 +181,6 @@ class MemoryManager:
 
     @staticmethod
     def _summarize_messages(messages: List[dict[str, Any]], previous_summary: str = "") -> str:
-        """One small LLM call to compress older turns into a few sentences.
-        Reuses the same provider/model your app already talks to (see
-        config.yaml's llm.provider) -- no separate API key needed."""
         from src.chains.qa_chain import _build_llm
         from src.utils.rate_limiter import llm_rate_limiter
 
@@ -262,25 +190,19 @@ class MemoryManager:
         )
 
         prompt = (
-            "Summarize the following part of a conversation in 3-5 short "
-            "sentences. Keep only facts, decisions, and topics that would "
-            "matter for understanding LATER questions in the same "
-            "conversation. Do not add anything not present in the text "
-            "below, and do not include any preamble -- output only the "
-            "summary itself.\n\n"
+            "Summarize the following part of a conversation in 3-5 short sentences. "
+            "Keep only facts, decisions, and topics that matter for later context.\n\n"
         )
         if previous_summary:
-            prompt += f"Existing summary of even earlier parts of this conversation:\n{previous_summary}\n\n"
+            prompt += f"Existing summary:\n{previous_summary}\n\n"
         prompt += f"Conversation to fold in:\n{conversation_text}\n\nUpdated summary:"
 
         llm = _build_llm()
         llm_rate_limiter.acquire()
         response = llm.invoke(prompt)
-        text = response.content if hasattr(response, "content") else str(response)
-        return text.strip()
+        return (response.content if hasattr(response, "content") else str(response)).strip()
 
     def get_messages_payload(self) -> List[dict[str, Any]]:
-        """Return recent raw messages (within retention window) for this user's session."""
         try:
             cutoff = datetime.now() - timedelta(days=self.window_days)
             with get_db_cursor(commit=False) as cur:
@@ -312,23 +234,16 @@ class MemoryManager:
         except Exception as e:
             raise CustomException(e, sys)
 
-    def get_message_count(self) -> int:
-        try:
-            return len(self.get_messages_payload())
-        except Exception as e:
-            raise CustomException(e, sys)
+    async def aget_messages_payload(self) -> List[dict[str, Any]]:
+        return await asyncio.to_thread(self.get_messages_payload)
 
     def _prune_expired(self, cur):
-        """Delete messages older than the retention window for this session."""
         cutoff = datetime.now() - timedelta(days=self.window_days)
         cur.execute(
             "DELETE FROM messages WHERE session_id = %s AND created_at < %s",
             (self.session_id, cutoff),
         )
 
-    # ------------------------------------------------------------------
-    # Attachments
-    # ------------------------------------------------------------------
     def add_attachment(
         self,
         name: str,
@@ -350,13 +265,17 @@ class MemoryManager:
                     """,
                     (self.session_id, name, collection, source_type, Json(extra) if extra else None),
                 )
-            logging.info(
-                "Attachment saved | session: %s | collection: %s",
-                self.session_id,
-                collection,
-            )
         except Exception as e:
             raise CustomException(e, sys)
+
+    async def aadd_attachment(
+        self,
+        name: str,
+        collection: str,
+        source_type: str,
+        extra: Optional[dict[str, Any]] = None,
+    ):
+        return await asyncio.to_thread(self.add_attachment, name, collection, source_type, extra)
 
     def get_attachments(self) -> List[dict[str, str]]:
         try:
@@ -383,6 +302,9 @@ class MemoryManager:
         except Exception as e:
             raise CustomException(e, sys)
 
+    async def aget_attachments(self) -> List[dict[str, str]]:
+        return await asyncio.to_thread(self.get_attachments)
+
     def remove_attachment(self, collection: str) -> bool:
         try:
             with get_db_cursor() as cur:
@@ -401,15 +323,12 @@ class MemoryManager:
                         "UPDATE sessions SET updated_at = now() WHERE session_id = %s",
                         (self.session_id,),
                     )
-            logging.info(
-                "Attachment removed | session: %s | collection: %s | removed: %s",
-                self.session_id,
-                collection,
-                removed,
-            )
             return removed
         except Exception as e:
             raise CustomException(e, sys)
+
+    async def aremove_attachment(self, collection: str) -> bool:
+        return await asyncio.to_thread(self.remove_attachment, collection)
 
     def get_attachment_collections(self) -> List[str]:
         try:
@@ -417,8 +336,10 @@ class MemoryManager:
         except Exception as e:
             raise CustomException(e, sys)
 
+    async def aget_attachment_collections(self) -> List[str]:
+        return await asyncio.to_thread(self.get_attachment_collections)
+
     def cleanup_attachments(self, valid_collections: List[str]) -> List[str]:
-        """Remove attachment rows that point to vector collections that no longer exist."""
         try:
             valid_set = set(valid_collections)
             current = self.get_attachments()
@@ -432,18 +353,10 @@ class MemoryManager:
         except Exception as e:
             raise CustomException(e, sys)
 
-    # ------------------------------------------------------------------
-    # Session metadata / lifecycle
-    # ------------------------------------------------------------------
-    def touch(self, *, title: Optional[str] = None, timestamp: Optional[str] = None):
-        try:
-            with get_db_cursor() as cur:
-                self._ensure_session(cur, title=title[:60] if title else None)
-        except Exception as e:
-            raise CustomException(e, sys)
+    async def acleanup_attachments(self, valid_collections: List[str]) -> List[str]:
+        return await asyncio.to_thread(self.cleanup_attachments, valid_collections)
 
     def get_title(self) -> str:
-        """Return the session's stored title (used when no human message exists yet)."""
         try:
             with get_db_cursor(commit=False) as cur:
                 cur.execute(
@@ -455,65 +368,40 @@ class MemoryManager:
         except Exception as e:
             raise CustomException(e, sys)
 
-    def has_persisted_state(self) -> bool:
+    async def aget_title(self) -> str:
+        return await asyncio.to_thread(self.get_title)
+
+    def clear(self):
         try:
-            with get_db_cursor(commit=False) as cur:
-                cur.execute(
-                    "SELECT 1 FROM sessions WHERE session_id = %s AND user_id = %s",
-                    (self.session_id, self.user_id),
-                )
-                return cur.fetchone() is not None
+            with get_db_cursor() as cur:
+                self._ensure_summary_table(cur)
+                cur.execute("DELETE FROM session_summaries WHERE session_id = %s", (self.session_id,))
+                cur.execute("DELETE FROM sessions WHERE session_id = %s AND user_id = %s", (self.session_id, self.user_id))
         except Exception as e:
             raise CustomException(e, sys)
 
-    def clear(self):
-        """Delete only the active session (messages + attachments cascade automatically)."""
-        try:
-            with get_db_cursor() as cur:
-                # session_summaries has no FK cascade to sessions (added later,
-                # kept independent since the exact sessions PK type wasn't
-                # available to reference safely) -- clean it up explicitly so
-                # clearing a session doesn't leave an orphaned cached summary.
-                # Ensure the table exists first: a short session that never
-                # grew past recent_messages_verbatim never created one.
-                self._ensure_summary_table(cur)
-                cur.execute(
-                    "DELETE FROM session_summaries WHERE session_id = %s",
-                    (self.session_id,),
-                )
-                cur.execute(
-                    "DELETE FROM sessions WHERE session_id = %s AND user_id = %s",
-                    (self.session_id, self.user_id),
-                )
-            logging.info("Session cleared: %s", self.session_id)
-        except Exception as e:
-            raise CustomException(e, sys)
+    async def aclear(self):
+        return await asyncio.to_thread(self.clear)
 
     @staticmethod
     def clear_all(user_id: str):
-        """Delete every session (and cascading messages/attachments) for ONE user only."""
         try:
             with get_db_cursor() as cur:
-                # Same as clear() above -- session_summaries isn't covered by
-                # the sessions cascade, so remove this user's cached summaries
-                # explicitly, in the same transaction, before the sessions
-                # themselves are deleted.
                 MemoryManager._ensure_summary_table(cur)
                 cur.execute(
-                    """
-                    DELETE FROM session_summaries
-                    WHERE session_id IN (SELECT session_id FROM sessions WHERE user_id = %s)
-                    """,
+                    "DELETE FROM session_summaries WHERE session_id IN (SELECT session_id FROM sessions WHERE user_id = %s)",
                     (user_id,),
                 )
                 cur.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
-            logging.info("All chat history cleared | user: %s", user_id)
         except Exception as e:
             raise CustomException(e, sys)
 
     @staticmethod
+    async def aclear_all(user_id: str):
+        return await asyncio.to_thread(MemoryManager.clear_all, user_id)
+
+    @staticmethod
     def list_sessions(user_id: str, valid_collections: Optional[List[str]] = None) -> List[dict]:
-        """List all non-expired sessions belonging to ONE user, for the sidebar."""
         try:
             window_days = config["memory"]["window_days"]
             cutoff = datetime.now() - timedelta(days=window_days)
@@ -547,7 +435,6 @@ class MemoryManager:
             sessions = []
             for row in rows:
                 if row["message_count"] == 0 and row["attachment_count"] == 0:
-                    # Mirrors old behavior: empty, stale sessions get cleaned up
                     MemoryManager(session_id=row["session_id"], user_id=user_id).clear()
                     continue
 
@@ -578,3 +465,7 @@ class MemoryManager:
             return sessions
         except Exception as e:
             raise CustomException(e, sys)
+
+    @staticmethod
+    async def alist_sessions(user_id: str, valid_collections: Optional[List[str]] = None) -> List[dict]:
+        return await asyncio.to_thread(MemoryManager.list_sessions, user_id, valid_collections)

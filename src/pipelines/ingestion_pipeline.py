@@ -2,6 +2,7 @@ import sys
 import yaml
 import os
 import re
+from langsmith import traceable
 from src.components.document_loader import DocumentLoader
 from src.components.text_splitter import TextSplitter
 from src.components.vector_store import VectorStore
@@ -43,6 +44,7 @@ class IngestionPipeline:
             logging.error(f"Error initializing Ingestion Pipeline: {e}")
             raise CustomException(e, sys) # type: ignore
         
+    @traceable(run_type="chain", name="ingestion_pipeline")
     def run(self, source:str,
             collection_name:str=None,
             clear_existing:bool = True,
@@ -117,6 +119,7 @@ class IngestionPipeline:
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
         
+    @traceable(run_type="chain", name="ingestion_pipeline")
     def run_from_bytes(
         self,
         file_bytes: bytes,

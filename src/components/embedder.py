@@ -7,19 +7,13 @@ import yaml
 from src.logger import logging
 from src.exception import CustomException
 
-# Must be set BEFORE importing anything from huggingface_hub /
-# sentence_transformers / langchain_community.embeddings, so no network
-# calls are attempted at all. The model is already downloaded and cached
-# locally from earlier runs, so there's no reason to ever hit
-# huggingface.co again just for a routine "check for updates" request.
-#
-# This is what was causing the ~45s startup/refresh/delete lag: every
-# VectorStore() -> Embedder() instantiation was trying (and failing,
-# since huggingface.co isn't reachable from this environment) a HEAD
-# request with 5 retries and exponential backoff, for SEVERAL files in a
-# row, before eventually falling back to the local cache anyway.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Allow HF_HUB_OFFLINE to be set via environment variable.
+# Default to "0" (allow download on first boot if not yet cached).
+# Once cached locally, you can pass HF_HUB_OFFLINE=1 in .env.docker for faster air-gapped startups.
+if "HF_HUB_OFFLINE" not in os.environ:
+    os.environ["HF_HUB_OFFLINE"] = "0"
+if "TRANSFORMERS_OFFLINE" not in os.environ:
+    os.environ["TRANSFORMERS_OFFLINE"] = "0"
 
 from langchain_huggingface import HuggingFaceEmbeddings  # noqa: E402
 from langchain_core.embeddings import Embeddings  # noqa: E402

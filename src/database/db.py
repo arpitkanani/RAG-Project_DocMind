@@ -33,6 +33,25 @@ except Exception as e:
     raise CustomException(e, sys)
 
 
+def init_db(sql_path: str = "database/init.sql") -> None:
+    """Ensures all required tables (users, sessions, messages, attachments)
+    exist in the database."""
+    try:
+        if not os.path.exists(sql_path):
+            logging.warning("init.sql not found at %s, skipping schema init", sql_path)
+            return
+
+        with open(sql_path, "r", encoding="utf-8") as f:
+            sql = f.read()
+
+        with get_db_cursor() as cur:
+            cur.execute(sql)
+        logging.info("Database schema initialized successfully from %s", sql_path)
+    except Exception as e:
+        logging.error("Failed to initialize database schema: %s", e)
+        raise CustomException(e, sys)
+
+
 class get_db_cursor:
     """
     Context manager for a pooled Postgres connection + cursor.

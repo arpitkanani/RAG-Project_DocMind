@@ -7,6 +7,13 @@ data/
 logs/
 *.log
 
+# Secrets / credentials — never commit these
+.env
+.env.docker
+*.key
+*.pem
+
+
 # Vector DB / local persistence
 qdrant_storage/
 *.sqlite3
