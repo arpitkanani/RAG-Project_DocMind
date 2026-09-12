@@ -1,7 +1,4 @@
-# DocMind — production requirements for Docker (Linux / Python 3.11-slim)
-# Generated from requirements.txt with conda-local, Windows-only, and
-# dev-only packages stripped out.
-#
+
 # Key omissions vs requirements.txt:
 #   - colorama, debugpy, ipython, ipykernel, jupyter_*, parso, pickleshare,
 #     pyreadline3, pywin32, win32_setctime, python-certifi-win32

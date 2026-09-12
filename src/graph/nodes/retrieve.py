@@ -4,7 +4,6 @@ from typing import Any, Dict
 import yaml
 
 from src.chains.qa_chain import (
-    format_docs,
     is_summary_request,
     merge_same_location_docs,
 )
@@ -60,7 +59,6 @@ async def retrieve_qa_node(state: RAGState) -> Dict[str, Any]:
 
         return {
             "docs": docs,
-            "refined_context": format_docs(docs),
         }
     except (CollectionNotFoundError, KnowledgeBaseEmptyError):
         raise
@@ -81,7 +79,6 @@ async def retrieve_summary_node(state: RAGState) -> Dict[str, Any]:
         logging.info("summary context: %d chunk(s) retrieved", len(docs))
         return {
             "docs": docs,
-            "refined_context": format_docs(docs),
         }
     except (CollectionNotFoundError, KnowledgeBaseEmptyError):
         raise

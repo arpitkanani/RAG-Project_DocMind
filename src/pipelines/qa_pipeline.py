@@ -13,6 +13,7 @@ from src.chains.qa_chain import (
     _build_llm,
     build_citations,
     build_source_only_citations,
+    format_docs,
     is_summary_request,
     sanitize_answer,
 )
@@ -28,7 +29,6 @@ from src.graph import (
     generate_node,
     load_context_node,
     rag_graph,
-    refine_node,
     retrieve_qa_node,
     retrieve_summary_node,
 )
@@ -118,8 +118,12 @@ class QAPipeline:
         query: str,
         message_attachments: Optional[List[dict]] = None,
     ) -> AsyncGenerator[str, None]:
-        """Asynchronously streams token-by-token SSE events to the frontend."""
-        thread_id = f"{self.user_id}:{self.session_id}:{uuid.uuid4()}"
+        """Asynchronously streams token-by-token SSE events to the frontend.
+
+        Path: retrieve → format_docs → stream LLM tokens → finalize + persist.
+        The refine step has been removed; retrieve_ranked already reranks and
+        threshold-filters so the docs fed here are already high-quality.
+        """
         initial_state = {
             "question": query,
             "collection_names": self.collection_names,
@@ -137,26 +141,26 @@ class QAPipeline:
 
             is_summary = is_summary_request(query)
             docs = []
-            refined_context = ""
 
             if is_summary:
-                sum_res = await retrieve_summary_node(initial_state)
-                docs = sum_res.get("docs", [])
-                refined_context = sum_res.get("refined_context", "")
+                res = await retrieve_summary_node(initial_state)
             else:
-                qa_res = await retrieve_qa_node(initial_state)
-                docs = qa_res.get("docs", [])
-                refined_context = qa_res.get("refined_context", "")
+                res = await retrieve_qa_node(initial_state)
 
-            if not docs and not refined_context.strip():
+            docs = res.get("docs", [])
+
+            if not docs:
                 yield f"data: {json.dumps({'type': 'token', 'content': FALLBACK_ANSWER})}\n\n"
                 await memory.asave_message("ai", FALLBACK_ANSWER)
                 yield f"data: {json.dumps({'type': 'done', 'session_id': self.session_id, 'collection_scope': self.collection_names or 'all', 'final_answer': FALLBACK_ANSWER})}\n\n"
                 return
 
+            # Format docs → source block for the prompt
+            sources = format_docs(docs)
+
             llm = _build_llm()
             prompt_value = QA_PROMPT.format_prompt(
-                sources=refined_context,
+                sources=sources,
                 question=query,
                 chat_history=chat_history,
             )

@@ -6,7 +6,7 @@ llm:
   provider: "groq" #"google" 
   model: "openai/gpt-oss-20b" #"gemini-2.0-flash" #
   temperature: 0.5
-  max_tokens: 2048
+  max_tokens: 1024
   rate_limit:
     patterns:
       rpd: ["requests per day", "request per day", "rpd", "daily limit", "requests_per_day"]

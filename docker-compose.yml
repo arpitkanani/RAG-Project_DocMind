@@ -63,7 +63,7 @@ services:
 
   # ── Qdrant ──────────────────────────────────────────────────────────────────
   qdrant:
-    image: qdrant/qdrant:v1.13.4
+    image: qdrant/qdrant:v1.18.0
     container_name: docmind_qdrant
     restart: unless-stopped
     ports:

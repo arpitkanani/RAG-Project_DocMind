@@ -1,7 +1,7 @@
 import sys
 from typing import Any, Dict
 
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import StrOutputParser #type: ignore
 
 from src.chains.qa_chain import (
     FALLBACK_ANSWER,
@@ -9,6 +9,7 @@ from src.chains.qa_chain import (
     _build_llm,
     build_citations,
     build_source_only_citations,
+    format_docs,
     sanitize_answer,
 )
 from src.components.memory_manager import MemoryManager
@@ -31,13 +32,18 @@ def fallback_node(state: RAGState) -> Dict[str, Any]:
 
 
 async def generate_node(state: RAGState) -> Dict[str, Any]:
-    """Generates the grounded answer using the refined context and chat history."""
+    """Generates the grounded answer from retrieved docs and chat history."""
     try:
         question = state["question"]
         chat_history = state.get("chat_history", [])
-        refined_context = state.get("refined_context") or ""
+        docs = state.get("docs", [])
 
-        if not refined_context.strip():
+        # Format docs into the source block the prompt expects.
+        # retrieve_qa_node and retrieve_summary_node have already merged
+        # same-location chunks, so we just call format_docs here.
+        sources = format_docs(docs)
+
+        if not sources.strip() or sources == "No grounded source passages are available.":
             return {"raw_answer": FALLBACK_ANSWER}
 
         llm = _build_llm()
@@ -49,7 +55,7 @@ async def generate_node(state: RAGState) -> Dict[str, Any]:
         try:
             raw_answer = await chain.ainvoke(
                 {
-                    "sources": refined_context,
+                    "sources": sources,
                     "question": question,
                     "chat_history": chat_history,
                 }
@@ -78,6 +84,7 @@ async def finalize_node(state: RAGState) -> Dict[str, Any]:
             citations = ""
         else:
             final_answer = sanitize_answer(raw_answer)
+            citations = ""
 
             if is_summary:
                 citations = build_source_only_citations(docs)

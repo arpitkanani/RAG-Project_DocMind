@@ -7,6 +7,7 @@ from typing import List, Tuple
 import yaml
 from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
+from langsmith import traceable
 from qdrant_client import AsyncQdrantClient
 
 from src.components.vector_store import VectorStore
@@ -54,6 +55,7 @@ class Retriever:
         ranked_docs = await self.retrieve_ranked(query)
         return [doc for doc, _, _ in ranked_docs]
 
+    @traceable(run_type="retriever", name="retrieve_ranked")
     async def retrieve_ranked(self, query: str) -> List[Tuple[Document, float, float]]:
         """Retrieve the best chunks with final rank and semantic confidence asynchronously."""
         try:
@@ -328,6 +330,7 @@ class Retriever:
         first_line = lines[0]
         return len(first_line) < 80 and any(char.isalpha() for char in first_line)
 
+    @traceable(run_type="retriever", name="get_full_context")
     async def get_full_context(self, max_chars: int = 6000) -> List[Document]:
         """Return chunks in original document order asynchronously."""
         try:

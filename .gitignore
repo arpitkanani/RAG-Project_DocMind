@@ -6,7 +6,7 @@ __pycache__/
 data/
 logs/
 *.log
-
+update_instructions.md
 # Secrets / credentials — never commit these
 .env
 .env.docker
@@ -17,6 +17,11 @@ logs/
 # Vector DB / local persistence
 qdrant_storage/
 *.sqlite3
+
+tests/
+.tests
+/tests
+test_IngestionPipeline.py
 
 evaluation/
 evaluation_results.csv

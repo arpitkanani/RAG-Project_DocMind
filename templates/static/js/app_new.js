@@ -763,11 +763,15 @@ async function sendMessage() {
   const input = el("queryInput");
   const query = input.value.trim();
   if (!query) return;
-  if (conversationState.uploadInProgress)
+  if (
+    conversationState.uploadInProgress ||
+    workspaceState.sources.some((s) => s.status === "processing")
+  ) {
     return showToast(
       "Please wait until the source finishes processing.",
       "error"
     );
+  }
   if (conversationState.isLoading) return;
 
   // Guard: block query when workspace is completely empty
@@ -840,8 +844,49 @@ async function sendMessage() {
         collection_names: scopedCollectionNames,
       },
       {
+        onToolStart: (toolData) => {
+          removeTyping(typingId);
+          const toolLabel =
+            toolData.name === "summarize_document"
+              ? "Reading document context..."
+              : "Searching knowledge base...";
+          if (!messageRow) {
+            const container = el("messages");
+            messageRow = document.createElement("div");
+            messageRow.className = "msg-row ai";
+            messageRow.innerHTML = `
+              <div class="msg-avatar">AI</div>
+              <div class="msg-body">
+                <div class="tool-status-badge" id="currentToolBadge">
+                  <span class="tool-spinner"></span>
+                  <span class="tool-label">${toolLabel}</span>
+                </div>
+                <div class="msg-bubble" style="display:none;"></div>
+              </div>`;
+            container.appendChild(messageRow);
+            bubbleEl = messageRow.querySelector(".msg-bubble");
+          } else {
+            let badge = messageRow.querySelector("#currentToolBadge");
+            if (!badge) {
+              badge = document.createElement("div");
+              badge.className = "tool-status-badge";
+              badge.id = "currentToolBadge";
+              messageRow.querySelector(".msg-body").prepend(badge);
+            }
+            badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${toolLabel}</span>`;
+            badge.style.display = "inline-flex";
+          }
+          const container = el("messages");
+          container.scrollTop = container.scrollHeight;
+        },
+        onToolEnd: () => {
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge) badge.style.display = "none";
+        },
         onToken: (token) => {
           removeTyping(typingId);
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge) badge.style.display = "none";
           streamedText += token;
           if (!messageRow) {
             const container = el("messages");
@@ -855,6 +900,7 @@ async function sendMessage() {
             container.appendChild(messageRow);
             bubbleEl = messageRow.querySelector(".msg-bubble");
           } else if (bubbleEl) {
+            bubbleEl.style.display = "block";
             bubbleEl.innerHTML = formatContent(streamedText);
           }
           const container = el("messages");
@@ -1472,10 +1518,16 @@ function autoResize() {
  * @param {object} callbacks
  * @param {(token: string) => void} callbacks.onToken
  * @param {(citations: string) => void} callbacks.onCitations
+ * @param {(data: object) => void} callbacks.onToolStart
+ * @param {(data: object) => void} callbacks.onToolEnd
  * @param {(data: object) => void} callbacks.onDone
  * @param {(err: object) => void} callbacks.onError
  */
-async function streamQueryAnswer(url, payload, { onToken, onCitations, onDone, onError }) {
+async function streamQueryAnswer(
+  url,
+  payload,
+  { onToken, onCitations, onToolStart, onToolEnd, onDone, onError }
+) {
   try {
     const apiKey = localStorage.getItem(API_KEY_STORAGE);
     const res = await fetch(url, {
@@ -1534,6 +1586,10 @@ async function streamQueryAnswer(url, payload, { onToken, onCitations, onDone, o
             onToken?.(event.content);
           } else if (event.type === "citations") {
             onCitations?.(event.citations);
+          } else if (event.type === "tool_start") {
+            onToolStart?.(event);
+          } else if (event.type === "tool_end") {
+            onToolEnd?.(event);
           } else if (event.type === "done") {
             onDone?.(event);
           } else if (event.type === "error") {
