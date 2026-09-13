@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from src.auth import get_current_user
 from src.components.memory_manager import MemoryManager
 from src.logger import logging
-from src.routing_helpers import (
+from src.utils.helpers import (
     adelete_collections,
     aget_available_collections,
     build_error_response,

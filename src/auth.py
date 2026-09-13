@@ -1,11 +1,22 @@
 import hashlib
 import sys
 
+import anyio
 from fastapi import Header, HTTPException
 
 from src.database.db import get_db_cursor
 from src.exception import CustomException
 from src.logger import logging
+
+
+def _lookup_user(key_hash: str):
+    """Synchronous DB lookup — runs in a worker thread."""
+    with get_db_cursor(commit=False) as cur:
+        cur.execute(
+            "SELECT id FROM users WHERE api_key_hash = %s AND is_active = true",
+            (key_hash,),
+        )
+        return cur.fetchone()
 
 
 async def get_current_user(x_api_key: str = Header(..., alias="X-API-Key")) -> str:
@@ -19,13 +30,7 @@ async def get_current_user(x_api_key: str = Header(..., alias="X-API-Key")) -> s
     """
     try:
         key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
-
-        with get_db_cursor(commit=False) as cur:
-            cur.execute(
-                "SELECT id FROM users WHERE api_key_hash = %s AND is_active = true",
-                (key_hash,),
-            )
-            row = cur.fetchone()
+        row = await anyio.to_thread.run_sync(_lookup_user, key_hash)
 
         if row is None:
             logging.warning("Auth failed: invalid or inactive API key")

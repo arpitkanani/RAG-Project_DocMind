@@ -10,6 +10,7 @@ from langchain_community.document_loaders import (
     UnstructuredMarkdownLoader,
 )
 from langchain_core.documents import Document
+from langsmith import traceable
 
 from src.exception import CustomException
 from src.logger import logging
@@ -23,6 +24,7 @@ with open("config/config.yaml") as f:
 class DocumentLoader:
     """Load supported files or YouTube transcripts as LangChain documents."""
 
+    @traceable(run_type="parser", name="document_load")
     def load(self, source: str) -> Iterator[Document]:
         try:
             logging.info("Loading document from source: %s", source)

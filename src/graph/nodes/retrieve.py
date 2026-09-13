@@ -3,6 +3,8 @@ from typing import Any, Dict
 
 import yaml
 
+from langsmith import traceable
+
 from src.chains.qa_chain import (
     is_summary_request,
     merge_same_location_docs,
@@ -21,6 +23,7 @@ with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
 
+@traceable(name="load_context_node")
 async def load_context_node(state: RAGState) -> Dict[str, Any]:
     """Asynchronously loads Postgres chat history and persists the human query."""
     try:
@@ -42,6 +45,7 @@ async def load_context_node(state: RAGState) -> Dict[str, Any]:
         raise CustomException(e, sys)
 
 
+@traceable(name="retrieve_qa_node")
 async def retrieve_qa_node(state: RAGState) -> Dict[str, Any]:
     """Asynchronously executes QA vector search and lexical reranking."""
     try:
@@ -66,6 +70,7 @@ async def retrieve_qa_node(state: RAGState) -> Dict[str, Any]:
         raise CustomException(e, sys)
 
 
+@traceable(name="retrieve_summary_node")
 async def retrieve_summary_node(state: RAGState) -> Dict[str, Any]:
     """Asynchronously retrieves full document context for summary requests."""
     try:

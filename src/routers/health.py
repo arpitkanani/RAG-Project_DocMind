@@ -5,4 +5,4 @@ router = APIRouter(tags=["Health"])
 
 @router.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "DocMind API"}
+    return {"status": "ok", "service": "DocuVortex API"}

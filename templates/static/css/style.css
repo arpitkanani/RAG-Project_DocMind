@@ -1306,4 +1306,44 @@ button {
   to { transform: rotate(360deg); }
 }
 .streaming-bubble { min-height: 1.2em; }
+
+.tool-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid rgba(138, 123, 191, 0.28);
+  margin-bottom: 8px;
+  animation: badge-fade-in 0.2s ease-out;
+}
+
+.tool-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(118, 103, 173, 0.25);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: tool-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.tool-label {
+  letter-spacing: 0.2px;
+}
+
+@keyframes badge-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 

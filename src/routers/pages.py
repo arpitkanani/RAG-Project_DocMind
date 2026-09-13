@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import HTMLResponse
 
 from src.logger import logging
-from src.routing_helpers import read_template
+from src.utils.helpers import read_template
 
 router = APIRouter(tags=["Pages"])
 

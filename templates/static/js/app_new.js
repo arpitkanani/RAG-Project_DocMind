@@ -48,8 +48,8 @@ const API = {
   memory: "/memory",
 };
 
-const SESSION_KEY = "docmind.activeSessionId";
-const API_KEY_STORAGE = "docmind.apiKey";
+const SESSION_KEY = "docuvortex.activeSessionId";
+const API_KEY_STORAGE = "docuvortex.apiKey";
 
 // ═══════════════════════════════════════════════════════════════════
 //  BOOT
@@ -774,33 +774,27 @@ async function sendMessage() {
   }
   if (conversationState.isLoading) return;
 
-  // Guard: block query when workspace is completely empty
+  // Check if any sources are uploaded/ready
   const readySources = workspaceState.sources.filter(
     (s) => s.status === "ready" && s.collection
   );
-  if (!readySources.length) {
-    showToast(
-      "Please upload a document or add a YouTube source first.",
-      "error"
-    );
-    return;
-  }
 
-  const activeSources = readySources.filter((s) => s.active !== false);
-  if (!activeSources.length) {
-    showToast(
-      "All sources are excluded. Click a source chip to include it.",
-      "error"
-    );
-    return;
+  // Determine scoped collections
+  let scopedCollectionNames = [];
+
+  if (readySources.length > 0) {
+    const activeSources = readySources.filter((s) => s.active !== false);
+    if (!activeSources.length) {
+      showToast(
+        "All sources are excluded. Click a source chip to include it.",
+        "error"
+      );
+      return;
+    }
+    scopedCollectionNames = activeSources.map((s) => s.collection);
+  } else {
+    scopedCollectionNames = [];
   }
-  // Only send an explicit scope when the user has excluded something —
-  // otherwise omit it so the backend's default "search everything" behavior
-  // is unchanged for anyone who never touches the toggle.
-  const scopedCollectionNames =
-    activeSources.length < readySources.length
-      ? activeSources.map((s) => s.collection)
-      : null;
 
   // Collect newly-added chips — these will appear alongside this message in the chat.
   // Sources uploaded in previous messages (isNew = false) are NOT duplicated here.
@@ -844,6 +838,38 @@ async function sendMessage() {
         collection_names: scopedCollectionNames,
       },
       {
+        onStatus: (statusData) => {
+          removeTyping(typingId);
+          const statusLabel = statusData.message || "Processing...";
+          if (!messageRow) {
+            const container = el("messages");
+            messageRow = document.createElement("div");
+            messageRow.className = "msg-row ai";
+            messageRow.innerHTML = `
+              <div class="msg-avatar">AI</div>
+              <div class="msg-body">
+                <div class="tool-status-badge" id="currentToolBadge">
+                  <span class="tool-spinner"></span>
+                  <span class="tool-label">${statusLabel}</span>
+                </div>
+                <div class="msg-bubble" style="display:none;"></div>
+              </div>`;
+            container.appendChild(messageRow);
+            bubbleEl = messageRow.querySelector(".msg-bubble");
+          } else {
+            let badge = messageRow.querySelector("#currentToolBadge");
+            if (!badge) {
+              badge = document.createElement("div");
+              badge.className = "tool-status-badge";
+              badge.id = "currentToolBadge";
+              messageRow.querySelector(".msg-body").prepend(badge);
+            }
+            badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${statusLabel}</span>`;
+            badge.style.display = "inline-flex";
+          }
+          const container = el("messages");
+          container.scrollTop = container.scrollHeight;
+        },
         onToolStart: (toolData) => {
           removeTyping(typingId);
           const toolLabel =
@@ -914,11 +940,14 @@ async function sendMessage() {
         },
         onDone: async (doneData) => {
           removeTyping(typingId);
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge) badge.style.display = "none";
           if (doneData.session_id) {
             workspaceState.sessionId = doneData.session_id;
             localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
           }
           if (bubbleEl && doneData.final_answer) {
+            bubbleEl.style.display = "block";
             bubbleEl.innerHTML = formatContent(doneData.final_answer);
           }
           try {
@@ -944,10 +973,7 @@ async function sendMessage() {
             return;
           }
           if (errData?.error_code === "knowledge_base_empty") {
-            showToast(
-              errData.message || "Please upload a document or add a YouTube source first.",
-              "error"
-            );
+            // Knowledge base empty should not block general conversational flow
             return;
           }
           showToast(errData?.message || "Could not complete that request.", "error");
@@ -1516,6 +1542,7 @@ function autoResize() {
  * @param {string} url
  * @param {object} payload
  * @param {object} callbacks
+ * @param {(data: object) => void} callbacks.onStatus
  * @param {(token: string) => void} callbacks.onToken
  * @param {(citations: string) => void} callbacks.onCitations
  * @param {(data: object) => void} callbacks.onToolStart
@@ -1526,7 +1553,7 @@ function autoResize() {
 async function streamQueryAnswer(
   url,
   payload,
-  { onToken, onCitations, onToolStart, onToolEnd, onDone, onError }
+  { onStatus, onToken, onCitations, onToolStart, onToolEnd, onDone, onError }
 ) {
   try {
     const apiKey = localStorage.getItem(API_KEY_STORAGE);
@@ -1582,7 +1609,9 @@ async function streamQueryAnswer(
 
         try {
           const event = JSON.parse(jsonStr);
-          if (event.type === "token") {
+          if (event.type === "status") {
+            onStatus?.(event);
+          } else if (event.type === "token") {
             onToken?.(event.content);
           } else if (event.type === "citations") {
             onCitations?.(event.citations);

@@ -1,12 +1,15 @@
 import os
 import sys
 
+from dotenv import load_dotenv
 import yaml
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
 from src.exception import CustomException
 from src.logger import logging
+
+load_dotenv()
 
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
@@ -19,7 +22,7 @@ def _resolve(key: str, env_var: str) -> str:
 
 try:
     logging.info("Initializing Postgres connection pool")
-    _pool = pool.SimpleConnectionPool(
+    _pool = pool.ThreadedConnectionPool(
         minconn=1,
         maxconn=10,
         host=_resolve("host", "POSTGRES_HOST"),

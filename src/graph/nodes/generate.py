@@ -2,6 +2,7 @@ import sys
 from typing import Any, Dict
 
 from langchain_core.output_parsers import StrOutputParser #type: ignore
+from langsmith import traceable
 
 from src.chains.qa_chain import (
     FALLBACK_ANSWER,
@@ -31,6 +32,7 @@ def fallback_node(state: RAGState) -> Dict[str, Any]:
     }
 
 
+@traceable(name="generate_node")
 async def generate_node(state: RAGState) -> Dict[str, Any]:
     """Generates the grounded answer from retrieved docs and chat history."""
     try:
@@ -70,6 +72,7 @@ async def generate_node(state: RAGState) -> Dict[str, Any]:
         raise CustomException(e, sys)
 
 
+@traceable(name="finalize_node")
 async def finalize_node(state: RAGState) -> Dict[str, Any]:
     """Sanitizes raw generation, builds citations, and asynchronously saves to PostgreSQL."""
     try:
