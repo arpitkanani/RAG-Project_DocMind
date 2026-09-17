@@ -28,6 +28,30 @@ def invalidate_cached_db(collection_name: str):
     _qdrant_db_cache.pop(collection_name, None)
 
 
+STOP_WORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can", "can't", "cannot", "could",
+    "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down",
+    "during", "each", "few", "for", "from", "further", "had", "hadn't", "has",
+    "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her",
+    "here", "here's", "hers", "herself", "him", "himself", "his", "how", "how's",
+    "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it",
+    "it's", "its", "itself", "let's", "me", "more", "most", "mustn't", "my",
+    "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other",
+    "ought", "our", "ours", "ourselves", "out", "over", "own", "same", "shan't",
+    "she", "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such",
+    "than", "that", "that's", "the", "their", "theirs", "them", "themselves",
+    "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
+    "they've", "this", "those", "through", "to", "too", "under", "until", "up",
+    "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
+    "weren't", "what", "what's", "when", "when's", "where", "where's", "which",
+    "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
+    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "yourself", "yourselves", "give", "tell", "explain", "describe", "define"
+}
+
+
 class Retriever:
     """Handles single-collection and multi-collection retrieval with async search."""
 
@@ -74,7 +98,10 @@ class Retriever:
                 collected_docs.extend(doc_list)
 
             ranked_docs = self._rerank_documents(query, collected_docs)
-            filtered = [item for item in ranked_docs if item[2] >= self.score_threshold]
+            filtered = [
+                item for item in ranked_docs
+                if item[2] >= self.score_threshold or item[1] >= 12.0
+            ]
 
             if filtered:
                 best_by_collection: dict[str, float] = {}
@@ -114,7 +141,7 @@ class Retriever:
 
             if not docs and ranked_docs:
                 best_doc, best_final_score, best_semantic_score = ranked_docs[0]
-                if best_semantic_score >= max(self.score_threshold - 0.05, 0.4):
+                if best_semantic_score >= max(self.score_threshold - 0.05, 0.35) or best_final_score >= 10.0:
                     best_collection = best_doc.metadata.get("collection_name")
                     same_collection_docs = [
                         item for item in ranked_docs
@@ -206,6 +233,9 @@ class Retriever:
         docs: List[Tuple[Document, float]],
     ) -> List[Tuple[Document, float, float]]:
         query_terms = self._tokenize(query)
+        meaningful_query_terms = {
+            t for t in query_terms if t not in STOP_WORDS and len(t) > 2
+        }
         query_phrases = self._extract_phrases(query)
         deduped = {}
 
@@ -217,8 +247,14 @@ class Retriever:
                 str(doc.metadata.get("timestamp", "")),
             )
             content_terms = self._tokenize(doc.page_content)
-            term_overlap = len(query_terms & content_terms)
-            overlap_ratio = term_overlap / max(len(query_terms), 1)
+
+            # Meaningful keyword overlap calculation
+            if meaningful_query_terms:
+                term_overlap = len(meaningful_query_terms & content_terms)
+                overlap_ratio = term_overlap / len(meaningful_query_terms)
+            else:
+                term_overlap = len(query_terms & content_terms)
+                overlap_ratio = term_overlap / max(len(query_terms), 1)
 
             text_lower = doc.page_content.lower()
             metadata_text = " ".join(
@@ -233,19 +269,23 @@ class Retriever:
             if "summary" in query_terms and doc.metadata.get("type") == "youtube":
                 bonus += 2
             if any(phrase and phrase in text_lower for phrase in query_phrases):
-                bonus += 8
-            if any(term in metadata_text for term in query_terms if len(term) > 3):
-                bonus += 3
-            if self._looks_like_structured_answer(query_terms, text_lower):
+                bonus += 12
+            if any(term in metadata_text for term in meaningful_query_terms if len(term) > 3):
                 bonus += 4
+            if self._looks_like_structured_answer(query_terms, text_lower):
+                bonus += 3
 
-            locator_bonus = 1 if doc.metadata.get("page") is not None else 0
-            heading_bonus = 2 if self._has_heading_signal(text_lower) else 0
-            density_bonus = min(int(overlap_ratio * 10), 6)
+            # Only reward heading / locator bonuses if there is actual topic relevance
+            has_relevance = term_overlap > 0 or semantic_score >= 0.45
+            locator_bonus = 1 if (has_relevance and doc.metadata.get("page") is not None) else 0
+            heading_bonus = 2 if (has_relevance and self._has_heading_signal(text_lower)) else 0
+            density_bonus = min(int(overlap_ratio * 10), 6) if term_overlap > 0 else 0
+
+            # Strong lexical match for substantive keywords in question
             lexical_score = (
-                term_overlap * 5 + bonus + locator_bonus + heading_bonus + density_bonus
+                term_overlap * 12 + bonus + locator_bonus + heading_bonus + density_bonus
             )
-            final_score = lexical_score + (semantic_score * 12)
+            final_score = lexical_score + (semantic_score * 15)
 
             stored = deduped.get(key)
             if stored is None or final_score > stored[0]:
@@ -267,13 +307,13 @@ class Retriever:
         except (TypeError, ValueError):
             return 0.0
 
-        if value < 0:
+        # Cosine similarity in Qdrant ranges in [-1.0, 1.0], typically [0.0, 1.0] for normalized embeddings.
+        # Higher score = more similar. Never invert low scores.
+        if value < 0.0:
             return 0.0
-        if value <= 1:
-            if value >= 0.5:
-                return value
-            return 1.0 - value
-        return max(0.0, min(1.0, 1 / (1 + value)))
+        if value <= 1.0:
+            return value
+        return max(0.0, min(1.0, 1.0 / (1.0 + value)))
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
@@ -285,7 +325,7 @@ class Retriever:
         if quoted:
             return [item.strip().lower() for item in quoted if item.strip()]
 
-        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        words = [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w not in STOP_WORDS]
         counts = Counter(words)
         phrases = [
             " ".join(words[index : index + 2])
@@ -299,7 +339,7 @@ class Retriever:
         tokens = re.findall(r"[a-z0-9]+", normalized.lower())
         variants = [normalized]
 
-        significant = [token for token in tokens if len(token) > 3]
+        significant = [token for token in tokens if token not in STOP_WORDS and len(token) > 2]
         if significant:
             variants.append(" ".join(significant[:8]))
         if len(tokens) > 5:

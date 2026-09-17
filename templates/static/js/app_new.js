@@ -69,39 +69,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 function ensureApiKey() {
   const existing = localStorage.getItem(API_KEY_STORAGE);
   if (existing) return Promise.resolve(existing);
-
-  return new Promise((resolve) => {
-    const backdrop = el("apiKeyModalBackdrop");
-    const input = el("apiKeyInput");
-    const errorEl = el("apiKeyError");
-    const saveBtn = el("apiKeySave");
-
-    errorEl.style.display = "none";
-    input.value = "";
-    backdrop.classList.add("open");
-    setTimeout(() => input.focus(), 50);
-
-    function trySave() {
-      const key = input.value.trim();
-      if (!key) {
-        errorEl.textContent = "Please enter your API key.";
-        errorEl.style.display = "block";
-        return;
-      }
-      localStorage.setItem(API_KEY_STORAGE, key);
-      backdrop.classList.remove("open");
-      saveBtn.removeEventListener("click", trySave);
-      input.removeEventListener("keydown", onKeydown);
-      resolve(key);
-    }
-
-    function onKeydown(e) {
-      if (e.key === "Enter") trySave();
-    }
-
-    saveBtn.addEventListener("click", trySave);
-    input.addEventListener("keydown", onKeydown);
-  });
+  return Promise.resolve("");
 }
 
 async function bootApp() {
@@ -828,6 +796,8 @@ async function sendMessage() {
   let messageRow = null;
   let bubbleEl = null;
 
+  let activeToolRunning = false;
+
   try {
     await streamQueryAnswer(
       API.query,
@@ -840,6 +810,8 @@ async function sendMessage() {
       {
         onStatus: (statusData) => {
           removeTyping(typingId);
+          // If a tool status badge is currently actively displaying tool execution, don't overwrite it with generic status
+          if (activeToolRunning) return;
           const statusLabel = statusData.message || "Processing...";
           if (!messageRow) {
             const container = el("messages");
@@ -864,18 +836,20 @@ async function sendMessage() {
               badge.id = "currentToolBadge";
               messageRow.querySelector(".msg-body").prepend(badge);
             }
+            badge.className = "tool-status-badge";
             badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${statusLabel}</span>`;
             badge.style.display = "inline-flex";
           }
           const container = el("messages");
           container.scrollTop = container.scrollHeight;
         },
-        onToolStart: (toolData) => {
+        onToolStatus: (toolData) => {
           removeTyping(typingId);
-          const toolLabel =
-            toolData.name === "summarize_document"
-              ? "Reading document context..."
-              : "Searching knowledge base...";
+          activeToolRunning = true;
+          const toolLabel = toolData.message || `🔧 Using ${toolData.tool || "tool"}...`;
+          const badgeType = toolData.badge_type || "tool";
+          const badgeClass = `tool-status-badge ${badgeType}`;
+
           if (!messageRow) {
             const container = el("messages");
             messageRow = document.createElement("div");
@@ -883,7 +857,7 @@ async function sendMessage() {
             messageRow.innerHTML = `
               <div class="msg-avatar">AI</div>
               <div class="msg-body">
-                <div class="tool-status-badge" id="currentToolBadge">
+                <div class="${badgeClass}" id="currentToolBadge">
                   <span class="tool-spinner"></span>
                   <span class="tool-label">${toolLabel}</span>
                 </div>
@@ -895,22 +869,72 @@ async function sendMessage() {
             let badge = messageRow.querySelector("#currentToolBadge");
             if (!badge) {
               badge = document.createElement("div");
-              badge.className = "tool-status-badge";
               badge.id = "currentToolBadge";
               messageRow.querySelector(".msg-body").prepend(badge);
             }
+            badge.className = badgeClass;
             badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${toolLabel}</span>`;
             badge.style.display = "inline-flex";
           }
           const container = el("messages");
           container.scrollTop = container.scrollHeight;
         },
+        onToolStart: (toolData) => {
+          if (!activeToolRunning && toolData) {
+            const toolDisplayMap = {
+              "search_tool": ["search", "🔍 Searching the web..."],
+              "duckduckgo_search": ["search", "🔍 Searching the web..."],
+              "calculator_tool": ["calc", "🧮 Calculating..."],
+              "calculator": ["calc", "🧮 Calculating..."],
+              "stock_price_tool": ["stock", "📈 Fetching stock price..."],
+              "get_stock_price": ["stock", "📈 Fetching stock price..."],
+              "summarize_document": ["rag", "Reading document context..."],
+              "rag_query": ["rag", "Searching knowledge base..."],
+            };
+            const match = toolDisplayMap[toolData.name] || ["tool", `🔧 Using ${toolData.name || "tool"}...`];
+            const badgeClass = `tool-status-badge ${match[0]}`;
+            const toolLabel = match[1];
+
+            if (!messageRow) {
+              const container = el("messages");
+              messageRow = document.createElement("div");
+              messageRow.className = "msg-row ai";
+              messageRow.innerHTML = `
+                <div class="msg-avatar">AI</div>
+                <div class="msg-body">
+                  <div class="${badgeClass}" id="currentToolBadge">
+                    <span class="tool-spinner"></span>
+                    <span class="tool-label">${toolLabel}</span>
+                  </div>
+                  <div class="msg-bubble" style="display:none;"></div>
+                </div>`;
+              container.appendChild(messageRow);
+              bubbleEl = messageRow.querySelector(".msg-bubble");
+            } else {
+              let badge = messageRow.querySelector("#currentToolBadge");
+              if (!badge) {
+                badge = document.createElement("div");
+                badge.id = "currentToolBadge";
+                messageRow.querySelector(".msg-body").prepend(badge);
+              }
+              badge.className = badgeClass;
+              badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${toolLabel}</span>`;
+              badge.style.display = "inline-flex";
+            }
+          }
+        },
         onToolEnd: () => {
+          // Keep badge visible until the first token arrives or update to structuring
           const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
-          if (badge) badge.style.display = "none";
+          if (badge && activeToolRunning) {
+            badge.className = "tool-status-badge";
+            badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">Structuring answer...</span>`;
+            badge.style.display = "inline-flex";
+          }
         },
         onToken: (token) => {
           removeTyping(typingId);
+          activeToolRunning = false;
           const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
           if (badge) badge.style.display = "none";
           streamedText += token;
@@ -1553,7 +1577,7 @@ function autoResize() {
 async function streamQueryAnswer(
   url,
   payload,
-  { onStatus, onToken, onCitations, onToolStart, onToolEnd, onDone, onError }
+  { onStatus, onToolStatus, onToken, onCitations, onToolStart, onToolEnd, onDone, onError }
 ) {
   try {
     const apiKey = localStorage.getItem(API_KEY_STORAGE);
@@ -1611,6 +1635,8 @@ async function streamQueryAnswer(
           const event = JSON.parse(jsonStr);
           if (event.type === "status") {
             onStatus?.(event);
+          } else if (event.type === "tool_status") {
+            onToolStatus?.(event);
           } else if (event.type === "token") {
             onToken?.(event.content);
           } else if (event.type === "citations") {

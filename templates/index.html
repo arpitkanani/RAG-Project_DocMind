@@ -3,464 +3,166 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DocuVortex – AI Document & Video Assistant</title>
+  <title>DocuVortex – Intelligent Document Reasoning Engine</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap"
     rel="stylesheet"
   />
-  <style>
-    :root {
-      --bg: #f8f9fb;
-      --bg-accent: #eef0ff;
-      --surface: #ffffff;
-      --surface-soft: #f7f8fc;
-      --surface-muted: #f0efff;
-      --border: #e3e7f2;
-      --border-strong: #d4d9ea;
-      --text: #2d3142;
-      --muted: #6f768d;
-      --accent: #8a7bbf;
-      --accent-strong: #7667ad;
-      --accent-soft: #f0efff;
-      --success: #4f9d7a;
-      --shadow: 0 22px 60px rgba(117, 126, 167, 0.12);
-      --shadow-soft: 0 14px 34px rgba(117, 126, 167, 0.1);
-      --radius-xl: 28px;
-      --radius-lg: 22px;
-      --radius-md: 16px;
-    }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'Manrope', sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      line-height: 1.6;
-    }
-
-    nav {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 1.1rem 2rem;
-      border-bottom: 1px solid var(--border);
-      position: sticky; top: 0;
-      background: rgba(248, 249, 251, 0.88);
-      backdrop-filter: blur(14px);
-      z-index: 10;
-    }
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-family: 'Outfit', sans-serif;
-      font-size: 1.15rem;
-      font-weight: 700;
-      color: var(--text);
-    }
-    .logo-mark {
-      width: 34px;
-      height: 34px;
-      border-radius: 10px;
-      background: linear-gradient(145deg, var(--accent), var(--accent-strong));
-      color: #fff;
-      display: grid;
-      place-items: center;
-      font-size: 0.78rem;
-      font-weight: 800;
-      letter-spacing: 0.05em;
-    }
-    .nav-link {
-      text-decoration: none;
-      color: #fff;
-      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-      padding: .6rem 1.4rem;
-      border-radius: 999px;
-      font-size: .875rem;
-      font-weight: 700;
-      box-shadow: var(--shadow-soft);
-      transition: transform .15s ease, box-shadow .15s ease;
-    }
-    .nav-link:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
-
-    .hero {
-      text-align: center;
-      padding: 5rem 1.5rem 3rem;
-      max-width: 740px;
-      margin: 0 auto;
-    }
-    .badge {
-      display: inline-block;
-      background: var(--accent-soft);
-      border: 1px solid rgba(138, 123, 191, 0.28);
-      color: var(--accent-strong);
-      padding: .35rem 1rem;
-      border-radius: 999px;
-      font-size: .8rem;
-      font-weight: 700;
-      letter-spacing: .3px;
-      margin-bottom: 1.5rem;
-    }
-    .hero h1 {
-      font-family: 'Outfit', sans-serif;
-      font-size: clamp(2.1rem, 4.6vw, 3.25rem);
-      font-weight: 800;
-      line-height: 1.14;
-      margin-bottom: 1.25rem;
-      color: var(--text);
-    }
-    .hero h1 span {
-      background: linear-gradient(135deg, var(--accent-strong), var(--accent));
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-    }
-    .hero p {
-      color: var(--muted);
-      font-size: 1.05rem;
-      line-height: 1.75;
-      margin-bottom: 2.25rem;
-    }
-    .hero-btn {
-      display: inline-block;
-      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-      color: #fff;
-      text-decoration: none;
-      padding: .9rem 2.4rem;
-      border-radius: 999px;
-      font-weight: 700;
-      font-size: 1rem;
-      box-shadow: var(--shadow);
-      transition: transform .15s ease;
-    }
-    .hero-btn:hover { transform: translateY(-2px); }
-
-    .section {
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 3.25rem 1.5rem;
-    }
-    .section-label {
-      font-size: .75rem;
-      font-weight: 800;
-      letter-spacing: 1.4px;
-      text-transform: uppercase;
-      color: var(--accent-strong);
-      margin-bottom: .6rem;
-    }
-    .section h2 {
-      font-family: 'Outfit', sans-serif;
-      font-size: 1.65rem;
-      font-weight: 800;
-      margin-bottom: .9rem;
-      color: var(--text);
-    }
-    .section > p {
-      color: var(--muted);
-      max-width: 680px;
-    }
-
-    .rag-flow {
-      display: flex;
-      align-items: center;
-      gap: .7rem;
-      flex-wrap: wrap;
-      margin-top: 2rem;
-    }
-    .rag-step {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      padding: .9rem 1.15rem;
-      text-align: center;
-      flex: 1;
-      min-width: 128px;
-      box-shadow: var(--shadow-soft);
-    }
-    .rag-step .icon { font-size: 1.4rem; margin-bottom: .35rem; }
-    .rag-step .label { font-size: .8rem; font-weight: 700; color: var(--text); }
-    .rag-step .sub { font-size: .7rem; color: var(--muted); margin-top: .2rem; }
-    .rag-arrow { color: var(--border-strong); font-size: 1.2rem; flex-shrink: 0; }
-
-    .stack-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
-      gap: 1rem;
-      margin-top: 2rem;
-    }
-    .stack-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      padding: 1.25rem;
-      box-shadow: var(--shadow-soft);
-    }
-    .stack-card .stack-role {
-      font-size: .68rem;
-      font-weight: 800;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      color: var(--accent-strong);
-      margin-bottom: .5rem;
-    }
-    .stack-card h3 {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: .96rem;
-      font-weight: 500;
-      margin-bottom: .5rem;
-      color: var(--text);
-    }
-    .stack-card p {
-      font-size: .82rem;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-
-    .process-list {
-      margin-top: 2rem;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      background: var(--surface);
-      box-shadow: var(--shadow-soft);
-    }
-    .process-step {
-      display: flex;
-      gap: 1rem;
-      padding: 1.05rem 1.25rem;
-    }
-    .process-step:not(:last-child) {
-      border-bottom: 1px solid var(--border);
-    }
-    .process-num {
-      flex-shrink: 0;
-      width: 28px;
-      height: 28px;
-      border-radius: 9px;
-      background: var(--accent-soft);
-      color: var(--accent-strong);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: .78rem;
-      font-weight: 700;
-    }
-    .process-body h4 {
-      font-size: .92rem;
-      font-weight: 700;
-      margin-bottom: .3rem;
-      color: var(--text);
-    }
-    .process-body p {
-      font-size: .84rem;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-    .process-body code {
-      background: var(--surface-muted);
-      color: var(--accent-strong);
-      padding: 1px 6px;
-      border-radius: 6px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: .8rem;
-    }
-
-    .use-cases {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
-      gap: 1rem;
-      margin-top: 2rem;
-    }
-    .use-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      padding: 1.5rem 1.25rem;
-      box-shadow: var(--shadow-soft);
-      transition: transform .18s ease, box-shadow .18s ease;
-    }
-    .use-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); }
-    .use-card .uc-icon { font-size: 1.6rem; margin-bottom: .7rem; }
-    .use-card h3 { font-size: .95rem; font-weight: 700; margin-bottom: .4rem; color: var(--text); }
-    .use-card p { font-size: .82rem; color: var(--muted); line-height: 1.6; }
-
-    hr { border: none; border-top: 1px solid var(--border); }
-
-    footer {
-      text-align: center;
-      padding: 2.25rem 1.5rem;
-      color: var(--muted);
-      font-size: .82rem;
-      border-top: 1px solid var(--border);
-    }
-    footer a { color: var(--accent-strong); text-decoration: none; font-weight: 700; }
-
-    @media (max-width: 640px) {
-      .hero { padding: 3rem 1.25rem 2rem; }
-      .rag-flow { flex-direction: column; align-items: stretch; }
-      .rag-arrow { transform: rotate(90deg); align-self: center; }
-    }
-  </style>
+  <link rel="stylesheet" href="/static/css/main.css" />
+  <link rel="stylesheet" href="/static/css/landing.css" />
+  <link rel="stylesheet" href="/static/css/auth.css" />
 </head>
 <body>
 
+  <!-- Navigation -->
   <nav>
-    <span class="logo"><span class="logo-mark">DV</span> DocuVortex</span>
-    <a class="nav-link" href="/app">Open App →</a>
+    <a href="/" style="text-decoration: none;" class="logo">
+      <span class="logo-mark">DV</span> DocuVortex
+    </a>
+    <div class="nav-right">
+      <a href="/login" class="nav-link-ghost trigger-login-modal">Sign In</a>
+      <button type="button" class="nav-link-primary trigger-login-modal">Get Started →</button>
+    </div>
   </nav>
 
+  <!-- Hero Section -->
   <section class="hero">
-    <div class="badge">Student Project · RAG Pipeline</div>
-    <h1>Chat with your<br /><span>documents & videos</span> using AI</h1>
+    <div class="badge">DocuVortex · Intelligent Document Reasoning Engine</div>
+    <h1>Reason across your<br /><span>documents &amp; videos</span> with AI</h1>
     <p>
-      Upload a PDF, DOCX, CSV, XLSX, or Markdown file — or paste a YouTube link —
-      and ask questions in plain English. DocuVortex reads the source and answers
-      using only what's actually in it, with citations back to the original page,
-      row, or timestamp.
+      Upload PDF, DOCX, CSV, XLSX, or Markdown files — or paste any YouTube link —
+      and ask grounded questions in natural language. DocuVortex synthesizes answers
+      using verifiable source excerpts, page numbers, and video timestamps.
     </p>
-    <a class="hero-btn" href="/app">Try it now →</a>
+    <div class="hero-cta-wrap">
+      <button type="button" class="hero-btn trigger-login-modal">Try DocuVortex Free →</button>
+      <a href="/home" class="hero-btn-outline">Open Workspace</a>
+    </div>
   </section>
 
   <hr />
 
+  <!-- RAG Pipeline Overview -->
   <section class="section">
-    <div class="section-label">How It Works</div>
-    <h2>What is a RAG Pipeline?</h2>
+    <div class="section-label">Architecture</div>
+    <h2>How Document Reasoning Works</h2>
     <p>
-      RAG stands for Retrieval-Augmented Generation. Instead of the AI guessing
-      from memory, it first finds the relevant parts of your document, then
-      generates an answer using only that content — like giving the AI an
-      open-book exam instead of asking it to recall from memory.
+      DocuVortex executes an agentic Retrieval-Augmented Generation (RAG) StateGraph
+      with strict intent routing, document relevance grading, and cited generation.
     </p>
 
     <div class="rag-flow">
       <div class="rag-step">
         <div class="icon">📄</div>
-        <div class="label">Your Source</div>
+        <div class="label">Knowledge Ingestion</div>
         <div class="sub">PDF / DOCX / CSV / XLSX / MD / YouTube</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
         <div class="icon">✂️</div>
-        <div class="label">Chunking</div>
-        <div class="sub">Split into ~600-char passages</div>
+        <div class="label">Recursive Chunking</div>
+        <div class="sub">Semantic passages with metadata</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
         <div class="icon">🔢</div>
-        <div class="label">Embeddings</div>
-        <div class="sub">Turned into vectors</div>
+        <div class="label">Dense Embeddings</div>
+        <div class="sub">Vectorized via BAAI/bge-small</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
         <div class="icon">🔍</div>
-        <div class="label">Retrieval</div>
-        <div class="sub">Ranked semantic + lexical search</div>
+        <div class="label">Hybrid Retrieval</div>
+        <div class="sub">MMR &amp; Similarity in Qdrant</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
         <div class="icon">💬</div>
-        <div class="label">Grounded Answer</div>
-        <div class="sub">With source citations</div>
+        <div class="label">Grounded Synthesis</div>
+        <div class="sub">Verifiable citations &amp; SSE stream</div>
       </div>
     </div>
   </section>
 
   <hr />
 
+  <!-- Technical Stack -->
   <section class="section">
     <div class="section-label">Under the Hood</div>
-    <h2>Tech Stack</h2>
-    <p>Every layer of the pipeline, from ingestion to serving.</p>
+    <h2>Engine Architecture &amp; Stack</h2>
+    <p>Enterprise-ready asynchronous components engineered for precision and speed.</p>
 
     <div class="stack-grid">
       <div class="stack-card">
-        <div class="stack-role">Orchestration</div>
-        <h3>LangChain</h3>
-        <p>Document loaders, text splitters, prompt templates, and output parsing across the ingestion and QA chains.</p>
+        <div class="stack-role">Workflow Engine</div>
+        <h3>LangGraph &amp; StateGraph</h3>
+        <p>Stateful agentic routing, intent classification, tool dispatch, and checkpoint persistence.</p>
       </div>
       <div class="stack-card">
         <div class="stack-role">Vector Database</div>
         <h3>Qdrant</h3>
-        <p>Stores chunk embeddings per source, containerized with Docker. Powers semantic similarity search at query time.</p>
+        <p>Containerized vector index providing filtered similarity and MMR search across collection scopes.</p>
+      </div>
+      <div class="stack-card">
+        <div class="stack-role">Relational Cloud DB</div>
+        <h3>Supabase PostgreSQL</h3>
+        <p>Dual-pool architecture: direct connection (port 5432) for LangGraph checkpointer and transaction pooler (6543) for sessions.</p>
       </div>
       <div class="stack-card">
         <div class="stack-role">LLM Inference</div>
-        <h3>Groq</h3>
-        <p>Low-latency hosted inference for answer generation and summarization.</p>
+        <h3>Groq &amp; Gemini</h3>
+        <p>Low-latency reasoning models powering grounded document answering and conversational tools.</p>
       </div>
       <div class="stack-card">
-        <div class="stack-role">Embeddings</div>
-        <h3>BAAI/bge-small-en-v1.5</h3>
-        <p>Converts text chunks and queries into vectors for semantic search.</p>
+        <div class="stack-role">Authentication</div>
+        <h3>OTP &amp; Google OAuth</h3>
+        <p>Email OTP verification, Google OAuth2, 30-day session lifecycle, and registered API key support.</p>
       </div>
       <div class="stack-card">
         <div class="stack-role">API Layer</div>
-        <h3>FastAPI</h3>
-        <p>REST endpoints for ingestion, querying, session management, and source lifecycle.</p>
-      </div>
-      <div class="stack-card">
-        <div class="stack-role">Relational Data</div>
-        <h3>PostgreSQL</h3>
-        <p>Multi-user session isolation, chat history with time-windowed retention, and API-key authentication.</p>
-      </div>
-      <div class="stack-card">
-        <div class="stack-role">Auth</div>
-        <h3>API Key (per-user)</h3>
-        <p>Every request is scoped to a verified user — one account's chats and documents are never visible to another.</p>
-      </div>
-      <div class="stack-card">
-        <div class="stack-role">Infrastructure</div>
-        <h3>Docker</h3>
-        <p>Qdrant, Postgres, and the app itself run as containerized services.</p>
+        <h3>FastAPI &amp; Async SSE</h3>
+        <p>High-concurrency streaming server with real-time tool execution status badges.</p>
       </div>
     </div>
   </section>
 
   <hr />
 
+  <!-- YouTube Ingestion Pipeline -->
   <section class="section">
-    <div class="section-label">Video Ingestion</div>
-    <h2>How YouTube Processing Works</h2>
-    <p>Paste a link, DocuVortex does the rest — here's exactly what happens behind the scenes.</p>
+    <div class="section-label">Multimodal</div>
+    <h2>Automated YouTube Transcription</h2>
+    <p>Convert video lectures, podcasts, and presentations into queryable knowledge bases.</p>
+
     <div class="process-list">
       <div class="process-step">
         <div class="process-num">1</div>
         <div class="process-body">
-          <h4>URL submitted</h4>
-          <p>The video ID is extracted from the pasted YouTube URL.</p>
+          <h4>Video Discovery</h4>
+          <p>Extract and validate YouTube video identifiers directly from standard or short URLs.</p>
         </div>
       </div>
       <div class="process-step">
         <div class="process-num">2</div>
         <div class="process-body">
-          <h4>Transcript fetched</h4>
-          <p>The video's caption track is pulled as a series of timestamped text segments.</p>
+          <h4>Transcript Extraction</h4>
+          <p>Retrieve multilingual caption segments asynchronously with high-accuracy timestamps.</p>
         </div>
       </div>
       <div class="process-step">
         <div class="process-num">3</div>
         <div class="process-body">
-          <h4>Segments merged into passages</h4>
-          <p>Raw captions are short — often just a few words each. Consecutive segments are merged into ~600-character passages so each retrieval unit is a coherent thought, with a timestamp range attached (e.g. <code>1:15–2:03</code>) instead of a single instant.</p>
+          <h4>Passage Coalescence</h4>
+          <p>Merge fragmented subtitles into coherent paragraphs (~600 characters) preserving time intervals (e.g. <code>02:15–03:40</code>).</p>
         </div>
       </div>
       <div class="process-step">
         <div class="process-num">4</div>
         <div class="process-body">
-          <h4>Embedded and stored</h4>
-          <p>Each passage is embedded and stored in its own Qdrant collection, scoped to that video.</p>
-        </div>
-      </div>
-      <div class="process-step">
-        <div class="process-num">5</div>
-        <div class="process-body">
-          <h4>Ready to chat</h4>
-          <p>Ask direct questions or request a summary — answers cite the specific timestamp range they came from.</p>
+          <h4>Instant Citations</h4>
+          <p>Ask direct questions or generate summaries with direct timestamp jump-points.</p>
         </div>
       </div>
     </div>
@@ -468,39 +170,105 @@
 
   <hr />
 
+  <!-- Use Cases -->
   <section class="section">
-    <div class="section-label">What You Can Do</div>
-    <h2>Use Cases</h2>
-    <p>DocuVortex focuses on grounded Q&amp;A across uploaded files and YouTube transcripts.</p>
+    <div class="section-label">Capabilities</div>
+    <h2>Core Features</h2>
+    <p>Everything you need for intensive document analysis without losing context.</p>
 
     <div class="use-cases">
       <div class="use-card">
-        <div class="uc-icon">❓</div>
-        <h3>Q&amp;A</h3>
-        <p>Ask any question about your document and get a direct answer with context from the source.</p>
+        <div class="uc-icon">🎯</div>
+        <h3>Grounded Q&amp;A</h3>
+        <p>Zero hallucinations: every claim is tied directly to source passages from your files.</p>
       </div>
       <div class="use-card">
         <div class="uc-icon">🔗</div>
-        <h3>Source Citations</h3>
-        <p>Answers point back to the supporting filename, page, row, or transcript timestamp when available.</p>
+        <h3>Precision Citations</h3>
+        <p>Jump directly to supporting pages, spreadsheet rows, or transcript timestamps.</p>
       </div>
       <div class="use-card">
-        <div class="uc-icon">🧭</div>
-        <h3>Multi-Document Search</h3>
-        <p>Keep multiple uploads in one chat and choose which ones apply to each question — search across all of them, or scope to just one.</p>
+        <div class="uc-icon">🌤️</div>
+        <h3>Real-time Tools</h3>
+        <p>Built-in weather forecasts, arXiv paper discovery, web search, and live financial quotes.</p>
       </div>
       <div class="use-card">
-        <div class="uc-icon">🎥</div>
-        <h3>YouTube Videos</h3>
-        <p>Paste any YouTube URL. DocuVortex grabs the transcript, merges it into coherent passages, and lets you chat with the video content.</p>
+        <div class="uc-icon">🛡️</div>
+        <h3>Multi-Tenant Isolation</h3>
+        <p>Private collections and session histories securely scoped per verified user in Supabase.</p>
       </div>
     </div>
   </section>
 
+  <!-- Footer -->
   <footer>
-    Built as a student project · Powered by LangChain, Qdrant, Groq &amp; PostgreSQL ·
-    <a href="/app">Open the App →</a>
+    DocuVortex: Intelligent Document Reasoning Engine · Powered by LangGraph, Qdrant &amp; Supabase ·
+    <a href="/home">Go to Workspace →</a>
   </footer>
 
+  <!-- ══════════════════════ EMBEDDED AUTH MODAL ══════════════════════ -->
+  <div class="auth-modal-backdrop" id="authModalBackdrop">
+    <div class="auth-modal-card">
+      <button type="button" class="auth-close-btn" id="authModalClose" title="Close modal">&times;</button>
+
+      <div class="auth-header">
+        <div class="auth-brand-badge">DV</div>
+        <h2 class="auth-title">Welcome to DocuVortex</h2>
+        <p class="auth-subtitle">Sign in or register with instant verification</p>
+      </div>
+
+      <div class="auth-error-msg" id="authError"></div>
+
+      <form class="auth-step" id="loginAuthForm" onsubmit="return false;">
+        <div class="auth-input-group">
+          <label for="authUsername">Username</label>
+          <input type="text" id="authUsername" class="auth-input" placeholder="e.g. alex" required autocomplete="username" />
+        </div>
+
+        <div class="auth-input-group">
+          <label for="authEmail">Email Address</label>
+          <input type="email" id="authEmail" class="auth-input" placeholder="name@company.com" required autocomplete="email" />
+        </div>
+
+        <div class="auth-input-group">
+          <label for="authPassword">Password</label>
+          <input type="password" id="authPassword" class="auth-input" placeholder="Enter password" required autocomplete="current-password" />
+        </div>
+
+        <!-- Math Captcha Horizontal Row -->
+        <div class="auth-input-group">
+          <label for="captchaAnswer">Verification Captcha</label>
+          <div class="captcha-row">
+            <div class="captcha-badge" title="Solve this math problem">
+              <span class="captcha-math-text" id="captchaQuestion">4 + 7</span>
+              <span class="captcha-equal">=</span>
+            </div>
+            <input
+              type="text"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              id="captchaAnswer"
+              class="captcha-input-compact"
+              placeholder=""
+              required
+              autocomplete="off"
+            />
+            <button
+              type="button"
+              class="captcha-refresh-btn"
+              id="btnRefreshCaptcha"
+              title="Generate new challenge"
+            >&#8635;</button>
+          </div>
+          <input type="hidden" id="captchaToken" value="11:fallback" />
+        </div>
+
+        <button type="button" class="auth-btn-primary" id="btnSubmitAuth">Sign In to Workspace &rarr;</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/auth.js"></script>
+  <script src="/static/js/landing.js"></script>
 </body>
 </html>

@@ -16,7 +16,8 @@ class RAGState(TypedDict, total=False):
     is_summary: bool
     chat_history: List[dict]
     docs: List[Document]
-    intent: str       # 'conversational' or 'retrieval'
+    intent: str       # 'conversational', 'retrieval', or 'clarify'
+    clarification_feedback: Optional[str]
     grade: str        # 'relevant' or 'irrelevant'
     source_selected: Optional[bool]
 
