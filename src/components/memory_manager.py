@@ -199,7 +199,7 @@ class MemoryManager:
 
         llm = _build_llm()
         llm_rate_limiter.acquire()
-        response = llm.invoke(prompt)
+        response = llm.invoke(prompt, config={"tags": ["memory_summary"]})
         return (response.content if hasattr(response, "content") else str(response)).strip()
 
     def get_messages_payload(self) -> List[dict[str, Any]]:

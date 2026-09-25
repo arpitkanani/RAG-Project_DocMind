@@ -4,6 +4,7 @@ from typing import List, Iterator
 import yaml
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langsmith import traceable
 
 from src.exception import CustomException
 from src.logger import logging
@@ -31,6 +32,7 @@ class TextSplitter:
         except Exception as e:
             raise CustomException(e, sys)
 
+    @traceable(run_type="parser", name="text_split")
     def split(self, docs: List[Document]) -> List[Document]:
         """Split document objects into chunks."""
         try:

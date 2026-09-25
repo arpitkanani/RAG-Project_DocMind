@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from src.components.vector_store import VectorStore
 from src.logger import logging
-from src.routing_helpers import build_error_response
+from src.utils.helpers import build_error_response
 
 router = APIRouter(tags=["Collections"])
 

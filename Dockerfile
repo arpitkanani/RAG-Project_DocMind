@@ -18,6 +18,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Upgrade pip/wheel first for faster installs
 RUN pip install --upgrade pip wheel
+RUN pip install -U ddgs 
+RUN pip install pydantic[email]
 
 # Copy only the requirements file first (better layer caching)
 COPY requirements.txt .

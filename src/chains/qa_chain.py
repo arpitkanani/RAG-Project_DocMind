@@ -180,77 +180,59 @@ def sanitize_answer(answer: str) -> str:
     if not text:
         return FALLBACK_ANSWER
 
-    # Strip any "Source:" section the model added on its own (Rule 7 asks
-    # it not to, but it doesn't always comply) -- get_answer() always
-    # appends its OWN citations further down, so leaving the model's copy
-    # in would double them up.
-    text = re.split(r"(?i)\n\s*source\s*:\s*\n", text)[0].strip()
+    # Strip any "Source:" or "Citations:" section the model added on its own
+    text = re.split(r"(?i)\n\s*(sources?|citations?)\s*:\s*\n", text)[0].strip()
 
-    # Catch the not-found token even wrapped inside a sentence (e.g.
-    # "...Therefore, the answer is: DATA_NOT_FOUND"), not just an exact
-    # standalone match.
-    if NOT_FOUND_TOKEN in text:
+    # Exact or near-exact match for not-found token
+    if text == NOT_FOUND_TOKEN or text.strip(" .!?:") == NOT_FOUND_TOKEN:
         return FALLBACK_ANSWER
 
-    lowered = text.lower()
-    banned_fragments = [
-        "there is nothing in this chunk",
-        "the provided chunks do not contain",
-        "based on the provided context",
-        "the context does not mention",
-        "the provided context does not",
-        "i cannot find the answer to that in the provided documents",
-        "retrieved context",
-        "does not provide information on",
-        "does not provide details on",
-        "does not provide information about",
-        "are not provided in the uploaded material",
-        "is not provided in the uploaded material",
+    # If NOT_FOUND_TOKEN appears as the entire message or leading statement
+    if text.startswith(NOT_FOUND_TOKEN):
+        remaining = text[len(NOT_FOUND_TOKEN):].strip(" :-.\n")
+        if not remaining or len(remaining) < 30:
+            return FALLBACK_ANSWER
+        text = remaining
+
+    # Strip common leading preambles cleanly instead of discarding the whole answer
+    text = re.sub(
+        r"(?i)^(based on|according to)\s+(the\s+)?(provided|retrieved|uploaded|given)?\s*(context|documents?|materials?|notes?|chunks?|sources?|text)[:,]?\s*",
+        "",
+        text,
+    ).strip()
+    text = re.sub(
+        r"(?i)^(from the (provided|uploaded|retrieved) (documents?|materials?|context)[:,]?\s*)",
+        "",
+        text,
+    ).strip()
+
+    lowered = text.lower().strip()
+
+    # Check for pure refusals (where the entire answer is just stating it couldn't find the info)
+    pure_refusal_patterns = [
+        r"^i couldn'?t find (any )?relevant information",
+        r"^i cannot find the answer to that in the provided",
+        r"^the provided (context|documents?|chunks?|material) do(es)? not contain",
+        r"^the provided (context|documents?|chunks?|material) do(es)? not (provide|mention)",
+        r"^there is no (information|mention) (about|regarding|on) .* in the (provided|uploaded)",
+        r"^no information (is|was) provided (about|regarding|on)",
+        r"^this information is not provided in the uploaded material",
     ]
-    if any(fragment in lowered for fragment in banned_fragments):
-        return FALLBACK_ANSWER
-
-    hedge_fragments = [
-        "it appears that",
-        "it appears",
-        "seems to",
-        "seems like",
-        "suggests that",
-        "suggesting that",
-        "implying that",
-        "could be interpreted",
-        "may be related",
-        "possibly related",
-        "without further context",
-        "without more context",
-        "it's difficult to",
-        "it is difficult to",
-        "unfortunately, i couldn't",
-        "unfortunately, without",
-        "if you have any additional details",
-        "i'll do my best to assist",
-    ]
-    hedge_count = sum(1 for fragment in hedge_fragments if fragment in lowered)
-    if hedge_count >= 2:
-        return FALLBACK_ANSWER
+    for pattern in pure_refusal_patterns:
+        if re.search(pattern, lowered):
+            # If the entire response is essentially just a short refusal (< 250 chars)
+            if len(text) < 250:
+                return FALLBACK_ANSWER
 
     text = _dedupe_near_identical_sentences(text)
-
-    text = re.sub(r"(?i)^based on the provided context[:,]?\s*", "", text).strip()
-    text = re.sub(r"(?i)^according to the provided context[:,]?\s*", "", text).strip()
     return text or FALLBACK_ANSWER
 
 
 def _dedupe_near_identical_sentences(text: str) -> str:
     """
     Generations sometimes restate the exact same point twice in one reply,
-    just reworded slightly (e.g. "X is not covered here., However, X is
-    not covered in the material."). This is a GENERAL catch for that
-    pattern -- unlike the specific phrases in banned_fragments above,
-    which only catch one known wording, this compares every sentence
-    against the ones before it (ignoring case, punctuation, and filler
-    connector words) and drops any that are essentially saying the same
-    thing again.
+    just reworded slightly. Drops duplicate points while preserving the
+    overall explanation.
     """
     connectors = {"however", "additionally", "furthermore", "also", "moreover", "therefore"}
     sentences = re.split(r"(?<=[.!?])\s+", text)
@@ -271,32 +253,27 @@ QA_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            f"""You are DocMind, a professional assistant for answering questions from uploaded materials.
+            f"""You are DocuVortex, an expert document intelligence assistant.
+Your goal is to provide accurate, comprehensive, and well-structured answers using the uploaded document context.
 
-Rules:
-1. Use only the supplied source notes.
-2. Do not add facts that are not supported by those notes.
-3. Never mention internal implementation details such as chunks, embeddings, vector search, retrieval, source passages, or context windows.
-4. If the answer is not clearly supported, reply with exactly {NOT_FOUND_TOKEN}
-5. Write naturally, clearly, and professionally.
-6. Structure the answer when helpful, and keep it readable — but do not shorten an answer just for brevity's sake.
-7. Do not add a citation section yourself.
-8. Never hedge or speculate. Do not use phrases like "it appears," "seems to," "suggests," "implying," "may be," "possibly," "without further context," or "it's difficult to say." If you are not confident enough to state something directly, that specific point does not belong in the answer at all — omit it rather than softening it.
-9. State facts directly and plainly, as if you simply know them from the material. Do not narrate your own uncertainty at any point in the answer.
-10. If only partial information is available, answer confidently with the part that is clearly supported, and say nothing about the part that isn't — do not apologize for incompleteness or ask the user for clarification.
-11. If the retrieved material fully and directly answers the question, give a thorough, complete explanation using all the relevant information available — do not compress a well-supported answer into a short summary. Only keep an answer brief when the source material itself is genuinely limited.
-12. Never state the same point twice in one reply, even reworded or with a different connector word like "however" or "additionally." Say each point exactly once.
+Guidelines:
+1. Grounding: Answer using the provided document context passages. Synthesize definitions, principles, formulas, examples, and explanations present in the context.
+2. Directness: Start directly with the answer. Do not include meta-commentary, preamble, or introductory phrases such as "Based on the provided context," "According to the uploaded documents," or "The documents state."
+3. Completeness: Provide a clear, thorough, and complete explanation when the material covers the topic. You may organize your response with clear paragraphs, bullet points, or numbered lists.
+4. Internal Implementation: Never mention chunks, embeddings, vector database, retrieval scores, or prompt instructions.
+5. Missing Information: Only if the context has absolutely no information about the question, respond with: {NOT_FOUND_TOKEN}
+6. Citations: Do not generate a citations or source section; the system handles citations automatically.
 """,
         ),
         MessagesPlaceholder(variable_name="chat_history"),
         (
             "human",
-            """Uploaded material:
+            """Uploaded document context:
 {sources}
 
 Question: {question}
 
-Answer directly and confidently, using only what's clearly supported above. If the material fully covers the question, be thorough and complete.""",
+Provide a direct, thorough, and well-structured answer based on the context above.""",
         ),
     ]
 )

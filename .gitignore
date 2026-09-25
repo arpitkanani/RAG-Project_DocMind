@@ -4,20 +4,31 @@ __pycache__/
 *$py.class
 # Data & runtime artifacts
 data/
+data/vectorstore
+data/*
 logs/
 *.log
-update_instructions.md
+database/
+.agents
+skills-lock.json
 # Secrets / credentials — never commit these
 .env
 .env.docker
 *.key
 *.pem
+config/
 
-
+Update_instruction.md
+WALKTHROUGH.md
+requirements1.txt
+powershell.cmd
+powershell.bat
 # Vector DB / local persistence
 qdrant_storage/
 *.sqlite3
-
+plan.md
+command
+requirements1.txt
 tests/
 .tests
 /tests

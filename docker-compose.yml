@@ -20,16 +20,14 @@ services:
     env_file:
       - .env.docker        # secrets / API keys (never commit the real values)
     environment:
-      # Override the env file for service discovery inside the compose network
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
+      # Rely entirely on .env / Supabase for DB connections
       QDRANT_URL: "http://qdrant:6333"
     depends_on:
-      postgres:
-        condition: service_healthy
       qdrant:
         condition: service_healthy
     volumes:
+      # Live bind-mount so code updates apply immediately without rebuilding
+      - .:/app
       # Persist uploaded files across restarts
       - uploads_data:/app/data/uploads
       # Persist logs
@@ -40,26 +38,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
-
-  # ── PostgreSQL ───────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:15-alpine
-    container_name: docmind_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-docmind}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docmind123}
-      POSTGRES_DB: ${POSTGRES_DB:-docmind}
-    ports:
-      - "5432:5432"          # expose locally for debugging; remove in production
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-docmind} -d ${POSTGRES_DB:-docmind}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # ── Qdrant ──────────────────────────────────────────────────────────────────
   qdrant:
@@ -82,7 +60,6 @@ services:
 # Named volumes – data persists across `docker compose down` restarts
 # ─────────────────────────────────────────────────────────────────────────────
 volumes:
-  postgres_data:
   qdrant_data:
   uploads_data:
   app_logs:
