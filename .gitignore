@@ -26,7 +26,6 @@ test_IngestionPipeline.py
 evaluation/
 evaluation_results.csv
 endpoint_regression_check.py
-seed_user.py
 # Jupyter
 .ipynb_checkpoints/
 test.ipynb
@@ -46,6 +45,8 @@ endpoint_regression_check.py
 UPDATE_REPORT.txt
 # C extensions
 *.so
+
+data/
 
 # Distribution / packaging
 .Python
@@ -92,6 +93,12 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# remove the .txt file to add in git?
+UPDATE_REPORT.txt
+
+
+/data
+data/
 # Translations
 *.mo
 *.pot
@@ -184,11 +191,12 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
+Yenv/
 # Spyder project settings
 .spyderproject
 .spyproject
 
+.agents
 # Rope project settings
 .ropeproject
 
