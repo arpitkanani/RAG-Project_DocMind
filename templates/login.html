@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In – DocuVortex</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/main.css" />
+  <link rel="stylesheet" href="/static/css/auth.css" />
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: radial-gradient(circle at top left, rgba(106, 72, 235, 0.12), transparent 32%),
+                  radial-gradient(circle at bottom right, rgba(0, 196, 140, 0.08), transparent 34%),
+                  linear-gradient(180deg, #f8f9fb 0%, #eef0ff 100%);
+      padding: 16px;
+      font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      overflow-x: hidden;
+    }
+    .auth-modal-card {
+      transform: none !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="auth-modal-card">
+    <a href="/" class="auth-close-btn" title="Back to home">&times;</a>
+
+    <div class="auth-header">
+      <div class="auth-brand-badge">DV</div>
+      <h1 class="auth-title">Welcome to DocuVortex</h1>
+      <p class="auth-subtitle">Sign in or register to access your workspace</p>
+    </div>
+
+    <div class="auth-error-msg" id="authError"></div>
+
+    <form class="auth-step" id="loginAuthForm" onsubmit="return false;">
+      <div class="auth-input-group">
+        <label for="authUsername">Username</label>
+        <input type="text" id="authUsername" class="auth-input" placeholder="e.g. alex" required autocomplete="username" />
+      </div>
+
+      <div class="auth-input-group">
+        <label for="authEmail">Email Address</label>
+        <input type="email" id="authEmail" class="auth-input" placeholder="name@company.com" required autocomplete="email" />
+      </div>
+
+      <div class="auth-input-group">
+        <label for="authPassword">Password</label>
+        <input type="password" id="authPassword" class="auth-input" placeholder="Enter password" required autocomplete="current-password" />
+      </div>
+
+      <!-- Math Captcha Horizontal Row -->
+      <div class="auth-input-group">
+        <label for="captchaAnswer">Verification Captcha</label>
+        <div class="captcha-row">
+          <div class="captcha-badge" title="Solve this math problem">
+            <span class="captcha-math-text" id="captchaQuestion">4 + 7</span>
+            <span class="captcha-equal">=</span>
+          </div>
+          <input
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            id="captchaAnswer"
+            class="captcha-input-compact"
+            placeholder=""
+            required
+            autocomplete="off"
+          />
+          <button
+            type="button"
+            class="captcha-refresh-btn"
+            id="btnRefreshCaptcha"
+            title="Generate new challenge"
+          >&#8635;</button>
+        </div>
+        <input type="hidden" id="captchaToken" value="11:fallback" />
+      </div>
+
+      <button type="button" class="auth-btn-primary" id="btnSubmitAuth">Sign In to Workspace &rarr;</button>
+    </form>
+  </div>
+
+  <script src="/static/js/auth.js"></script>
+</body>
+</html>
