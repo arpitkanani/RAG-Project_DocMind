@@ -145,6 +145,33 @@ def decode_access_token(token: str) -> Optional[dict]:
     return None
 
 
+def _verify_user_exists(user_id: str) -> bool:
+    """Check if user_id exists in users table to prevent FK constraint violations."""
+    try:
+        with get_db_cursor(commit=False) as cur:
+            cur.execute("SELECT 1 FROM users WHERE id = %s LIMIT 1", (user_id,))
+            return cur.fetchone() is not None
+    except Exception as e:
+        logging.warning("_verify_user_exists error: %s", e)
+        return False
+
+
+def _ensure_guest_user():
+    """Defensively ensures the guest user row exists in the users table."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            cur.execute(
+                """
+                INSERT INTO users (id, username, email, name, is_verified, is_active)
+                VALUES (%s, 'guest', 'guest@docuvortex.local', 'Guest User', true, true)
+                ON CONFLICT (id) DO UPDATE SET is_active = true
+                """,
+                (GUEST_USER_ID,),
+            )
+    except Exception as e:
+        logging.debug("_ensure_guest_user note: %s", e)
+
+
 def _lookup_api_key_user(api_key_hash: str):
     """Synchronous lookup for registered users with API keys."""
     try:
@@ -191,13 +218,16 @@ async def get_current_user(
 ) -> str:
     """
     FastAPI dependency that resolves the current user:
-    1. Check Cookie or Bearer Token (logged in user)
-    2. Check X-API-Key header (registered API key user)
-    3. Fallback to GUEST_USER_ID if unauthenticated so uploads/chats never fail!
+    1. Check X-API-Key header or query param (Primary authentication)
+    2. Check Cookie or Bearer Token (logged in user) with DB existence check
+    3. Fallback to GUEST_USER_ID if unauthenticated
     """
-    # Strategy 1: Check X-API-Key header (registered users)
-    if x_api_key and x_api_key.strip():
-        clean_key = x_api_key.strip()
+    # Strategy 1: Check X-API-Key (sent explicitly by web frontend or programmatic caller)
+    clean_key = (x_api_key or request.query_params.get("api_key") or "").strip()
+    if clean_key:
+        if clean_key == "guest":
+            await anyio.to_thread.run_sync(_ensure_guest_user)
+            return GUEST_USER_ID
         key_hash = hashlib.sha256(clean_key.encode()).hexdigest()
         row = await anyio.to_thread.run_sync(_lookup_api_key_user, key_hash)
         if row:
@@ -216,15 +246,19 @@ async def get_current_user(
         payload = decode_access_token(token)
         if payload and "sub" in payload:
             user_id = str(payload["sub"])
-            session_id = payload.get("session_id")
-            if session_id:
-                try:
-                    session_row = await anyio.to_thread.run_sync(_lookup_session, user_id, session_id)
-                    if session_row:
-                        return user_id
-                except Exception as e:
-                    logging.warning("Session lookup warning (trusting valid token): %s", e)
-            return user_id
+            # Defensively verify user actually exists in the database
+            user_exists = await anyio.to_thread.run_sync(_verify_user_exists, user_id)
+            if user_exists:
+                session_id = payload.get("session_id")
+                if session_id:
+                    try:
+                        await anyio.to_thread.run_sync(_lookup_session, user_id, session_id)
+                    except Exception as e:
+                        logging.warning("Session lookup warning: %s", e)
+                return user_id
+            else:
+                logging.warning("Stale token referencing non-existent user_id: %s. Falling back to guest.", user_id)
 
     # Strategy 3: Unauthenticated Fallback -> Guest User (prevents upload & query crashes)
+    await anyio.to_thread.run_sync(_ensure_guest_user)
     return GUEST_USER_ID

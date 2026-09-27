@@ -64,8 +64,9 @@ async def retrieve_qa_node(state: RAGState) -> Dict[str, Any]:
         return {
             "docs": docs,
         }
-    except (CollectionNotFoundError, KnowledgeBaseEmptyError):
-        raise
+    except (CollectionNotFoundError, KnowledgeBaseEmptyError) as e:
+        logging.warning("Knowledge base empty or collection missing in retrieve_qa_node: %s", e)
+        return {"docs": []}
     except Exception as e:
         raise CustomException(e, sys)
 
@@ -85,7 +86,8 @@ async def retrieve_summary_node(state: RAGState) -> Dict[str, Any]:
         return {
             "docs": docs,
         }
-    except (CollectionNotFoundError, KnowledgeBaseEmptyError):
-        raise
+    except (CollectionNotFoundError, KnowledgeBaseEmptyError) as e:
+        logging.warning("Knowledge base empty or collection missing in retrieve_summary_node: %s", e)
+        return {"docs": []}
     except Exception as e:
         raise CustomException(e, sys)

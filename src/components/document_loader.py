@@ -55,23 +55,57 @@ class DocumentLoader:
 
     def _load_pdf(self, path: str) -> Iterator[Document]:
         try:
-            # First try PyPDFLoader.load() to guarantee page reading across all pypdf versions
-            loader = PyPDFLoader(path)
-            if hasattr(loader, "lazy_load"):
-                try:
+            pages = []
+            try:
+                loader = PyPDFLoader(path)
+                if hasattr(loader, "lazy_load"):
                     pages = list(loader.lazy_load())
-                    if pages:
-                        for page in pages:
-                            yield page
-                        logging.info("PDF stream completed: %d pages", len(pages))
-                        return
-                except Exception as lazy_err:
-                    logging.warning("PyPDFLoader lazy_load failed, falling back to load(): %s", lazy_err)
+                if not pages:
+                    pages = loader.load()
+            except Exception as pypdf_err:
+                logging.warning("PyPDFLoader failed, trying direct pypdf extraction: %s", pypdf_err)
 
-            docs = loader.load()
-            logging.info("PDF loaded: %d pages", len(docs))
-            for doc in docs:
-                yield doc
+            has_text = any(bool(p.page_content and p.page_content.strip()) for p in pages)
+            if has_text:
+                valid_pages = [p for p in pages if p.page_content and p.page_content.strip()]
+                for page in valid_pages:
+                    yield page
+                logging.info("PyPDFLoader stream completed: %d pages with text", len(valid_pages))
+                return
+
+            # Fallback: Direct pypdf.PdfReader with layout and plain extraction modes
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(path)
+                direct_pages = []
+                for idx, page_obj in enumerate(reader.pages):
+                    txt = ""
+                    try:
+                        txt = page_obj.extract_text(extraction_mode="layout") or ""
+                    except Exception:
+                        pass
+                    if not txt.strip():
+                        try:
+                            txt = page_obj.extract_text(extraction_mode="plain") or ""
+                        except Exception:
+                            pass
+                    if not txt.strip():
+                        try:
+                            txt = page_obj.extract_text() or ""
+                        except Exception:
+                            pass
+                    if txt and txt.strip():
+                        direct_pages.append(Document(page_content=txt.strip(), metadata={"source": path, "page": idx + 1}))
+
+                if direct_pages:
+                    logging.info("Direct pypdf layout extraction completed: %d pages with text", len(direct_pages))
+                    for doc in direct_pages:
+                        yield doc
+                    return
+            except Exception as reader_err:
+                logging.warning("Direct pypdf extraction failed: %s", reader_err)
+
+            logging.warning("PDF %s contains no extractable text layer across %d pages", path, len(pages))
         except Exception as e:
             raise CustomException(e, sys)
 

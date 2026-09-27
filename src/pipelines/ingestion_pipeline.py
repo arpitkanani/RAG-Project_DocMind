@@ -100,6 +100,17 @@ class IngestionPipeline:
                     )
                 raise
 
+            if chunks_count[0] == 0:
+                logging.warning("Ingestion finished with 0 chunks for %s", source)
+                return {
+                    "success": False,
+                    "error": "No readable text could be extracted from this document. If this is a scanned PDF or contains only images, text extraction requires an OCR-readable PDF.",
+                    "source": source,
+                    "collection_name": collection_name,
+                    "chunks_stored": 0,
+                    "is_youtube": is_youtube_url(source),
+                }
+
             result = {
                 "success":         True,
                 "source":          source,

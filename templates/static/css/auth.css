@@ -344,3 +344,188 @@ input::-webkit-inner-spin-button {
     min-width: 62px;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Password Visibility Toggle & Forgot Password
+   ═══════════════════════════════════════════════════════════════════ */
+
+.password-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrapper .auth-input {
+  padding-right: 42px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #718096;
+  border-radius: 6px;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.password-toggle-btn:hover {
+  color: #6a48eb;
+  background: rgba(106, 72, 235, 0.08);
+}
+
+.auth-aux-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.auth-forgot-link {
+  font-size: 0.78rem;
+  color: #6a48eb;
+  text-decoration: none;
+  font-weight: 600;
+  transition: opacity 0.18s ease;
+}
+
+.auth-forgot-link:hover {
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
+/* Forgot Password Modal */
+.forgot-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+  padding: 16px;
+}
+
+.forgot-modal-backdrop.open {
+  opacity: 1;
+  visibility: visible;
+}
+
+.forgot-modal-card {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  background: #ffffff;
+  border-radius: 18px;
+  border: 1px solid rgba(227, 231, 242, 0.95);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+  padding: 24px 22px 20px;
+  box-sizing: border-box;
+}
+
+.forgot-close-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #f1f4f9;
+  border: 1px solid #e2e8f0;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  transition: all 0.18s ease;
+}
+
+.forgot-close-btn:hover {
+  background: #fee2e2;
+  color: #ef4444;
+}
+
+.forgot-header {
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.forgot-title {
+  font-family: 'Outfit', sans-serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 4px;
+}
+
+.forgot-subtitle {
+  font-size: 0.8rem;
+  color: #64748b;
+  margin: 0;
+}
+
+.forgot-result-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px;
+  text-align: center;
+}
+
+.forgot-result-label {
+  display: block;
+  font-size: 0.8rem;
+  color: #64748b;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.forgot-result-pwd-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.forgot-result-pwd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #6a48eb;
+  letter-spacing: 0.5px;
+}
+
+.forgot-copy-btn {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #2563eb;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.forgot-copy-btn:hover {
+  background: #2563eb;
+  color: #ffffff;
+}
+

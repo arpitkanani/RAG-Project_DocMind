@@ -46,6 +46,37 @@ def build_error_response(
     return JSONResponse(status_code=status_code, content=payload)
 
 
+def extract_text(content) -> str:
+    """
+    Normalize any LLM message or chunk content into a clean string.
+    Works for:
+      - Groq (plain str)
+      - Gemini 3.x (list of typed dict blocks [{'type':'text', 'text':'...'}])
+      - AIMessageChunk / BaseMessage objects with .content
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        pieces = []
+        for item in content:
+            if isinstance(item, str):
+                pieces.append(item)
+            elif isinstance(item, dict):
+                text_val = item.get("text") or item.get("content") or ""
+                if text_val:
+                    pieces.append(str(text_val))
+            elif hasattr(item, "text"):
+                pieces.append(str(item.text))
+            elif hasattr(item, "content"):
+                pieces.append(extract_text(item.content))
+        return " ".join(p for p in pieces if p).strip()
+    if hasattr(content, "content"):
+        return extract_text(content.content)
+    return str(content).strip()
+
+
 def normalize_collection_scope(request: QueryRequest) -> List[str] | None:
     if request.collection_names is not None:
         return [name for name in request.collection_names if name]
@@ -70,15 +101,18 @@ async def aresolve_session_scope(
     This prevents one user from querying another user's collection by crafting a
     ``collection_names`` payload.
     """
-    available_collections = await VectorStore().alist_collections()
+    if requested_scope is not None and not requested_scope:
+        return []
+
+    available_collections = await aget_available_collections()
     memory = MemoryManager(session_id=session_id, user_id=user_id)
 
     if requested_scope is not None:
-        if not requested_scope:
-            return []
         # Ownership check: filter down to only the collections that are
         # both available in Qdrant AND attached to this user's session.
-        await memory.acleanup_attachments(available_collections)
+        # Only cleanup if available_collections is non-empty to prevent accidental wipe on network blip
+        if available_collections:
+            await memory.acleanup_attachments(available_collections)
         user_collections = set(await memory.aget_attachment_collections())
         owned = [c for c in requested_scope if c in user_collections]
         if not owned:
@@ -87,7 +121,8 @@ async def aresolve_session_scope(
         return owned
 
     # No explicit scope: use whatever is attached to this session.
-    await memory.acleanup_attachments(available_collections)
+    if available_collections:
+        await memory.acleanup_attachments(available_collections)
     attachments = await memory.aget_attachment_collections()
     if attachments:
         return attachments
@@ -101,12 +136,13 @@ def resolve_session_scope(
     session_id: str, requested_scope: Optional[List[str]], user_id: str
 ) -> List[str]:
     """Synchronous version of aresolve_session_scope with the same ownership rules."""
-    available_collections = VectorStore().list_collections()
+    if requested_scope is not None and not requested_scope:
+        return []
+
+    available_collections = get_available_collections()
     memory = MemoryManager(session_id=session_id, user_id=user_id)
 
     if requested_scope is not None:
-        if not requested_scope:
-            return []
         memory.cleanup_attachments(available_collections)
         user_collections = set(memory.get_attachment_collections())
         owned = [c for c in requested_scope if c in user_collections]

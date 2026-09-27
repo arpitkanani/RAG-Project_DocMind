@@ -1,7 +1,9 @@
 """Query endpoint — streams structured SSE events from the DocuVortex
 agentic RAG StateGraph."""
 
+import asyncio
 import json
+import re
 import sys
 
 from fastapi import APIRouter, Depends, Request
@@ -15,6 +17,7 @@ from src.logger import logging
 from src.utils.helpers import (
     aresolve_session_scope,
     build_error_response,
+    extract_text,
     normalize_collection_scope,
 )
 from src.schemas import QueryRequest
@@ -24,15 +27,15 @@ router = APIRouter(tags=["Query"])
 
 # ── Stage labels for SSE status events ──────────────────────────────────────
 _STAGE_LABELS = {
-    "load_context": ("classifying", "Analyzing your question..."),
-    "classify_intent": ("classifying", "Analyzing your question..."),
+    "load_context": ("classifying", "Analyzing query..."),
+    "classify_intent": ("classifying", "Analyzing query..."),
     "clarify_question": ("classifying", "Checking question clarity..."),
     "chitchat": ("thinking", "Thinking..."),
     "run_react_agent": ("thinking", "Thinking..."),
     "agent": ("thinking", "Thinking..."),
     "tools": ("tool", "Executing tool..."),
-    "retrieve_qa": ("retrieving", "Retrieving documents..."),
-    "retrieve_summary": ("retrieving", "Retrieving document context..."),
+    "retrieve_qa": ("retrieving", "Retrieving context..."),
+    "retrieve_summary": ("retrieving", "Retrieving context..."),
     "grade_documents": ("grading", "Evaluating relevance..."),
     "generate": ("structuring", "Structuring answer..."),
     "fallback_response": ("structuring", "Structuring answer..."),
@@ -62,8 +65,8 @@ async def query(
                 normalize_collection_scope(request),
                 user_id,
             )
-        except (KnowledgeBaseEmptyError, CollectionNotFoundError):
-            # If no collections exist or invalid collection, allow conversational chitchat through graph
+        except (KnowledgeBaseEmptyError, CollectionNotFoundError, Exception):
+            # If no collections exist, invalid collection, or vectorstore offline, allow conversational chitchat through graph
             collection_scope = []
 
         async def event_generator():
@@ -85,19 +88,49 @@ async def query(
             }
 
             try:
-                # Stream events from the StateGraph
-                async for event in rag_graph.astream_events(
-                    {
-                        "question": request.query,
-                        "collection_names": collection_scope,
-                        "session_id": session_id,
-                        "user_id": user_id,
-                        "message_attachments": request.message_attachments,
-                        "source_selected": bool(collection_scope),
-                    },
-                    config=config,
-                    version="v2",
-                ):
+                # Stream events from the StateGraph (with automatic direct fallback if checkpointer connection dropped)
+                graph = getattr(raw_request.app.state, "rag_graph", rag_graph)
+                graph_input = {
+                    "question": request.query,
+                    "collection_names": collection_scope,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "message_attachments": request.message_attachments,
+                    "source_selected": bool(collection_scope),
+                }
+
+                async def _safe_stream_events():
+                    target_graph = graph
+                    iterator = target_graph.astream_events(graph_input, config=config, version="v2").__aiter__()
+                    try:
+                        first = await iterator.__anext__()
+                        yield first
+                    except StopAsyncIteration:
+                        return
+                    except Exception as err:
+                        err_msg = str(err).lower()
+                        if target_graph is not rag_graph and (
+                            "closed the connection unexpectedly" in err_msg
+                            or "operationalerror" in err_msg
+                            or "connection" in err_msg
+                            or "checkpointer" in err_msg
+                            or "consuming input failed" in err_msg
+                            or "bad" in err_msg
+                        ):
+                            logging.warning(
+                                "Checkpointer graph connection dropped (%s). Seamlessly falling back to direct rag_graph",
+                                err,
+                            )
+                            async for ev in rag_graph.astream_events(graph_input, config=config, version="v2"):
+                                yield ev
+                            return
+                        else:
+                            raise
+
+                    async for ev in iterator:
+                        yield ev
+
+                async for event in _safe_stream_events():
                     kind = event.get("event", "")
                     name = event.get("name", "")
 
@@ -137,34 +170,47 @@ async def query(
 
                         # Enrich message dynamically with input details
                         if isinstance(tool_input, dict):
-                            if tool_name in ("get_stock_price", "stock_price_tool") and tool_input.get("symbol"):
-                                sym = str(tool_input["symbol"]).strip().upper()
-                                msg = f"📈 Fetching stock price for {sym}..."
-                            elif tool_name in ("get_weather",) and tool_input.get("location"):
-                                loc = str(tool_input["location"]).strip()
-                                msg = f"🌤️ Checking weather in {loc}..."
-                            elif tool_name in ("search_arxiv",) and tool_input.get("query"):
-                                q = str(tool_input["query"])
+                            if tool_name in ("get_stock_price", "stock_price_tool"):
+                                sym = tool_input.get("symbol") or tool_input.get("ticker") or tool_input.get("company")
+                                if sym:
+                                    sym_str = str(sym).strip().upper()
+                                    msg = f"📈 Fetching stock price for {sym_str}..."
+                                else:
+                                    msg = "📈 Fetching stock price..."
+                            elif tool_name in ("get_weather",):
+                                loc = tool_input.get("location") or tool_input.get("city")
+                                if loc:
+                                    loc_str = str(loc).strip().title()
+                                    msg = f"🌤️ Checking weather in {loc_str}..."
+                                else:
+                                    msg = "🌤️ Checking weather..."
+                            elif tool_name in ("search_arxiv",):
+                                q = str(tool_input.get("query") or "")
                                 q_trunc = (q[:28] + "...") if len(q) > 28 else q
-                                msg = f"📚 Searching arXiv for '{q_trunc}'..."
-                            elif tool_name in ("calculator", "calculator_tool") and tool_input.get("operation"):
-                                op = str(tool_input.get("operation"))
+                                msg = f"📚 Searching arXiv for '{q_trunc}'..." if q else "📚 Searching academic papers..."
+                            elif tool_name in ("calculator", "calculator_tool"):
+                                op = str(tool_input.get("operation") or "")
                                 n1 = tool_input.get("first_num", "")
                                 n2 = tool_input.get("second_num", "")
-                                msg = f"🧮 Calculating {n1} {op} {n2}..."
-                            elif tool_name in ("search_tool", "duckduckgo_search") and tool_input.get("query"):
-                                q = str(tool_input["query"])
+                                if n1 != "" and n2 != "":
+                                    msg = f"🧮 Calculating {n1} {op} {n2}..."
+                                else:
+                                    msg = "🧮 Calculating..."
+                            elif tool_name in ("search_tool", "duckduckgo_search"):
+                                q = str(tool_input.get("query") or "")
                                 q_trunc = (q[:28] + "...") if len(q) > 28 else q
-                                msg = f"🔍 Searching web for '{q_trunc}'..."
-                        elif isinstance(tool_input, str):
-                            if tool_name in ("search_tool", "duckduckgo_search"):
-                                q_trunc = (tool_input[:28] + "...") if len(tool_input) > 28 else tool_input
-                                msg = f"🔍 Searching web for '{q_trunc}'..."
+                                msg = f"🔍 Searching web for '{q_trunc}'..." if q else "🔍 Searching the web..."
+                        elif isinstance(tool_input, str) and tool_input.strip():
+                            clean_str = tool_input.strip()
+                            if tool_name in ("get_stock_price", "stock_price_tool"):
+                                msg = f"📈 Fetching stock price for {clean_str.upper()}..."
                             elif tool_name == "get_weather":
-                                loc = tool_input.strip()
-                                msg = f"🌤️ Checking weather in {loc}..."
+                                msg = f"🌤️ Checking weather in {clean_str.title()}..."
+                            elif tool_name in ("search_tool", "duckduckgo_search"):
+                                q_trunc = (clean_str[:28] + "...") if len(clean_str) > 28 else clean_str
+                                msg = f"🔍 Searching web for '{q_trunc}'..."
                             elif tool_name == "search_arxiv":
-                                q_trunc = (tool_input[:28] + "...") if len(tool_input) > 28 else tool_input
+                                q_trunc = (clean_str[:28] + "...") if len(clean_str) > 28 else clean_str
                                 msg = f"📚 Searching arXiv for '{q_trunc}'..."
 
                         tool_payload = json.dumps({
@@ -184,82 +230,52 @@ async def query(
                         })
                         yield f"data: {end_payload}\n\n"
 
-                    # ── Token streaming from the LLM generation ──
-                    elif kind == "on_chat_model_stream":
-                        node_name = event.get("metadata", {}).get("langgraph_node", "")
-                        tags = event.get("tags", [])
-
-                        # Prevent stream leakage from memory summarizer, grading, intent classification, etc.
-                        # Allow generate, chitchat, run_react_agent, agent, chitchat_agent, and structure_answer
-                        allowed_stream_nodes = {
-                            "generate",
-                            "chitchat",
-                            "run_react_agent",
-                            "agent",
-                            "chitchat_agent",
-                            "structure_answer",
-                        }
-                        if "memory_summary" in tags or node_name not in allowed_stream_nodes:
-                            continue
-
-                        # Suppress token streaming while a tool is currently executing
-                        if tools_active_count > 0:
-                            continue
-
-                        chunk = event.get("data", {}).get("chunk")
-                        if chunk and hasattr(chunk, "content") and chunk.content:
-                            # Skip tool call argument chunks
-                            if hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
-                                continue
-                            content = chunk.content
-                            if isinstance(content, list):
-                                # Gemini-style content blocks or text blocks
-                                content = "".join(
-                                    block.get("text", "") if isinstance(block, dict) else str(block)
-                                    for block in content
-                                )
-                            if content:
-                                # If this is a ReAct agent node (e.g. agent/run_react_agent/chitchat)
-                                if node_name in {"run_react_agent", "agent", "chitchat", "chitchat_agent"}:
-                                    if not has_tool_run:
-                                        # Before any tool is called, buffer tokens so thoughts/preambles aren't leaked
-                                        # if a tool is about to be triggered
-                                        pre_tool_tokens.append(content)
-                                        # If buffer gets reasonably large without a tool call, this is pure chitchat
-                                        if len(pre_tool_tokens) > 12:
-                                            while pre_tool_tokens:
-                                                buffered = pre_tool_tokens.pop(0)
-                                                payload = json.dumps({"type": "token", "content": buffered})
-                                                yield f"data: {payload}\n\n"
-                                        continue
-                                    else:
-                                        # Post-tool final synthesis: stream directly
-                                        payload = json.dumps({"type": "token", "content": content})
-                                        yield f"data: {payload}\n\n"
-                                else:
-                                    # Standard RAG generation node (generate, structure_answer)
-                                    streamed_any_token = True
-                                    payload = json.dumps({"type": "token", "content": content})
-                                    yield f"data: {payload}\n\n"
-
                     # ── Capture final answer from finalize or direct nodes ──
                     elif kind == "on_chain_end":
                         output = event.get("data", {}).get("output", {})
                         if isinstance(output, dict) and output.get("final_answer"):
                             full_final_answer = output.get("final_answer", full_final_answer)
 
-                # Flush any remaining buffered chitchat tokens if no tools were ever called
-                if not has_tool_run and pre_tool_tokens:
-                    while pre_tool_tokens:
-                        buffered = pre_tool_tokens.pop(0)
-                        streamed_any_token = True
-                        payload = json.dumps({"type": "token", "content": buffered})
-                        yield f"data: {payload}\n\n"
+                if not full_final_answer:
+                    full_final_answer = "I couldn't find information about that in the uploaded document(s)."
 
-                # If no tokens were streamed (e.g. direct clarify or fallback response), emit full_final_answer as token
-                if not streamed_any_token and full_final_answer:
-                    payload = json.dumps({"type": "token", "content": full_final_answer})
-                    yield f"data: {payload}\n\n"
+                # Check if this is a structured clarification response
+                is_clarification = False
+                try:
+                    parsed = json.loads(full_final_answer)
+                    if isinstance(parsed, dict) and parsed.get("type") == "clarification":
+                        is_clarification = True
+                        clarify_payload = json.dumps({
+                            "type": "clarification",
+                            "message": parsed.get("message", ""),
+                            "options": parsed.get("options", []),
+                        })
+                        yield f"data: {clarify_payload}\n\n"
+                        full_final_answer = ""  # Clear so done event doesn't carry raw JSON
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+
+                # Stream the completely structured answer token-by-token
+                if not is_clarification and full_final_answer:
+                    # Break into tokens/words to create smooth typewriter streaming of the finalized answer
+                    chunks = re.findall(r"\S+|\s+", full_final_answer)
+                    if chunks:
+                        total_chunks = len(chunks)
+                        if total_chunks <= 40:
+                            step = 1
+                            delay = 0.015
+                        elif total_chunks <= 120:
+                            step = 2
+                            delay = 0.012
+                        else:
+                            step = max(2, total_chunks // 60)
+                            delay = 0.010
+
+                        for i in range(0, total_chunks, step):
+                            chunk_slice = "".join(chunks[i : i + step])
+                            payload = json.dumps({"type": "token", "content": chunk_slice})
+                            yield f"data: {payload}\n\n"
+                            await asyncio.sleep(delay)
 
                 # Emit done event
                 done_payload = json.dumps({

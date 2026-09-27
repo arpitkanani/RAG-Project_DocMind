@@ -34,6 +34,8 @@ async def chat_app():
     return render_template_safely("home.html")
 
 
-@router.get("/login", response_class=HTMLResponse)
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+@router.get("/login")
 async def login_page():
-    return render_template_safely("login.html")
+    return RedirectResponse(url="/app", status_code=302)

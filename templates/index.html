@@ -22,8 +22,7 @@
       <span class="logo-mark">DV</span> DocuVortex
     </a>
     <div class="nav-right">
-      <a href="/login" class="nav-link-ghost trigger-login-modal">Sign In</a>
-      <button type="button" class="nav-link-primary trigger-login-modal">Get Started →</button>
+      <a href="/app" class="nav-link-primary">Open Workspace →</a>
     </div>
   </nav>
 
@@ -37,8 +36,7 @@
       using verifiable source excerpts, page numbers, and video timestamps.
     </p>
     <div class="hero-cta-wrap">
-      <button type="button" class="hero-btn trigger-login-modal">Try DocuVortex Free →</button>
-      <a href="/home" class="hero-btn-outline">Open Workspace</a>
+      <a href="/app" class="hero-btn" style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center;">Launch Workspace →</a>
     </div>
   </section>
 
@@ -206,69 +204,6 @@
     <a href="/home">Go to Workspace →</a>
   </footer>
 
-  <!-- ══════════════════════ EMBEDDED AUTH MODAL ══════════════════════ -->
-  <div class="auth-modal-backdrop" id="authModalBackdrop">
-    <div class="auth-modal-card">
-      <button type="button" class="auth-close-btn" id="authModalClose" title="Close modal">&times;</button>
-
-      <div class="auth-header">
-        <div class="auth-brand-badge">DV</div>
-        <h2 class="auth-title">Welcome to DocuVortex</h2>
-        <p class="auth-subtitle">Sign in or register with instant verification</p>
-      </div>
-
-      <div class="auth-error-msg" id="authError"></div>
-
-      <form class="auth-step" id="loginAuthForm" onsubmit="return false;">
-        <div class="auth-input-group">
-          <label for="authUsername">Username</label>
-          <input type="text" id="authUsername" class="auth-input" placeholder="e.g. alex" required autocomplete="username" />
-        </div>
-
-        <div class="auth-input-group">
-          <label for="authEmail">Email Address</label>
-          <input type="email" id="authEmail" class="auth-input" placeholder="name@company.com" required autocomplete="email" />
-        </div>
-
-        <div class="auth-input-group">
-          <label for="authPassword">Password</label>
-          <input type="password" id="authPassword" class="auth-input" placeholder="Enter password" required autocomplete="current-password" />
-        </div>
-
-        <!-- Math Captcha Horizontal Row -->
-        <div class="auth-input-group">
-          <label for="captchaAnswer">Verification Captcha</label>
-          <div class="captcha-row">
-            <div class="captcha-badge" title="Solve this math problem">
-              <span class="captcha-math-text" id="captchaQuestion">4 + 7</span>
-              <span class="captcha-equal">=</span>
-            </div>
-            <input
-              type="text"
-              inputmode="numeric"
-              pattern="[0-9]*"
-              id="captchaAnswer"
-              class="captcha-input-compact"
-              placeholder=""
-              required
-              autocomplete="off"
-            />
-            <button
-              type="button"
-              class="captcha-refresh-btn"
-              id="btnRefreshCaptcha"
-              title="Generate new challenge"
-            >&#8635;</button>
-          </div>
-          <input type="hidden" id="captchaToken" value="11:fallback" />
-        </div>
-
-        <button type="button" class="auth-btn-primary" id="btnSubmitAuth">Sign In to Workspace &rarr;</button>
-      </form>
-    </div>
-  </div>
-
-  <script src="/static/js/auth.js"></script>
   <script src="/static/js/landing.js"></script>
 </body>
 </html>

@@ -13,7 +13,7 @@ from src.graph.tools import AVAILABLE_TOOLS
 from src.logger import logging
 from src.utils.rate_limiter import llm_rate_limiter
 
-SYSTEM_PROMPT = """You are DocMind, a document assistant that answers ONLY from
+SYSTEM_PROMPT = """You are DocuVortex, a document assistant that answers ONLY from
 the user's uploaded documents. You have no general knowledge.
 
 RULES:

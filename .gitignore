@@ -263,3 +263,6 @@ marimo/_lsp/
 __marimo__/
 
 /data
+check_db.py
+test.py
+wipe_data.py

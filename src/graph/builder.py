@@ -63,7 +63,7 @@ def route_grade(state: RAGState) -> str:
 
 # ─── Graph builder ────────────────────────────────────────────────────────────
 
-def build_rag_graph():
+def build_rag_graph(checkpointer=None):
     """Compiles the asynchronous LangGraph StateGraph workflow."""
     builder = StateGraph(RAGState)
 
@@ -138,6 +138,8 @@ def build_rag_graph():
     builder.add_edge("fallback_response", "finalize")
     builder.add_edge("finalize", END)
 
+    if checkpointer:
+        return builder.compile(checkpointer=checkpointer)
     return builder.compile()
 
 

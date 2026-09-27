@@ -25,6 +25,9 @@ def _get_db_url() -> str:
         if "sslmode=" not in db_uri and ("supabase.com" in db_uri or "supabase.co" in db_uri):
             sep = "&" if "?" in db_uri else "?"
             db_uri = f"{db_uri}{sep}sslmode=require"
+        if "keepalives=" not in db_uri:
+            sep = "&" if "?" in db_uri else "?"
+            db_uri = f"{db_uri}{sep}keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
         return db_uri
 
     # Fallback to config.yaml if DATABASE_URL not set
@@ -137,15 +140,66 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         _safe_exec("ALTER TABLE users ALTER COLUMN api_key_hash DROP NOT NULL;")
         _safe_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;")
         _safe_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL;")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_users_api_key_hash ON users(api_key_hash);")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);")
+
+        # Chat and Memory tables
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id  TEXT PRIMARY KEY,
+                user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
+                title       TEXT DEFAULT 'New Chat',
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        _safe_exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT DEFAULT 'New Chat';")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);")
+
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id          BIGSERIAL PRIMARY KEY,
+                session_id  TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
+                role        TEXT NOT NULL,
+                content     TEXT NOT NULL,
+                attachments JSONB,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);")
+
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS attachments (
+                id          BIGSERIAL PRIMARY KEY,
+                session_id  TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                collection  TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                extra       JSONB,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (session_id, collection)
+            );
+        """)
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_attachments_session_id ON attachments(session_id);")
+
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS session_summaries (
+                session_id          TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+                summary             TEXT NOT NULL,
+                summarized_through  TIMESTAMP NOT NULL DEFAULT now(),
+                updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+
         _safe_exec("""
             INSERT INTO users (id, username, email, name, is_verified, is_active)
             VALUES ('00000000-0000-0000-0000-000000000001', 'guest', 'guest@docuvortex.local', 'Guest User', true, true)
             ON CONFLICT (id) DO UPDATE
             SET username = 'guest', email = 'guest@docuvortex.local', is_active = true;
         """)
-        logging.info("Supabase users and user_sessions schema verified & defensive migrations applied successfully.")
+        logging.info("Supabase database tables verified & defensive migrations applied successfully.")
     except Exception as e:
         logging.error("Failed to initialize or migrate database schema: %s", e)
 
@@ -171,6 +225,18 @@ class get_db_cursor:
         try:
             p = get_pool()
             self.conn = p.getconn()
+            # If the connection was closed by server while idle in pool:
+            if getattr(self.conn, "closed", 0) != 0:
+                p.putconn(self.conn, close=True)
+                self.conn = p.getconn()
+            try:
+                # Fast connection liveness verification
+                with self.conn.cursor() as test_cur:
+                    test_cur.execute("SELECT 1;")
+                self.conn.rollback()
+            except Exception:
+                p.putconn(self.conn, close=True)
+                self.conn = p.getconn()
             self.cur = self.conn.cursor(cursor_factory=RealDictCursor)
             return self.cur
         except Exception as e:
@@ -179,14 +245,17 @@ class get_db_cursor:
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             if exc_type is not None:
-                if self.conn:
+                if self.conn and getattr(self.conn, "closed", 0) == 0:
                     self.conn.rollback()
             elif self.commit:
-                if self.conn:
+                if self.conn and getattr(self.conn, "closed", 0) == 0:
                     self.conn.commit()
         finally:
             if self.cur:
-                self.cur.close()
+                try:
+                    self.cur.close()
+                except Exception:
+                    pass
             if self.conn:
                 get_pool().putconn(self.conn)
         return False  # never swallow exceptions

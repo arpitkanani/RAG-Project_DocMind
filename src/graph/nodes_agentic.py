@@ -7,6 +7,7 @@ Nodes:
     fallback_response – Polite message when docs are irrelevant
 """
 
+import json
 import os
 import re
 import sys
@@ -16,7 +17,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 from langgraph.prebuilt import create_react_agent
@@ -27,31 +28,64 @@ from src.components.retriever import STOP_WORDS
 from src.exception import CustomException
 from src.graph.helpers import extract_message_text
 from src.graph.state import RAGState
-from src.graph.tools import chitchat_tools
+from src.graph.tools import chitchat_tools, get_stock_price
 from src.logger import logging
 
 
-# ─── Gemini 3.6 Flash / ReAct Model Setup ───
+# ─── Gemini 3.8 Flash / ReAct Model Setup ───
 _gemini_flash = None
 
 
-def _get_gemini_flash() -> ChatGoogleGenerativeAI:
-    """Lazy-initialize and cache the Gemini Flash model."""
+def _get_gemini_flash():
+    """Lazy-initialize the Flash model with multi-model fallbacks (Groq primary, Gemini secondary)."""
     global _gemini_flash
     if _gemini_flash is None:
-        model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-        _gemini_flash = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=0,
-            max_output_tokens=100,
-        )
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        groq_api_key = os.getenv("GROQ_API_KEY")
+
+        instances = []
+
+        if groq_api_key:
+            from langchain_groq import ChatGroq
+            for m in [os.getenv("GROQ_AGENT_MODEL", "openai/gpt-oss-20b"), "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]:
+                try:
+                    instances.append(
+                        ChatGroq(
+                            model=m,
+                            temperature=0,
+                            api_key=groq_api_key,
+                            groq_api_key=groq_api_key,
+                            max_tokens=1024,
+                        )
+                    )
+                except Exception:
+                    pass
+
+        if google_api_key and not google_api_key.startswith("AQ."):
+            for m in ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]:
+                try:
+                    instances.append(
+                        ChatGoogleGenerativeAI(
+                            model=m,
+                            temperature=0,
+                            google_api_key=google_api_key,
+                            max_output_tokens=1024,
+                        )
+                    )
+                except Exception:
+                    pass
+
+        if not instances:
+            raise ValueError("Neither GOOGLE_API_KEY nor GROQ_API_KEY is configured.")
+
+        primary = instances[0]
+        _gemini_flash = primary.with_fallbacks(instances[1:]) if len(instances) > 1 else primary
     return _gemini_flash
 
 
 FALLBACK_MESSAGE = (
-    "I couldn't find relevant information in your uploaded documents to answer "
-    "this question. Please try rephrasing your question or upload additional "
-    "documents that may contain the answer."
+    "I am only able to provide answers directly grounded in your uploaded document(s). "
+    "I couldn't find information about that in the uploaded material."
 )
 
 
@@ -94,6 +128,18 @@ async def check_query_clarity(question: str, chat_history: list = None) -> tuple
 
     # 2. Summary requests are clear requests for document synthesis
     if is_summary_request(raw_q):
+        return True, ""
+
+    # 2b. Spelling tolerance: queries with 4+ words and at least 1 meaningful term
+    # are ALWAYS clear enough — spelling mistakes should never trigger clarification
+    meaningful_early = [w for w in words if w not in STOP_WORDS and len(w) > 2]
+    if len(words) >= 4 and len(meaningful_early) >= 1:
+        return True, ""
+
+    # 2c. If 2+ meaningful non-generic words, the query has enough specificity
+    generic_words_early = {"thing", "things", "stuff", "topic", "topics", "item", "items", "something", "anything"}
+    non_generic_early = [w for w in meaningful_early if w not in generic_words_early]
+    if len(non_generic_early) >= 2:
         return True, ""
 
     # 3. Conversational greetings/chitchat are handled separately
@@ -163,16 +209,65 @@ async def check_query_clarity(question: str, chat_history: list = None) -> tuple
 # Node: Intent_Classifier (classify_intent)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Patterns indicating an explicit tool inquiry or conversational greeting
+TOOL_OR_CHITCHAT_PATTERNS = [
+    # Stock / financial quotes & tickers (global & Indian stocks)
+    r"\b(stocks?|shares?|tickers?|stock\s*prices?|share\s*prices?|stock\s*quotes?|ticker\s*symbol|market\s*cap|market\s*quote|nasdaq|dow\s*jones|s&p\s*500|aapl|tsla|msft|nvda|googl|amzn|meta|dividend|nifty|sensex|bse|nse|mahindra|reliance|tcs|infosys|hdfc|icici|axis\s*bank|sbi|tata|bitcoin|crypto)\b",
+    # Weather & climate (including common typos like 'wheater' and 'whether in ...')
+    r"\b(weather|wheater|temperature|temp\s*in|forecast|humidity|climate|rain(ing)?(\s*today)?|whether\s+(in|of|for|at|today|tomorrow|like))\b",
+    # Math & Calculations
+    r"\b(calculate|computation|arithmetic)\b",
+    r"^\s*[\d\.\(\)\+\-\*\/\^\s]+\s*$",
+    r"\b\d+\s*[\+\-\*\/]\s*\d+\b",
+    # ArXiv & scientific papers
+    r"\b(search\s*arxiv|find\s*papers\s*on|research\s*papers?\s*on|arxiv)\b",
+    # Live web search & current news
+    r"\b(search\s*(the\s*)?web|latest\s*news|current\s*events|news\s*today|google\s*search)\b",
+    # Conversational greetings & assistant identity
+    r"^\s*(hi|hello|hey|greetings|good\s*morning|good\s*afternoon|good\s*evening|who\s*are\s*you|what\s*are\s*you|what\s*can\s*you\s*do|how\s*are\s*you|help)\s*[\?\!\.]*\s*$",
+]
+
+
+def _was_last_response_clarification(chat_history: list) -> bool:
+    """Check if the last AI response was a clarification prompt."""
+    if not chat_history:
+        return False
+    for msg in reversed(chat_history):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "type", "")
+        if role in ("ai", "assistant"):
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            try:
+                data = json.loads(str(content))
+                if isinstance(data, dict) and data.get("type") == "clarification":
+                    return True
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            return False  # Last AI message was a normal response
+    return False
+
+
 @traceable(name="Intent_Classifier")
 async def classify_intent(state: RAGState) -> Dict[str, Any]:
     """Detect whether to perform document retrieval, request clarification, or general conversational AI.
 
     Logic:
-        - If a document source is selected/uploaded (source_selected or collection_names):
+        - If query matches explicit real-time tools (stock, weather, math, search, greeting) -> 'chitchat'.
+        - If a document source is selected/uploaded:
           Check question clarity. If vague/underspecified, route to 'clarify'.
           Otherwise, route to 'retrieval'.
         - If no document is selected/uploaded, route to 'chitchat' (conversational AI).
+        - Never clarify twice in a row (anti-loop guard).
     """
+    question = state.get("question") or state.get("query") or ""
+    q_lower = question.lower().strip()
+
+    # 1. Real-time tools & conversational queries always take priority
+    for pattern in TOOL_OR_CHITCHAT_PATTERNS:
+        if re.search(pattern, q_lower):
+            logging.info("→ classify_intent: matched tool/chitchat pattern '%s', routing to chitchat", pattern)
+            return {"intent": "chitchat"}
+
+    # 2. Check if a document source is active in this session
     has_source = bool(
         state.get("source_selected")
         or state.get("collection_names")
@@ -182,8 +277,14 @@ async def classify_intent(state: RAGState) -> Dict[str, Any]:
     )
 
     if has_source:
-        question = state.get("question", "")
         chat_history = state.get("chat_history", [])
+
+        # GUARD: Never clarify twice in a row — if the last AI response was
+        # a clarification, proceed directly to retrieval regardless of query clarity
+        if _was_last_response_clarification(chat_history):
+            logging.info("→ classify_intent: skipping clarification (last response was clarify)")
+            return {"intent": "retrieval"}
+
         is_clear, feedback = await check_query_clarity(question, chat_history)
 
         if not is_clear:
@@ -201,22 +302,75 @@ async def classify_intent(state: RAGState) -> Dict[str, Any]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Node: clarify_question
+# Node: clarify_question — Structured Clarification with Options
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+async def _generate_clarification_options(question: str) -> list:
+    """Generate 2-4 refined query suggestions for a vague question.
+
+    Uses a lightweight LLM call to generate contextual suggestions.
+    Falls back to template-based suggestions on failure.
+    """
+    try:
+        llm = _get_gemini_flash()
+        prompt = (
+            f'The user asked a vague question: "{question}"\n'
+            "Generate exactly 3 specific, refined versions of this question "
+            "that would work well for document search.\n"
+            "Return ONLY a JSON array of strings, nothing else.\n"
+            'Example: ["What is the perceptron learning algorithm?", '
+            '"How does backpropagation work?", '
+            '"What are the key experimental results?"]'
+        )
+        from src.utils.helpers import extract_text
+
+        result = await llm.ainvoke(prompt)
+        content = extract_text(getattr(result, "content", result))
+        # Extract JSON array from response (handle markdown fences)
+        if "```" in content:
+            content = content.split("```")[1].strip()
+            if content.startswith("json"):
+                content = content[4:].strip()
+        options = json.loads(content)
+        if isinstance(options, list) and len(options) >= 2:
+            return options[:4]
+    except Exception as e:
+        logging.debug("Clarification option generation fallback: %s", e)
+
+    # Template-based fallback
+    q = question.strip()
+    return [
+        f"What is {q}?",
+        f"Explain {q} in detail",
+        f"Summarize the key points about {q}",
+    ]
+
 
 @traceable(name="Clarify_Question")
 async def clarify_question(state: RAGState) -> Dict[str, Any]:
-    """Provide constructive feedback asking the user to clarify an underspecified question."""
+    """Provide interactive clarification with clickable options."""
+    question = state.get("question", "")
     feedback = state.get("clarification_feedback") or (
-        "Your question seems a bit vague or underspecified. Could you please clarify "
-        "what specific topic, concept, or section of the document you would like to know about? "
-        "Providing more detail will help retrieve the exact information from your uploaded material."
+        "Your question is a bit vague. Could you be more specific? "
+        "Here are some suggestions:"
     )
-    logging.info("→ clarify_question: providing feedback to user: %s", feedback[:60])
+
+    options = await _generate_clarification_options(question)
+
+    clarify_data = {
+        "type": "clarification",
+        "message": feedback,
+        "options": options,
+    }
+
+    clarify_json = json.dumps(clarify_data)
+    logging.info("→ clarify_question: providing %d options for: %s", len(options), question[:50])
     return {
-        "raw_answer": feedback,
-        "final_answer": feedback,
+        "raw_answer": clarify_json,
+        "final_answer": clarify_json,
         "citations": "",
+        "intent": "clarify",
     }
 
 
@@ -238,71 +392,47 @@ system_instruction = (
 )
 
 
-# 2. Initialize the prebuilt ReAct agent
-def _build_react_generation_llm(model_override: str = None):
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if groq_api_key:
-        from langchain_groq import ChatGroq
-        model_name = model_override or os.getenv("GROQ_AGENT_MODEL", "qwen/qwen3.8-27b")
-        return ChatGroq(
-            model=model_name,
-            temperature=0.2,
-            api_key=groq_api_key,
-            groq_api_key=groq_api_key,
-            max_tokens=1024,
-        )
-
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    if google_api_key:
-        return ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
-            temperature=0.2,
-            google_api_key=google_api_key,
-            max_output_tokens=1024,
-        )
-
-    raise ValueError("Neither GROQ_API_KEY nor GOOGLE_API_KEY is configured.")
-
-
-def _create_agent_graph(llm, tools, prompt_str):
-    """Instantiate prebuilt ReAct agent supporting both modern and legacy parameter names."""
-    try:
-        return create_react_agent(llm, tools=tools, prompt=prompt_str)
-    except TypeError:
-        return create_react_agent(llm, tools=tools, state_modifier=prompt_str)
-
-
-generation_llm = _build_react_generation_llm()
-react_agent_graph = _create_agent_graph(generation_llm, chitchat_tools, system_instruction)
-
-
+# 2. ReAct Chitchat Agent powered by chitchat_subgraph
 @traceable(name="ReAct_Chitchat_Agent")
-async def run_react_agent(state: RAGState, config: RunnableConfig) -> Dict[str, Any]:
-    """Execute prebuilt LangGraph ReAct agent with config and LangSmith naming."""
+async def run_react_agent(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
+    """Execute prebuilt tool-calling chitchat subgraph with config and LangSmith naming."""
+    from src.graph.chitchat_subgraph import chitchat_subgraph
+
     query_text = state.get("query") or state.get("question") or ""
     chat_history = state.get("chat_history", [])
 
-    messages = list(chat_history) if chat_history else []
+    # Filter out system messages so document prompts do not interfere with the agent tools
+    messages = []
+    if chat_history:
+        for m in chat_history:
+            if isinstance(m, (HumanMessage, AIMessage)):
+                messages.append(m)
+            elif isinstance(m, dict):
+                role = m.get("role") or m.get("type")
+                content = m.get("content") or ""
+                if role in ("human", "user"):
+                    messages.append(HumanMessage(content=content))
+                elif role in ("ai", "assistant"):
+                    messages.append(AIMessage(content=content))
     messages.append(HumanMessage(content=query_text))
 
-    inputs = {"messages": messages}
-
-    # Pass the config down to ensure streaming and tracing work
     if isinstance(config, dict):
         config["run_name"] = "ReAct_Chitchat_Agent"
 
     try:
-        response = await react_agent_graph.ainvoke(inputs, config)
-        messages = response.get("messages", [])
+        response = await chitchat_subgraph.ainvoke(
+            {"messages": messages, "iteration_count": 0, "tools_called": False},
+            config,
+        )
+        sub_messages = response.get("messages", [])
         final_answer = ""
-        if messages:
-            # Find the last message with actual content
-            for msg in reversed(messages):
+        if sub_messages:
+            for msg in reversed(sub_messages):
                 content = getattr(msg, "content", "")
                 if isinstance(content, list):
                     content = extract_message_text(content)
                 text = str(content).strip()
-                if text:
+                if text and not getattr(msg, "tool_calls", None):
                     final_answer = text
                     break
 
@@ -316,34 +446,65 @@ async def run_react_agent(state: RAGState, config: RunnableConfig) -> Dict[str, 
             "citations": "",
         }
     except Exception as e:
-        logging.exception("ReAct agent execution failed: %s", e)
-        # Resilient fallback with secondary model
-        try:
-            fallback_llm = _build_react_generation_llm(model_override="openai/gpt-oss-120b")
-            fallback_agent = _create_agent_graph(fallback_llm, chitchat_tools, system_instruction)
-            fb_res = await fallback_agent.ainvoke(inputs, config)
-            fb_messages = fb_res.get("messages", [])
-            fb_ans = ""
-            for msg in reversed(fb_messages):
-                content = getattr(msg, "content", "")
-                if isinstance(content, list):
-                    content = extract_message_text(content)
-                text = str(content).strip()
-                if text:
-                    fb_ans = text
-                    break
+        logging.exception("ReAct chitchat subgraph execution failed: %s", e)
 
-            if fb_ans:
+        # Resilient fallback 1: Direct stock tool execution if query requested stock or market quote
+        q_lower = query_text.lower()
+        if any(w in q_lower for w in ["stock", "share", "ticker", "quote", "price"]):
+            try:
+                words = [w for w in re.findall(r"\b[A-Za-z0-9]+\b", query_text) if w.lower() not in {"what", "is", "the", "stock", "price", "of", "share", "today", "for", "current", "check"}]
+                sym = words[-1] if words else "AAPL"
+                res = get_stock_price.invoke({"symbol": sym})
+                if isinstance(res, dict):
+                    if res.get("current_price") and res.get("current_price") not in ("Quote Unavailable", "Market Quote (Live)"):
+                        ans = f"The latest stock price for **{res.get('symbol', sym)}** is **{res.get('current_price')}** (Change: {res.get('change', 'N/A')}, Day High: {res.get('day_high', 'N/A')}, Day Low: {res.get('day_low', 'N/A')}, Exchange: {res.get('exchange', 'US')})."
+                    elif res.get("live_search_quotes"):
+                        ans = f"Here is the latest market information for **{res.get('symbol', sym)}**:\n\n{res['live_search_quotes']}"
+                    elif res.get("message"):
+                        ans = res["message"]
+                    else:
+                        ans = f"Could not retrieve stock data for {sym} at this moment."
+                    return {
+                        "generation": ans,
+                        "raw_answer": ans,
+                        "final_answer": ans,
+                        "citations": "",
+                    }
+            except Exception as direct_err:
+                logging.error("Direct stock tool fallback failed: %s", direct_err)
+
+        # Resilient fallback 1.5: Direct weather tool execution if query requested weather
+        if any(w in q_lower for w in ["weather", "wheater", "temperature", "forecast", "climate", "humidity", "rain"]):
+            try:
+                from src.graph.tools import get_weather
+                words = [w for w in re.findall(r"\b[A-Za-z0-9]+\b", query_text) if w.lower() not in {"what", "is", "the", "weather", "wheater", "temperature", "forecast", "in", "of", "for", "at", "today", "now", "current", "how", "like"}]
+                loc = " ".join(words) if words else "London"
+                weather_res = await get_weather.ainvoke({"location": loc})
+                if weather_res and isinstance(weather_res, str):
+                    return {
+                        "generation": weather_res,
+                        "raw_answer": weather_res,
+                        "final_answer": weather_res,
+                        "citations": "",
+                    }
+            except Exception as direct_w_err:
+                logging.error("Direct weather tool fallback failed: %s", direct_w_err)
+
+        # Resilient fallback 2: Direct web search tool execution
+        try:
+            from src.graph.tools import search_tool
+            res = search_tool.invoke({"query": query_text})
+            if res and isinstance(res, str) and len(res.strip()) > 10:
                 return {
-                    "generation": fb_ans,
-                    "raw_answer": fb_ans,
-                    "final_answer": fb_ans,
+                    "generation": res,
+                    "raw_answer": res,
+                    "final_answer": res,
                     "citations": "",
                 }
-        except Exception as fb_err:
-            logging.error("Fallback agent also failed: %s", fb_err)
+        except Exception as search_err:
+            logging.error("Direct web search fallback failed: %s", search_err)
 
-        err_msg = "I encountered an issue processing your request. Please try again."
+        err_msg = "I encountered an issue processing your request. Please try asking again."
         return {
             "generation": err_msg,
             "raw_answer": err_msg,
@@ -385,11 +546,7 @@ async def grade_documents(state: RAGState) -> Dict[str, Any]:
             for i, doc in enumerate(docs[:5])
         )
 
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-3.6-flash",
-            temperature=0,
-            max_output_tokens=10,
-        )
+        llm = _get_gemini_flash()
 
         result = await llm.ainvoke(
             "You are a relevance grader. Given a user question and document context, "
@@ -399,7 +556,7 @@ async def grade_documents(state: RAGState) -> Dict[str, Any]:
             "Reply with ONLY one word: 'yes' if relevant, 'no' if irrelevant."
         )
 
-        answer = result.content.strip().lower()
+        answer = extract_text(result.content if hasattr(result, "content") else result).strip().lower()
         grade = "relevant" if "yes" in answer else "irrelevant"
         logging.info("→ grade_documents: %s (raw=%r, %d chunks evaluated)", grade, answer, min(len(docs), 5))
         return {"grade": grade}

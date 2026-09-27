@@ -8,6 +8,7 @@ load_dotenv()
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -16,6 +17,7 @@ from langgraph.prebuilt import ToolNode
 from src.exception import CustomException
 from src.graph.chitchat_tools import chitchat_tools
 from src.logger import logging
+from src.utils.helpers import extract_text
 from src.utils.rate_limiter import llm_rate_limiter
 
 
@@ -27,37 +29,108 @@ class ChitChatState(TypedDict):
 
 
 CHITCHAT_SYSTEM_PROMPT = (
-    "You are DocuVortex, an intelligent, helpful, and friendly AI assistant. "
-    "No document has been selected for this query. "
-    "You have access to tools:\n"
-    "- 'duckduckgo_search' for searching recent news, facts, and live web information.\n"
-    "- 'calculator' for doing math computations (operations: add, sub, mul, div).\n"
-    "- 'get_stock_price' for retrieving the latest stock market prices and quotes for ticker symbols (e.g., AAPL, TSLA, MSFT).\n\n"
-    "Use these tools whenever relevant to answer the user's questions accurately. "
-    "If no tool is required, answer conversationally and helpfully from your knowledge without mentioning documents."
+    "You are DocuVortex, an intelligent, helpful, and friendly AI assistant.\n\n"
+    "STRICT TOOL SELECTION RULES:\n"
+    "1. Stock Prices / Quotes / Crypto: When asked about the stock price, share price, quote, or ticker of ANY company or asset (e.g., Tesla, Apple, Mahindra, Axis Bank, Tata, Reliance, Bitcoin, Ethereum): "
+    "YOU MUST CALL 'get_stock_price'. NEVER call 'search_tool' for stock prices.\n"
+    "2. Weather / Temperature / Climate: When asked about the weather, temperature, humidity, rain, or climate for any city or location (e.g., Mumbai, New York, London, Delhi): "
+    "YOU MUST CALL 'get_weather'. NEVER call 'search_tool' for weather.\n"
+    "3. Math / Calculations: When asked to calculate or evaluate arithmetic (e.g., 230*460): "
+    "YOU MUST CALL 'calculator'. NEVER call 'search_tool' for math.\n"
+    "4. Academic Papers: When asked for scientific preprints or research papers, call 'search_arxiv'.\n"
+    "5. General Web Search: Call 'search_tool' ONLY for general news, public facts, or current events that are NOT stock quotes, weather, or math.\n\n"
+    "CRITICAL CONVERSATIONAL RULE:\n"
+    "Answer ONLY the user's latest question directly. DO NOT mention, repeat, or summarize past questions, previous tool results, or earlier conversation topics. Keep your answers focused, direct, clean, and helpful."
 )
 
 RESPONSE_STRUCTURE_PROMPT = (
-    "You are DocuVortex, an intelligent AI assistant. "
-    "Review the tool results and user question in the conversation. "
-    "Synthesize the tool findings into a clean, well-structured, clear, and comprehensive answer for the user. "
-    "Format with headings, bullet points, or bold text where appropriate. Do not output raw JSON or internal tool details."
+    "You are DocuVortex, an intelligent, helpful AI assistant.\n"
+    "Your task is to provide a clean, direct, and well-structured answer to ONLY the user's latest question using the tool results.\n\n"
+    "CRITICAL RULES:\n"
+    "1. Answer ONLY what the user asked in their current question. Do NOT discuss, summarize, or bring up past conversation topics or prior queries.\n"
+    "2. If the user asked about weather, answer ONLY about weather.\n"
+    "3. If the user asked about stock price, answer ONLY about that stock price.\n"
+    "4. Present the information clearly and attractively using bullet points, bold key figures, and clean markdown.\n"
+    "5. Do NOT mention internal tool names (like get_weather or get_stock_price) or raw JSON."
 )
 
 
-def _build_agent_groq_llm(model_override: str = None) -> ChatGroq:
-    """Build dedicated Groq LLM with high precision for tool calling."""
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        raise ValueError("GROQ_API_KEY environment variable is not set.")
+_GROQ_FALLBACK_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-safeguard-20b",
+    "qwen/qwen3.8-27b",
+]
 
-    model_name = model_override or os.getenv("GROQ_AGENT_MODEL", "llama-3.3-70b-versatile")
-    return ChatGroq(
-        model=model_name,
-        temperature=0.2,
-        groq_api_key=groq_api_key,
-        max_tokens=1024,
-    )
+_GEMINI_FALLBACK_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+]
+
+
+def _build_chitchat_tool_llm():
+    """Build primary tool-calling LLM with resilient multi-model and cross-provider fallbacks."""
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+
+    groq_model_pref = os.getenv("GROQ_AGENT_MODEL", "openai/gpt-oss-20b")
+    ordered_groq = [groq_model_pref] + [m for m in _GROQ_FALLBACK_MODELS if m != groq_model_pref]
+
+    candidates = []
+    # Groq models
+    if groq_api_key:
+        for m in ordered_groq:
+            candidates.append(
+                ChatGroq(model=m, temperature=0.2, groq_api_key=groq_api_key, max_tokens=1024)
+            )
+    # Gemini models
+    if google_api_key and not google_api_key.startswith("AQ."):
+        for m in _GEMINI_FALLBACK_MODELS:
+            candidates.append(
+                ChatGoogleGenerativeAI(model=m, temperature=0.2, google_api_key=google_api_key, max_output_tokens=1024)
+            )
+
+    if not candidates:
+        raise ValueError("Neither GROQ_API_KEY nor GOOGLE_API_KEY is configured.")
+
+    primary = candidates[0].bind_tools(chitchat_tools)
+    if len(candidates) > 1:
+        fallbacks = [c.bind_tools(chitchat_tools) for c in candidates[1:]]
+        return primary.with_fallbacks(fallbacks)
+    return primary
+
+
+def _build_chitchat_synthesis_llm():
+    """Build synthesis LLM with multi-model fallbacks for structured answer formatting."""
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+
+    groq_model_pref = os.getenv("GROQ_AGENT_MODEL", "openai/gpt-oss-20b")
+    ordered_groq = [groq_model_pref] + [m for m in _GROQ_FALLBACK_MODELS if m != groq_model_pref]
+
+    candidates = []
+    if groq_api_key:
+        for m in ordered_groq:
+            candidates.append(
+                ChatGroq(model=m, temperature=0.2, groq_api_key=groq_api_key, max_tokens=1024)
+            )
+    if google_api_key and not google_api_key.startswith("AQ."):
+        for m in _GEMINI_FALLBACK_MODELS:
+            candidates.append(
+                ChatGoogleGenerativeAI(model=m, temperature=0.2, google_api_key=google_api_key, max_output_tokens=1024)
+            )
+
+    if not candidates:
+        raise ValueError("Neither GROQ_API_KEY nor GOOGLE_API_KEY is configured.")
+
+    primary = candidates[0]
+    if len(candidates) > 1:
+        return primary.with_fallbacks(candidates[1:])
+    return primary
 
 
 async def chitchat_agent_node(state: ChitChatState, config: RunnableConfig = None) -> Dict[str, Any]:
@@ -71,17 +144,9 @@ async def chitchat_agent_node(state: ChitChatState, config: RunnableConfig = Non
         iteration = state.get("iteration_count", 0) + 1
         tools_called = state.get("tools_called", False)
 
-        try:
-            llm = _build_agent_groq_llm()
-            llm_with_tools = llm.bind_tools(chitchat_tools)
-            await llm_rate_limiter.aacquire()
-            response = await llm_with_tools.ainvoke(messages, config)
-        except Exception as groq_err:
-            logging.warning("chitchat_agent primary model failed: %s. Trying llama-3.1-8b-instant.", groq_err)
-            fallback_llm = _build_agent_groq_llm(model_override="llama-3.1-8b-instant")
-            llm_with_tools = fallback_llm.bind_tools(chitchat_tools)
-            await llm_rate_limiter.aacquire()
-            response = await llm_with_tools.ainvoke(messages, config)
+        llm_with_tools = _build_chitchat_tool_llm()
+        await llm_rate_limiter.aacquire()
+        response = await llm_with_tools.ainvoke(messages, config)
 
         tool_calls = getattr(response, "tool_calls", None)
         if tool_calls:
@@ -102,35 +167,45 @@ async def chitchat_agent_node(state: ChitChatState, config: RunnableConfig = Non
 
 
 async def structure_answer_node(state: ChitChatState, config: RunnableConfig = None) -> Dict[str, Any]:
-    """Pass conversation history and tool outputs to LLM to create a polished, structured answer."""
+    """Pass latest turn tool outputs and user query to LLM to create a polished, focused answer."""
     messages = list(state.get("messages", []))
     try:
+        # Isolate the current turn: find the last HumanMessage so past turns are NEVER summarized
+        last_human_idx = -1
+        for i, m in enumerate(messages):
+            if isinstance(m, HumanMessage):
+                last_human_idx = i
+
+        if last_human_idx != -1:
+            current_turn_messages = [m for m in messages[last_human_idx:] if not isinstance(m, SystemMessage)]
+            latest_query = messages[last_human_idx].content
+        else:
+            current_turn_messages = [m for m in messages if not isinstance(m, SystemMessage)]
+            latest_query = ""
+
         # System prompt MUST be at index 0 for Groq/OpenAI APIs
         synthesis_system = SystemMessage(content=RESPONSE_STRUCTURE_PROMPT)
-        non_system_messages = [m for m in messages if not isinstance(m, SystemMessage)]
         prompt_message = HumanMessage(
-            content="Based on the above tool results and conversation, please synthesize the findings into a clear, comprehensive, and well-structured answer."
+            content=f"Please synthesize the tool results into a clean, direct, and well-structured answer to ONLY this question: '{latest_query}'. Do NOT include, mention, or summarize any past conversation topics or prior queries."
         )
-        synthesis_messages = [synthesis_system] + non_system_messages + [prompt_message]
+        synthesis_messages = [synthesis_system] + current_turn_messages + [prompt_message]
 
-        try:
-            llm = _build_agent_groq_llm()
-            await llm_rate_limiter.aacquire()
-            final_response = await llm.ainvoke(synthesis_messages, config)
-        except Exception as groq_err:
-            logging.warning("structure_answer primary model failed: %s. Falling back to llama-3.1-8b-instant.", groq_err)
-            fallback_llm = _build_agent_groq_llm(model_override="llama-3.1-8b-instant")
-            await llm_rate_limiter.aacquire()
-            final_response = await fallback_llm.ainvoke(synthesis_messages, config)
+        llm = _build_chitchat_synthesis_llm()
+        await llm_rate_limiter.aacquire()
+        final_response = await llm.ainvoke(synthesis_messages, config)
+        clean_text = extract_text(final_response.content if hasattr(final_response, "content") else final_response)
+        final_response.content = clean_text
 
         logging.info("structure_answer_node: generated structured response (%d chars)", 
-                     len(str(final_response.content)))
+                     len(clean_text))
         return {"messages": [final_response]}
     except Exception as e:
         logging.exception("structure_answer_node encountered error: %s", e)
-        # Resilient fallback: return the last non-empty assistant message if synthesis fails
-        for m in reversed(messages):
+        # Resilient fallback: return the last non-empty assistant message in current turn if synthesis fails
+        target_messages = current_turn_messages if 'current_turn_messages' in locals() and current_turn_messages else messages
+        for m in reversed(target_messages):
             if getattr(m, "content", None) and not getattr(m, "tool_calls", None):
+                m.content = extract_text(m.content)
                 return {"messages": [m]}
         raise CustomException(e, sys)
 

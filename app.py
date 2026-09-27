@@ -52,6 +52,9 @@ def _get_checkpointer_conn_uri() -> str:
         if "sslmode=" not in db_uri and ("supabase.com" in db_uri or "supabase.co" in db_uri):
             sep = "&" if "?" in db_uri else "?"
             db_uri = f"{db_uri}{sep}sslmode=require"
+        if "keepalives=" not in db_uri:
+            sep = "&" if "?" in db_uri else "?"
+            db_uri = f"{db_uri}{sep}keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
         return db_uri
 
     with open("config/config.yaml") as f:
@@ -120,15 +123,34 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(_run_data_retention_cleanup())
 
     try:
-        async with AsyncConnectionPool(conninfo=db_uri, max_size=20, kwargs={"autocommit": True}) as pool:
+        async with AsyncConnectionPool(
+            conninfo=db_uri,
+            min_size=0,
+            max_size=5,
+            max_idle=60.0,
+            max_lifetime=300.0,
+            reconnect_timeout=15.0,
+            check=AsyncConnectionPool.check_connection,
+            kwargs={
+                "autocommit": True,
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
+            },
+        ) as pool:
             checkpointer = AsyncPostgresSaver(pool)
             await checkpointer.setup()
             app.state.checkpointer = checkpointer
-            logging.info("✅ Supabase LangGraph checkpointer (port 5432) ready")
+            from src.graph.builder import build_rag_graph
+            app.state.rag_graph = build_rag_graph(checkpointer=checkpointer)
+            logging.info("✅ Supabase LangGraph checkpointer (port 5432) ready & attached to StateGraph")
             yield
     except Exception as e:
         logging.error("❌ Failed to initialize AsyncPostgresSaver checkpointer pool: %s", e)
         app.state.checkpointer = None
+        from src.graph.builder import build_rag_graph
+        app.state.rag_graph = build_rag_graph(checkpointer=None)
         yield
     finally:
         cleanup_task.cancel()

@@ -161,12 +161,7 @@ class Retriever:
             raise CustomException(e, sys)
 
     async def _resolve_target_collections(self) -> List[str]:
-        client = AsyncQdrantClient(url=self.vs.qdrant_url)
-        try:
-            colls = await client.get_collections()
-            available = [c.name for c in colls.collections]
-        finally:
-            await client.close()
+        available = await self.vs.alist_collections()
 
         if not available:
             raise KnowledgeBaseEmptyError(
@@ -192,22 +187,39 @@ class Retriever:
 
         for variant in query_variants:
             if self.search_type == "mmr":
-                sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
-                score_lookup = {
-                    doc.page_content: self._normalize_similarity_score(score)
-                    for doc, score in sim_res
-                }
-                mmr_docs = await db.amax_marginal_relevance_search(
-                    variant,
-                    k=self.k,
-                    fetch_k=self.fetch_k,
-                    lambda_mult=self.lambda_mult,
-                )
+                if self.vs.is_remote:
+                    sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                    score_lookup = {
+                        doc.page_content: self._normalize_similarity_score(score)
+                        for doc, score in sim_res
+                    }
+                    mmr_docs = await db.amax_marginal_relevance_search(
+                        variant,
+                        k=self.k,
+                        fetch_k=self.fetch_k,
+                        lambda_mult=self.lambda_mult,
+                    )
+                else:
+                    sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
+                    score_lookup = {
+                        doc.page_content: self._normalize_similarity_score(score)
+                        for doc, score in sim_res
+                    }
+                    mmr_docs = await asyncio.to_thread(
+                        db.max_marginal_relevance_search,
+                        variant,
+                        k=self.k,
+                        fetch_k=self.fetch_k,
+                        lambda_mult=self.lambda_mult,
+                    )
                 docs.extend(
                     (doc, score_lookup.get(doc.page_content, 0.0)) for doc in mmr_docs
                 )
             else:
-                sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                if self.vs.is_remote:
+                    sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                else:
+                    sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
                 docs.extend(
                     (doc, self._normalize_similarity_score(score))
                     for doc, score in sim_res
@@ -216,14 +228,20 @@ class Retriever:
         for doc, _ in docs:
             doc.metadata.setdefault("collection_name", collection_name)
 
-        return docs
+        # Purge tiny single-word noise chunks (e.g. isolated table cells like 'to', 'chart', 'Quiz:')
+        meaningful_docs = [
+            (doc, score) for doc, score in docs
+            if len(doc.page_content.strip()) >= 25
+        ]
+        return meaningful_docs or docs
 
     def _get_cached_db(self, collection_name: str) -> QdrantVectorStore:
         if collection_name not in _qdrant_db_cache:
-            _qdrant_db_cache[collection_name] = QdrantVectorStore.from_existing_collection(
-                embedding=self.vs.embedding_model,
+            client = self.vs._client()
+            _qdrant_db_cache[collection_name] = QdrantVectorStore(
+                client=client,
                 collection_name=collection_name,
-                url=self.vs.qdrant_url,
+                embedding=self.vs.embedding_model,
             )
         return _qdrant_db_cache[collection_name]
 
@@ -240,6 +258,11 @@ class Retriever:
         deduped = {}
 
         for doc, semantic_score in docs:
+            content_clean = doc.page_content.strip()
+            # Discard short fragments that cannot provide meaningful context to the LLM
+            if len(content_clean) < 25:
+                continue
+
             key = (
                 doc.page_content,
                 str(doc.metadata.get("source", "")),
@@ -275,8 +298,36 @@ class Retriever:
             if self._looks_like_structured_answer(query_terms, text_lower):
                 bonus += 3
 
+            # Exact matching for specific topic keywords: gantt, chart, cost, estimate, etc.
+            specific_topics = {"gantt", "chart", "cost", "estimate", "budget", "schedule", "timeline", "milestone", "activities", "duration"}
+            topic_matches = query_terms & specific_topics & content_terms
+            if topic_matches:
+                bonus += 14 * len(topic_matches)
+
+            # Specific proper names or non-stopword tokens in query (like "arpit", "dezlor")
+            query_entity_tokens = {t for t in meaningful_query_terms if t not in specific_topics and len(t) > 3}
+            entity_matches = query_entity_tokens & content_terms
+            if entity_matches:
+                bonus += 12 * len(entity_matches)
+
+            # Author and creator front-matter boosts
+            is_author_query = bool(query_terms & {"author", "writer", "written", "creator", "submitted", "prepared", "student", "intern", "who"})
+            if is_author_query:
+                if any(m in text_lower for m in ["prepared by", "submitted by", "author", "student name", "guided by", "written by", "roll no", "enrollment"]):
+                    bonus += 10
+                if doc.metadata.get("page") in (0, 1) or doc.metadata.get("doc_index", 99) <= 1:
+                    bonus += 6
+
+            # Project name and title front-matter boost
+            is_title_query = bool(query_terms & {"project", "title", "topic", "name"})
+            if is_title_query:
+                if any(m in text_lower for m in ["project name", "project title", "title of the project", "author"]):
+                    bonus += 12
+                if doc.metadata.get("page") in (0, 1) or doc.metadata.get("doc_index", 99) <= 1:
+                    bonus += 6
+
             # Only reward heading / locator bonuses if there is actual topic relevance
-            has_relevance = term_overlap > 0 or semantic_score >= 0.45
+            has_relevance = term_overlap > 0 or semantic_score >= 0.45 or bonus > 0
             locator_bonus = 1 if (has_relevance and doc.metadata.get("page") is not None) else 0
             heading_bonus = 2 if (has_relevance and self._has_heading_signal(text_lower)) else 0
             density_bonus = min(int(overlap_ratio * 10), 6) if term_overlap > 0 else 0
@@ -344,6 +395,25 @@ class Retriever:
             variants.append(" ".join(significant[:8]))
         if len(tokens) > 5:
             variants.append(" ".join(tokens[:5]))
+
+        # Domain-aware query expansions
+        token_set = set(tokens)
+        if token_set & {"author", "writer", "written", "creator", "submitted", "prepared", "student", "who"}:
+            variants.append("submitted by prepared by author student name")
+            variants.append("prepared by")
+            variants.append("submitted by")
+        if token_set & {"project", "title", "name", "topic"}:
+            variants.append("project title overview abstract report")
+            variants.append("project name author")
+        if token_set & {"gantt", "chart", "schedule", "timeline"}:
+            variants.append("gantt chart project schedule timeline activities weeks")
+        if token_set & {"cost", "estimate", "budget", "price"}:
+            variants.append("cost estimate project budget expenditure total cost")
+
+        # Proper names / distinct entities in query
+        proper_names = [w.lower() for w in re.findall(r"\b[A-Z][a-z0-9]+\b", query) if w.lower() not in STOP_WORDS]
+        if proper_names:
+            variants.append(f"{' '.join(proper_names)} project name author")
 
         deduped = [
             variant for index, variant in enumerate(variants)

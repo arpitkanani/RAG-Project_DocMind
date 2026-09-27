@@ -37,15 +37,17 @@ class TextSplitter:
         """Split document objects into chunks."""
         try:
             logging.info("Splitting %s documents", len(docs))
-            chunks = self.splitter.split_documents(docs)
+            raw_chunks = self.splitter.split_documents(docs)
+            chunks = [c for c in raw_chunks if len(c.page_content.strip()) >= 25]
             avg_size = (
                 sum(len(chunk.page_content) for chunk in chunks) // len(chunks)
                 if chunks
                 else 0
             )
             logging.info(
-                "Split complete | chunks: %s | avg_size: %s chars",
+                "Split complete | chunks: %s (discarded %d short noise chunks) | avg_size: %s chars",
                 len(chunks),
+                len(raw_chunks) - len(chunks),
                 avg_size,
             )
             return chunks
@@ -60,6 +62,8 @@ class TextSplitter:
             chunk_count = 0
             for doc in docs:
                 for chunk in self.splitter.split_documents([doc]):
+                    if len(chunk.page_content.strip()) < 25:
+                        continue
                     chunk_count += 1
                     yield chunk
             logging.info("TextSplitter completed | yielded %s chunks", chunk_count)

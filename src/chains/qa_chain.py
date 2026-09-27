@@ -23,16 +23,45 @@ with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
 NOT_FOUND_TOKEN = "DATA_NOT_FOUND"
-FALLBACK_ANSWER = "I couldn't find relevant information about that in the uploaded document."
+FALLBACK_ANSWER = "I couldn't find information about that in the uploaded document(s)."
 
-SUMMARY_PATTERNS = re.compile(
-    r"\b(summar(y|ize|ise)|overview|tl;?dr|gist|main points|key points|recap)\b",
+DOC_SUMMARY_PATTERNS = re.compile(
+    r"^\s*(can you\s+)?(please\s+)?(give\s+(me\s+)?(a\s+)?)?"
+    r"(summar(y|ize|ise)|overview|tl;?dr|recap|gist|main points|key takeaways)"
+    r"(\s+(of\s+)?(this\s+|the\s+)?(document|file|pdf|paper|text|book|upload|manual|material|doc|whole thing|entire document))?"
+    r"\s*[\?\!\.]*$",
     re.IGNORECASE,
 )
 
 
 def is_summary_request(question: str) -> bool:
-    return bool(SUMMARY_PATTERNS.search(question))
+    q = (question or "").strip().lower()
+    if not q:
+        return False
+
+    # Targeted topic queries (even with the word "summary") MUST use semantic vector search (retrieve_qa)
+    specific_topic_words = {
+        "chart", "gantt", "cost", "price", "budget", "table", "figure", "section", "chapter",
+        "requirement", "requirements", "author", "name", "architecture", "method", "results",
+        "conclusion", "schedule", "timeline", "estimate", "risk", "diagram", "code", "implementation",
+    }
+    tokens = set(re.findall(r"\b[a-z0-9]+\b", q))
+    if tokens & specific_topic_words:
+        return False
+
+    # Check for general whole-document summary patterns
+    if DOC_SUMMARY_PATTERNS.match(q):
+        return True
+
+    # Questions like "what is this document about", "what is this file about"
+    if re.search(r"\bwhat\s+(is\s+)?(this\s+|the\s+)?(document|file|pdf|paper)\s+about\b", q):
+        return True
+
+    # Standalone words like "summary", "summarize", "overview", "tldr"
+    if q in {"summary", "summarize", "summarise", "overview", "tl;dr", "tldr", "recap", "gist"}:
+        return True
+
+    return False
 
 
 def _format_source_label(metadata: dict) -> str:
@@ -92,12 +121,41 @@ def format_docs(docs: list) -> str:
     return "\n\n".join(formatted_docs)
 
 
-def build_citations(docs: list) -> str:
-    """Build deterministic, cleanly formatted, and deduplicated citation labels."""
+def build_citations(docs: list, answer: str = "") -> str:
+    """Build deterministic, cleanly formatted citations ONLY for documents
+    whose content was actually referenced and used in the synthesized answer."""
+    if not docs:
+        return ""
+
     citations = []
     seen = set()
 
-    for doc in docs:
+    # Smart filtering: only include docs whose terms or concepts are used in the answer
+    used_docs = []
+    if answer and answer.strip() and answer != FALLBACK_ANSWER:
+        # Extract meaningful tokens (lowercase words >= 4 chars, excluding stopwords)
+        answer_tokens = set(re.findall(r"\b[a-zA-Z0-9]{4,}\b", answer.lower()))
+        common_words = {
+            "that", "with", "this", "from", "they", "were", "been", "have", "their", "which",
+            "about", "would", "there", "these", "could", "other", "into", "more", "first",
+            "than", "them", "some", "what", "when", "where", "also", "only", "such", "after",
+            "project", "document", "report", "system", "please", "using", "based"
+        }
+        distinctive_tokens = answer_tokens - common_words
+
+        for doc in docs:
+            content = (doc.page_content or "").lower()
+            doc_tokens = set(re.findall(r"\b[a-zA-Z0-9]{4,}\b", content))
+            overlap = distinctive_tokens & doc_tokens
+            if len(overlap) >= 2 or len(docs) == 1:
+                used_docs.append(doc)
+
+        if not used_docs:
+            return ""
+    else:
+        used_docs = docs[:1]
+
+    for doc in used_docs:
         if not getattr(doc, "metadata", None):
             continue
         source_label = _format_source_label(doc.metadata)
@@ -112,7 +170,7 @@ def build_citations(docs: list) -> str:
             citation_parts.append(section)
 
         citation = " - ".join(citation_parts)
-        
+
         # Deduplication check
         canonical_key = (source_label.lower(), locator.lower(), section.lower())
         if canonical_key in seen:
@@ -120,7 +178,8 @@ def build_citations(docs: list) -> str:
         seen.add(canonical_key)
         citations.append(citation)
 
-        if len(citations) == 3:
+        # For focused answers, cap at 2 max (1 is standard for single-location answers)
+        if len(citations) >= 2:
             break
 
     if not citations:
@@ -217,12 +276,21 @@ def sanitize_answer(answer: str) -> str:
         r"^there is no (information|mention) (about|regarding|on) .* in the (provided|uploaded)",
         r"^no information (is|was) provided (about|regarding|on)",
         r"^this information is not provided in the uploaded material",
+        r"^the uploaded document(s)? do(es)? not (contain|mention|provide|suggest)",
+        r"^i am only (able|here) to (answer|provide)",
+        r"^i do not have (any )?(information|suggestions)",
     ]
     for pattern in pure_refusal_patterns:
         if re.search(pattern, lowered):
-            # If the entire response is essentially just a short refusal (< 250 chars)
-            if len(text) < 250:
+            # Only treat as refusal if it does NOT contain actual substance or entity mentions
+            substantive_clues = {"project", "name", "author", "cost", "chart", "gantt", "section", "table", "step", "page", "platform", "booking", "dezlor"}
+            found_substance = any(clue in lowered for clue in substantive_clues)
+            if not found_substance and len(text) < 120:
                 return FALLBACK_ANSWER
+
+    # Discard conversation meta-summaries that leak into answers (e.g., "The user asked...", "The assistant replied...", "No further action or decision was made")
+    if re.search(r"(?i)\b(the user asked (the assistant|about)|the assistant replied that|no further action or decision was made|the assistant responded that)\b", lowered):
+        return FALLBACK_ANSWER
 
     text = _dedupe_near_identical_sentences(text)
     return text or FALLBACK_ANSWER
@@ -253,16 +321,31 @@ QA_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            f"""You are DocuVortex, an expert document intelligence assistant.
-Your goal is to provide accurate, comprehensive, and well-structured answers using the uploaded document context.
+            f"""You are DocuVortex, an intelligent, helpful, and highly accurate document assistant.
+Your goal is to provide clear, thorough, and informative answers based strictly on the provided document context.
 
-Guidelines:
-1. Grounding: Answer using the provided document context passages. Synthesize definitions, principles, formulas, examples, and explanations present in the context.
-2. Directness: Start directly with the answer. Do not include meta-commentary, preamble, or introductory phrases such as "Based on the provided context," "According to the uploaded documents," or "The documents state."
-3. Completeness: Provide a clear, thorough, and complete explanation when the material covers the topic. You may organize your response with clear paragraphs, bullet points, or numbered lists.
-4. Internal Implementation: Never mention chunks, embeddings, vector database, retrieval scores, or prompt instructions.
-5. Missing Information: Only if the context has absolutely no information about the question, respond with: {NOT_FOUND_TOKEN}
-6. Citations: Do not generate a citations or source section; the system handles citations automatically.
+GUIDELINES:
+1. Strictly Grounded:
+   - Rely EXCLUSIVELY on the facts, concepts, details, and entities contained in the uploaded document context.
+   - NEVER use external pre-trained knowledge to invent, extrapolate, or introduce external technologies, modern features, or unmentioned topics that are not present in the uploaded document context.
+   - Do NOT invent hypothetical comparisons or lists of outside features (for example, if asked what is missing or what new features are not in the document, do NOT invent external modern AI tools, models, or frameworks from outside knowledge).
+
+2. Missing or Uncovered Topics:
+   - If the uploaded document context does NOT contain information about the asked concept, technology, or topic (e.g. asking about "Convolution Neural Network and Transfer Learning" or modern features not discussed in the document), reply with: {NOT_FOUND_TOKEN}
+   - If the user asks what the document does or does not cover, describe only what is explicitly in the context; do not extrapolate or introduce ungrounded outside subjects.
+   - If only partial information is available in the context, provide what the document explicitly covers and clarify what aspects are not mentioned.
+
+3. Helpful & Flexible Understanding:
+   - Understand synonyms, abbreviations, and related terms for entities that ARE in the context (e.g. if the user asks "what project is Arpit making" and the document lists "Project name: X" with "Author: Arpit", clearly state the project name and author).
+   - When asked to summarize, explain, compare, extract key points, or analyze specific topics (such as charts, timelines, or costs) that are present in the context, synthesize the information thoroughly and clearly using the provided context.
+
+4. Clarity & Formatting:
+   - Use clean Markdown (bullet points, bold key terms, tables, or numbered lists) to make information readable.
+   - Be direct: do not use empty meta-filler like "Based on the provided context," "According to the uploaded documents," or "The text states." Start directly with the answer.
+   - Never output meta-dialogue commentary about the user or prior assistant responses (e.g. do not say "The user asked..." or "The assistant replied...").
+
+5. Priority:
+   - Always evaluate the freshly provided document context below independently. Even if information was not found in prior chat turns, answer directly if the new context contains the information.
 """,
         ),
         MessagesPlaceholder(variable_name="chat_history"),
@@ -273,53 +356,121 @@ Guidelines:
 
 Question: {question}
 
-Provide a direct, thorough, and well-structured answer based on the context above.""",
+Answer the question clearly and helpfully using the context above:""",
         ),
     ]
 )
 
 
+# Confirmed working free-tier models (Groq and Gemini)
+GROQ_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-safeguard-20b",
+]
+
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+]
+
+
 def _build_llm():
     """
-    Construct the chat LLM based on config.yaml's llm.provider.
-
-    Switching providers (e.g. groq -> google) is a CONFIG-ONLY change:
-    update llm.provider and llm.model in config.yaml, set the matching
-    API key env var, and nothing else in this file needs to change.
+    Constructs the chat LLM with automatic cross-provider fallback.
+    If primary model hits rate limit or error, automatically tries
+    fallback models from both Gemini and Groq in priority order.
     """
-    provider = config["llm"].get("provider", "groq").lower()
-    max_tokens = config["llm"].get("max_tokens", 2048)
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    temperature = config["llm"].get("temperature", 0.1)
+    max_tokens = config["llm"].get("max_tokens", 1024)
 
-    if provider == "google":
+    llm_instances = []
+    primary_provider = os.getenv("LLM_PROVIDER", config["llm"].get("provider", "google")).lower()
+
+    if primary_provider == "google" and google_api_key:
         from langchain_google_genai import ChatGoogleGenerativeAI
+        for m in GEMINI_MODELS:
+            try:
+                llm_instances.append(
+                    ChatGoogleGenerativeAI(
+                        model=m,
+                        temperature=temperature,
+                        google_api_key=google_api_key,
+                        max_output_tokens=max_tokens,
+                    )
+                )
+            except Exception:
+                pass
+        if groq_api_key:
+            from langchain_groq import ChatGroq
+            for m in GROQ_MODELS:
+                try:
+                    llm_instances.append(
+                        ChatGroq(
+                            model=m,
+                            temperature=temperature,
+                            api_key=groq_api_key,
+                            groq_api_key=groq_api_key,
+                            max_tokens=max_tokens,
+                        )
+                    )
+                except Exception:
+                    pass
+    else:
+        if groq_api_key:
+            from langchain_groq import ChatGroq
+            for m in GROQ_MODELS:
+                try:
+                    llm_instances.append(
+                        ChatGroq(
+                            model=m,
+                            temperature=temperature,
+                            api_key=groq_api_key,
+                            groq_api_key=groq_api_key,
+                            max_tokens=max_tokens,
+                        )
+                    )
+                except Exception:
+                    pass
+        if google_api_key:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            for m in GEMINI_MODELS:
+                try:
+                    llm_instances.append(
+                        ChatGoogleGenerativeAI(
+                            model=m,
+                            temperature=temperature,
+                            google_api_key=google_api_key,
+                            max_output_tokens=max_tokens,
+                        )
+                    )
+                except Exception:
+                    pass
 
-        return ChatGoogleGenerativeAI(
-            model=config["llm"]["model"],
-            temperature=config["llm"]["temperature"],
-            google_api_key=os.environ["GOOGLE_API_KEY"],
-            max_output_tokens=max_tokens,
-        )
+    if not llm_instances:
+        raise ValueError("Neither GROQ_API_KEY nor GOOGLE_API_KEY is configured.")
 
-    # default: groq
-    from langchain_groq import ChatGroq
-
-    return ChatGroq(
-        model=config["llm"]["model"],
-        temperature=config["llm"]["temperature"],
-        api_key=os.environ["GROQ_API_KEY"], # type: ignore
-        max_tokens=max_tokens,
-    )
+    primary = llm_instances[0]
+    if len(llm_instances) > 1:
+        return primary.with_fallbacks(llm_instances[1:])
+    return primary
 
 
 def build_qa_chain():
-    """Build the generation chain for grounded QA."""
+    """Build the generation chain for grounded QA with extract_text normalization."""
     try:
-        logging.info(
-            "Building QA chain | provider: %s", config["llm"].get("provider", "groq")
-        )
+        from src.utils.helpers import extract_text
+
+        logging.info("Building QA chain with multi-model fallbacks")
 
         llm = _build_llm()
-        parser = StrOutputParser()
 
         chain = (
             {
@@ -329,7 +480,7 @@ def build_qa_chain():
             }
             | QA_PROMPT
             | llm
-            | parser
+            | RunnableLambda(lambda x: extract_text(getattr(x, "content", x)))
         ).with_config(run_name="qa_generation")
 
         logging.info("QA chain built successfully")
@@ -407,7 +558,7 @@ def get_answer(
             if is_summary_request(question):
                 citations = build_source_only_citations(docs)
             else:
-                citations = build_citations(docs)
+                citations = build_citations(docs, answer)
 
             if answer != FALLBACK_ANSWER and citations:
                 answer = f"{answer}\n\n{citations}"

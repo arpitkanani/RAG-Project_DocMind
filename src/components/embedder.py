@@ -24,7 +24,7 @@ with open("config/config.yaml") as f:
 
 class Embedder:
     """
-    Manages the embedding model for DocMind, running LOCALLY via
+    Manages the embedding model for DocuVortex, running LOCALLY via
     sentence-transformers (BAAI/bge-small-en-v1.5 or whatever
     config.yaml's embedding.model specifies).
 

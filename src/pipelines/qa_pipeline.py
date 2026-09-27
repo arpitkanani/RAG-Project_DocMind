@@ -155,6 +155,25 @@ class QAPipeline:
                 yield f"data: {json.dumps({'type': 'done', 'session_id': self.session_id, 'collection_scope': self.collection_names or 'all', 'final_answer': FALLBACK_ANSWER})}\n\n"
                 return
 
+            # Clean chat history to avoid refusal cascades (poisoning) and memory summary leaks
+            clean_chat_history = []
+            for msg in chat_history:
+                if getattr(msg, "type", "") == "system":
+                    continue
+                content = getattr(msg, "content", "")
+                if isinstance(content, str):
+                    content_lower = content.lower()
+                    if (
+                        FALLBACK_ANSWER in content
+                        or "DATA_NOT_FOUND" in content
+                        or "couldn't find information" in content_lower
+                        or "could not find relevant information" in content_lower
+                        or "summary of earlier parts of this conversation" in content_lower
+                        or "no further action or decision was made" in content_lower
+                    ):
+                        continue
+                clean_chat_history.append(msg)
+
             # Format docs → source block for the prompt
             sources = format_docs(docs)
 
@@ -162,7 +181,7 @@ class QAPipeline:
             prompt_value = QA_PROMPT.format_prompt(
                 sources=sources,
                 question=query,
-                chat_history=chat_history,
+                chat_history=clean_chat_history,
             )
 
             await llm_rate_limiter.aacquire()
@@ -201,7 +220,7 @@ class QAPipeline:
             if is_summary:
                 citations = build_source_only_citations(docs)
             else:
-                citations = build_citations(docs)
+                citations = build_citations(docs, final_answer)
 
             if citations:
                 yield f"data: {json.dumps({'type': 'citations', 'citations': citations})}\n\n"

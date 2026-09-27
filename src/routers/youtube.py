@@ -55,18 +55,20 @@ def _run_youtube_job(
 
         result = pipeline.run(url, collection_name=collection_name, on_retry=on_retry, progress_callback=progress_callback)
 
-        if result.get("success") and result.get("collection_name"):
+        if result.get("success") and result.get("collection_name") and result.get("chunks_stored", 0) > 0:
             memory.add_attachment(
                 name=f"YouTube {video_id}",
                 collection=result["collection_name"],
                 source_type="yt",
                 extra={"video_id": video_id, "url": url},
             )
-
-        logging.info("YouTube transcript indexed: %s", result.get("collection_name"))
-        upload_job_manager.mark_ready(
-            job_id, {**result, "replaced_collections": deleted_duplicates, "video_id": video_id}
-        )
+            logging.info("YouTube transcript indexed: %s", result.get("collection_name"))
+            upload_job_manager.mark_ready(
+                job_id, {**result, "replaced_collections": deleted_duplicates, "video_id": video_id}
+            )
+        else:
+            err_msg = result.get("error") or "Could not process this YouTube transcript. Please try again."
+            upload_job_manager.mark_failed(job_id, err_msg)
     except Exception:
         logging.exception("Background YouTube job failed: %s", job_id)
         upload_job_manager.mark_failed(

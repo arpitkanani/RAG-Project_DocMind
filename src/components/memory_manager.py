@@ -197,10 +197,12 @@ class MemoryManager:
             prompt += f"Existing summary:\n{previous_summary}\n\n"
         prompt += f"Conversation to fold in:\n{conversation_text}\n\nUpdated summary:"
 
+        from src.utils.helpers import extract_text
+
         llm = _build_llm()
         llm_rate_limiter.acquire()
         response = llm.invoke(prompt, config={"tags": ["memory_summary"]})
-        return (response.content if hasattr(response, "content") else str(response)).strip()
+        return extract_text(getattr(response, "content", response))
 
     def get_messages_payload(self) -> List[dict[str, Any]]:
         try:
@@ -341,6 +343,10 @@ class MemoryManager:
 
     def cleanup_attachments(self, valid_collections: List[str]) -> List[str]:
         try:
+            if not valid_collections:
+                # Safety guard: if valid_collections is empty (e.g. Qdrant unreachable or empty check),
+                # do NOT delete attachments to prevent accidental data loss.
+                return []
             valid_set = set(valid_collections)
             current = self.get_attachments()
             to_remove = [

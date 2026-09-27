@@ -1,6 +1,9 @@
 import asyncio
 import os
+import socket
 import sys
+import threading
+import urllib.parse
 from typing import Any, Iterable, List
 
 import yaml
@@ -20,8 +23,37 @@ with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
 
+def _is_remote_qdrant_up(url: str, timeout: float = 0.5) -> bool:
+    """Quick socket check to verify whether remote Qdrant port is listening."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 6333
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+_local_client = None
+_local_client_lock = threading.Lock()
+
+
+def _get_local_client(storage_path: str = "data/qdrant_storage") -> QdrantClient:
+    global _local_client
+    if _local_client is None:
+        with _local_client_lock:
+            if _local_client is None:
+                abs_path = os.path.abspath(storage_path)
+                os.makedirs(abs_path, exist_ok=True)
+                _local_client = QdrantClient(path=abs_path)
+                logging.info("Initialized local disk QdrantClient at: %s", abs_path)
+    return _local_client
+
+
 class VectorStore:
-    """Manages Qdrant vector storage for DocMind with sync and async operations."""
+    """Manages Qdrant vector storage for DocuVortex with sync and async operations,
+    automatically falling back to local embedded disk storage if remote Qdrant is unreachable."""
 
     def __init__(self, collection_name: str | None = None):
         try:
@@ -31,6 +63,7 @@ class VectorStore:
             )
             self.default_collection = config["vectorstore"]["collection_name"]
             self.collection_name = collection_name or self.default_collection
+            self.is_remote = _is_remote_qdrant_up(self.qdrant_url)
             embedder = Embedder()
             self.embedding_model = embedder.get_embedding_model(for_query=True)
             self.document_embedding_model = embedder.get_embedding_model(for_query=False)
@@ -38,10 +71,16 @@ class VectorStore:
             raise CustomException(e, sys)
 
     def _client(self) -> QdrantClient:
-        return QdrantClient(url=self.qdrant_url)
+        if self.is_remote:
+            try:
+                return QdrantClient(url=self.qdrant_url, timeout=5)
+            except Exception as e:
+                logging.warning("Remote Qdrant connection to %s failed: %s. Using local disk fallback.", self.qdrant_url, e)
+                self.is_remote = False
+        return _get_local_client()
 
     def _async_client(self) -> AsyncQdrantClient:
-        return AsyncQdrantClient(url=self.qdrant_url)
+        return AsyncQdrantClient(url=self.qdrant_url, timeout=5)
 
     def _initialize_vectordb(self) -> QdrantVectorStore:
         try:
@@ -51,10 +90,11 @@ class VectorStore:
             if self.collection_name not in all_collections:
                 raise CollectionNotFoundError([self.collection_name])
 
-            return QdrantVectorStore.from_existing_collection(
-                embedding=self.embedding_model,
+            client = self._client()
+            return QdrantVectorStore(
+                client=client,
                 collection_name=self.collection_name,
-                url=self.qdrant_url,
+                embedding=self.embedding_model,
             )
         except (CollectionNotFoundError, KnowledgeBaseEmptyError):
             raise
@@ -69,10 +109,53 @@ class VectorStore:
         on_retry=None,
     ) -> QdrantVectorStore:
         try:
-            logging.info("Starting batch ingestion | collection: %s", self.collection_name)
+            logging.info("Starting batch ingestion | collection: %s (remote=%s)", self.collection_name, self.is_remote)
             total_added = 0
             current_batch = []
             db = None
+
+            def _save_batch(batch: List[Document]) -> QdrantVectorStore:
+                client = self._client()
+                try:
+                    exists = client.collection_exists(self.collection_name)
+                except Exception:
+                    try:
+                        colls = [c.name for c in client.get_collections().collections]
+                        exists = self.collection_name in colls
+                    except Exception:
+                        exists = False
+
+                if not exists:
+                    from qdrant_client.http import models as rest
+                    try:
+                        sample_vec = self.document_embedding_model.embed_query("doc")
+                        dim = len(sample_vec)
+                    except Exception:
+                        dim = 384
+                    try:
+                        client.create_collection(
+                            collection_name=self.collection_name,
+                            vectors_config=rest.VectorParams(size=dim, distance=rest.Distance.COSINE),
+                        )
+                    except Exception as coll_err:
+                        logging.warning("Collection creation notice: %s", coll_err)
+
+                store = QdrantVectorStore(
+                    client=client,
+                    collection_name=self.collection_name,
+                    embedding=self.document_embedding_model,
+                )
+                store.add_documents(batch)
+                return store
+
+            def _store_batch_with_fallback(batch: List[Document]) -> QdrantVectorStore:
+                if self.is_remote:
+                    try:
+                        return _save_batch(batch)
+                    except Exception as rem_err:
+                        logging.warning("Remote Qdrant batch failed: %s. Falling back to local storage.", rem_err)
+                        self.is_remote = False
+                return _save_batch(batch)
 
             for chunk in chunks:
                 chunk.metadata["doc_index"] = total_added + len(current_batch)
@@ -81,24 +164,14 @@ class VectorStore:
                 current_batch.append(chunk)
 
                 if len(current_batch) >= batch_size:
-                    db = QdrantVectorStore.from_documents(
-                        documents=current_batch,
-                        embedding=self.document_embedding_model,
-                        url=self.qdrant_url,
-                        collection_name=self.collection_name,
-                    )
+                    db = _store_batch_with_fallback(current_batch)
                     total_added += len(current_batch)
                     current_batch = []
                     if progress_callback:
                         progress_callback(total_added)
 
             if current_batch:
-                db = QdrantVectorStore.from_documents(
-                    documents=current_batch,
-                    embedding=self.document_embedding_model,
-                    url=self.qdrant_url,
-                    collection_name=self.collection_name,
-                )
+                db = _store_batch_with_fallback(current_batch)
                 total_added += len(current_batch)
                 if progress_callback:
                     progress_callback(total_added)
@@ -113,24 +186,65 @@ class VectorStore:
 
     async def aget_all_documents(self) -> List[Document]:
         try:
-            client = self._async_client()
-            try:
-                all_collections = await self.alist_collections()
-                if not all_collections:
-                    return []
+            if self.is_remote:
+                client = self._async_client()
+                try:
+                    all_collections = await self.alist_collections()
+                    if not all_collections:
+                        return []
 
+                    collections_to_search = (
+                        [self.collection_name]
+                        if self.collection_name != self.default_collection and self.collection_name in all_collections
+                        else all_collections
+                    )
+
+                    docs: List[Document] = []
+                    for collection_name in collections_to_search:
+                        offset = None
+                        while True:
+                            points, offset = await client.scroll(
+                                collection_name=collection_name,
+                                limit=256,
+                                offset=offset,
+                                with_payload=True,
+                                with_vectors=False,
+                            )
+                            for point in points:
+                                payload = point.payload or {}
+                                text = payload.get("page_content", "")
+                                metadata = payload.get("metadata", {}) or {}
+                                if text and text.strip():
+                                    docs.append(Document(page_content=text, metadata=metadata))
+                            if offset is None:
+                                break
+
+                    return docs
+                except Exception as rem_err:
+                    logging.warning("Remote aget_all_documents failed: %s. Trying local fallback.", rem_err)
+                    self.is_remote = False
+                finally:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+
+            client = self._client()
+            def _sync_scroll():
+                all_colls = [c.name for c in client.get_collections().collections]
+                if not all_colls:
+                    return []
                 collections_to_search = (
                     [self.collection_name]
-                    if self.collection_name != self.default_collection and self.collection_name in all_collections
-                    else all_collections
+                    if self.collection_name != self.default_collection and self.collection_name in all_colls
+                    else all_colls
                 )
-
-                docs: List[Document] = []
-                for collection_name in collections_to_search:
+                local_docs = []
+                for c_name in collections_to_search:
                     offset = None
                     while True:
-                        points, offset = await client.scroll(
-                            collection_name=collection_name,
+                        points, offset = client.scroll(
+                            collection_name=c_name,
                             limit=256,
                             offset=offset,
                             with_payload=True,
@@ -141,13 +255,11 @@ class VectorStore:
                             text = payload.get("page_content", "")
                             metadata = payload.get("metadata", {}) or {}
                             if text and text.strip():
-                                docs.append(Document(page_content=text, metadata=metadata))
+                                local_docs.append(Document(page_content=text, metadata=metadata))
                         if offset is None:
                             break
-
-                return docs
-            finally:
-                await client.close()
+                return local_docs
+            return await asyncio.to_thread(_sync_scroll)
         except Exception as e:
             raise CustomException(e, sys)
 
@@ -161,16 +273,41 @@ class VectorStore:
         client = self._client()
         try:
             return [c.name for c in client.get_collections().collections]
-        finally:
-            client.close()
+        except Exception as e:
+            logging.warning("Could not list collections via client: %s", e)
+            try:
+                local_client = _get_local_client()
+                return [c.name for c in local_client.get_collections().collections]
+            except Exception:
+                return []
 
     async def alist_collections(self) -> List[str]:
-        client = self._async_client()
-        try:
-            colls = await client.get_collections()
-            return [c.name for c in colls.collections]
-        finally:
-            await client.close()
+        if self.is_remote:
+            client = self._async_client()
+            try:
+                colls = await client.get_collections()
+                return [c.name for c in colls.collections]
+            except Exception as e:
+                logging.warning("Could not reach remote Qdrant on %s: %s", self.qdrant_url, e)
+                try:
+                    local_client = _get_local_client()
+                    colls = await asyncio.to_thread(local_client.get_collections)
+                    return [c.name for c in colls.collections]
+                except Exception:
+                    return []
+            finally:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+        else:
+            try:
+                local_client = self._client()
+                colls = await asyncio.to_thread(local_client.get_collections)
+                return [c.name for c in colls.collections]
+            except Exception as e:
+                logging.warning("Could not reach local Qdrant: %s", e)
+                return []
 
     def delete_collection(self) -> bool:
         client = self._client()
@@ -182,19 +319,41 @@ class VectorStore:
             from src.components.retriever import invalidate_cached_db
             invalidate_cached_db(self.collection_name)
             return True
-        finally:
-            client.close()
+        except Exception as e:
+            logging.warning("Failed to delete collection %s: %s", self.collection_name, e)
+            return False
 
     async def adelete_collection(self) -> bool:
-        client = self._async_client()
-        try:
-            colls = await client.get_collections()
-            collections = [c.name for c in colls.collections]
-            if self.collection_name not in collections:
+        if self.is_remote:
+            client = self._async_client()
+            try:
+                colls = await client.get_collections()
+                collections = [c.name for c in colls.collections]
+                if self.collection_name not in collections:
+                    return False
+                await client.delete_collection(self.collection_name)
+                from src.components.retriever import invalidate_cached_db
+                invalidate_cached_db(self.collection_name)
+                return True
+            except Exception as e:
+                logging.warning("Failed to delete remote collection %s: %s", self.collection_name, e)
                 return False
-            await client.delete_collection(self.collection_name)
-            from src.components.retriever import invalidate_cached_db
-            invalidate_cached_db(self.collection_name)
-            return True
-        finally:
-            await client.close()
+            finally:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+        else:
+            try:
+                client = self._client()
+                colls = await asyncio.to_thread(client.get_collections)
+                collections = [c.name for c in colls.collections]
+                if self.collection_name not in collections:
+                    return False
+                await asyncio.to_thread(client.delete_collection, self.collection_name)
+                from src.components.retriever import invalidate_cached_db
+                invalidate_cached_db(self.collection_name)
+                return True
+            except Exception as e:
+                logging.warning("Failed to delete local collection %s: %s", self.collection_name, e)
+                return False

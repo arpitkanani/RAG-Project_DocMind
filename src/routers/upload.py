@@ -52,20 +52,25 @@ def _run_upload_job(
             progress_callback=progress_callback,
         )
 
-        if result.get("success") and result.get("collection_name"):
+        if result.get("success") and result.get("collection_name") and result.get("chunks_stored", 0) > 0:
             MemoryManager(session_id=session_id, user_id=user_id).add_attachment(
                 name=filename or result["collection_name"],
                 collection=result["collection_name"],
                 source_type="doc",
             )
-
-        logging.info("File indexed: %s", result.get("collection_name"))
-        upload_job_manager.mark_ready(job_id, result)
-    except Exception:
+            logging.info("File indexed: %s", result.get("collection_name"))
+            upload_job_manager.mark_ready(job_id, result)
+        else:
+            err_msg = result.get("error") or "Could not process this file. Please try uploading it again."
+            upload_job_manager.mark_failed(job_id, err_msg)
+    except Exception as err:
         logging.exception("Background upload job failed: %s", job_id)
-        upload_job_manager.mark_failed(
-            job_id, "Could not process this file. Please try uploading it again."
-        )
+        err_str = str(err)
+        if "connection" in err_str.lower() or "connect" in err_str.lower() or "6333" in err_str:
+            user_msg = "Could not connect to Qdrant vector store (port 6333). Please ensure Qdrant is running."
+        else:
+            user_msg = "Could not process this file. Please try uploading it again."
+        upload_job_manager.mark_failed(job_id, user_msg)
 
 
 @router.post("/upload")
