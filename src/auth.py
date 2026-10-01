@@ -20,74 +20,7 @@ SILENT_PERIOD_DAYS = 14
 GUEST_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
-def hash_password(password: str) -> str:
-    """Hashes a password with HMAC-SHA256 using SECRET_KEY."""
-    return hmac.new(SECRET_KEY.encode(), password.strip().encode(), hashlib.sha256).hexdigest()
 
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Securely checks plain password against stored hash."""
-    if not hashed_password:
-        return False
-    computed = hash_password(plain_password)
-    return hmac.compare_digest(computed, hashed_password)
-
-
-def generate_captcha() -> tuple[str, str]:
-    """
-    Generates a simple math challenge (e.g. 4 + 10) and a tamper-proof signed token.
-    Returns:
-        (question_str, signed_token_str)
-    """
-    num1 = secrets.randbelow(12) + 3   # 3 to 14
-    num2 = secrets.randbelow(12) + 2   # 2 to 13
-    ans = num1 + num2
-    exp = int((datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp())
-    payload = f"{ans}:{exp}"
-    sig = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    token = f"{payload}.{sig}"
-    question = f"{num1} + {num2}"
-    return question, token
-
-
-def verify_captcha(user_answer: str, token: str) -> bool:
-    """Validates math captcha answer against the signed token with fallback support."""
-    try:
-        if user_answer is None or str(user_answer).strip() == "":
-            return False
-        clean_ans = int(str(user_answer).strip())
-
-        # 1. Verify standard HMAC token
-        if token and "." in token:
-            payload, sig = token.rsplit(".", 1)
-            expected_sig = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
-            if hmac.compare_digest(sig, expected_sig):
-                parts = payload.split(":")
-                expected_ans = int(parts[0])
-                exp = int(parts[1])
-                if int(datetime.now(timezone.utc).timestamp()) <= exp:
-                    return clean_ans == expected_ans
-
-        # 2. Resilient fallback check (e.g. 11:fallback or payload check)
-        if token and "." in token:
-            payload = token.rsplit(".", 1)[0]
-            if ":" in payload:
-                parts = payload.split(":")
-                if parts[0].isdigit():
-                    return clean_ans == int(parts[0])
-
-        if token and ":" in token:
-            parts = token.split(":")
-            if parts[0].isdigit():
-                return clean_ans == int(parts[0])
-
-        # 3. Direct digit fallback check
-        if token and str(token).isdigit():
-            return clean_ans == int(token)
-
-        return False
-    except Exception:
-        return False
 
 
 def hash_token(token: str) -> str:

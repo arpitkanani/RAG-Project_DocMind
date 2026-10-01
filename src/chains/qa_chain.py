@@ -292,8 +292,61 @@ def sanitize_answer(answer: str) -> str:
     if re.search(r"(?i)\b(the user asked (the assistant|about)|the assistant replied that|no further action or decision was made|the assistant responded that)\b", lowered):
         return FALLBACK_ANSWER
 
+    # Clean leaked DATA_NOT_FOUND blocks if the answer contains substantive content
+    if NOT_FOUND_TOKEN in text and text != NOT_FOUND_TOKEN:
+        # Pattern matching: Heading\n\nDATA_NOT_FOUND
+        cleaned = re.sub(
+            rf"(?im)^(?:[#*_\s]*[A-Za-z0-9\s\(\)\-\/\:]{{3,80}}[#*_\s]*\n+)?\s*{NOT_FOUND_TOKEN}\s*[\.\!\?]?\s*$",
+            "",
+            text,
+        ).strip()
+        # Pattern matching: Topic: DATA_NOT_FOUND
+        cleaned = re.sub(
+            rf"(?im)^[#*_\s]*[A-Za-z0-9\s\(\)\-\/]{{3,80}}:\s*{NOT_FOUND_TOKEN}\s*[\.\!\?]?\s*$",
+            "",
+            cleaned,
+        ).strip()
+        if cleaned and len(cleaned) >= 30:
+            text = cleaned
+
     text = _dedupe_near_identical_sentences(text)
     return text or FALLBACK_ANSWER
+
+
+def prepare_clean_chat_history(chat_history: list) -> list:
+    """
+    Filters chat history to strictly balanced (Human, AI) turn pairs.
+    If an AI reply was a fallback, DATA_NOT_FOUND, or refusal, discards
+    BOTH the question and the fallback answer so no orphan questions remain.
+    Keeps at most the last 2 completed clean turn pairs (4 messages).
+    """
+    clean_history = []
+    non_system_msgs = [m for m in (chat_history or []) if getattr(m, "type", "") != "system"]
+    i = 0
+    while i < len(non_system_msgs) - 1:
+        h_msg = non_system_msgs[i]
+        a_msg = non_system_msgs[i + 1]
+        h_type = getattr(h_msg, "type", "")
+        a_type = getattr(a_msg, "type", "")
+
+        if h_type == "human" and a_type == "ai":
+            a_content = getattr(a_msg, "content", "")
+            if isinstance(a_content, str):
+                a_lower = a_content.lower()
+                if not (
+                    FALLBACK_ANSWER in a_content
+                    or NOT_FOUND_TOKEN in a_content
+                    or "couldn't find information" in a_lower
+                    or "could not find relevant information" in a_lower
+                    or "summary of earlier parts of this conversation" in a_lower
+                    or "no further action or decision was made" in a_lower
+                ):
+                    clean_history.extend([h_msg, a_msg])
+            i += 2
+        else:
+            i += 1
+
+    return clean_history[-4:]
 
 
 def _dedupe_near_identical_sentences(text: str) -> str:
@@ -330,22 +383,28 @@ GUIDELINES:
    - NEVER use external pre-trained knowledge to invent, extrapolate, or introduce external technologies, modern features, or unmentioned topics that are not present in the uploaded document context.
    - Do NOT invent hypothetical comparisons or lists of outside features (for example, if asked what is missing or what new features are not in the document, do NOT invent external modern AI tools, models, or frameworks from outside knowledge).
 
-2. Missing or Uncovered Topics:
+2. Single Question Focus & No Historical Bleeding:
+   - CRITICAL: Focus EXCLUSIVELY on answering the current question provided in the final "Question: {{question}}" prompt.
+   - NEVER re-answer, repeat, list, or revisit questions, topics, or headings from earlier turns in the conversation history (e.g. if previous questions asked about estimated cost or author name, do NOT include sections, headings, or {NOT_FOUND_TOKEN} for them).
+   - The chat history is provided SOLELY to resolve pronouns (e.g. "it", "they", "this system") or conversational references, NOT as a list of questions to answer again.
+   - Never output headings or answers for topics that were not asked in the current question.
+
+3. Missing or Uncovered Topics:
    - If the uploaded document context does NOT contain information about the asked concept, technology, or topic (e.g. asking about "Convolution Neural Network and Transfer Learning" or modern features not discussed in the document), reply with: {NOT_FOUND_TOKEN}
    - If the user asks what the document does or does not cover, describe only what is explicitly in the context; do not extrapolate or introduce ungrounded outside subjects.
    - If only partial information is available in the context, provide what the document explicitly covers and clarify what aspects are not mentioned.
 
-3. Helpful & Flexible Understanding:
+4. Helpful & Flexible Understanding:
    - Understand synonyms, abbreviations, and related terms for entities that ARE in the context (e.g. if the user asks "what project is Arpit making" and the document lists "Project name: X" with "Author: Arpit", clearly state the project name and author).
    - When asked to summarize, explain, compare, extract key points, or analyze specific topics (such as charts, timelines, or costs) that are present in the context, synthesize the information thoroughly and clearly using the provided context.
 
-4. Clarity & Formatting:
+5. Clarity & Formatting:
    - Use clean Markdown (bullet points, bold key terms, tables, or numbered lists) to make information readable.
    - Be direct: do not use empty meta-filler like "Based on the provided context," "According to the uploaded documents," or "The text states." Start directly with the answer.
    - Never output meta-dialogue commentary about the user or prior assistant responses (e.g. do not say "The user asked..." or "The assistant replied...").
 
-5. Priority:
-   - Always evaluate the freshly provided document context below independently. Even if information was not found in prior chat turns, answer directly if the new context contains the information.
+6. Priority:
+   - Always evaluate the freshly provided document context for the CURRENT question independently.
 """,
         ),
         MessagesPlaceholder(variable_name="chat_history"),
@@ -356,7 +415,7 @@ GUIDELINES:
 
 Question: {question}
 
-Answer the question clearly and helpfully using the context above:""",
+Answer ONLY the specific question asked above ("{question}") clearly and helpfully using the context above. Do NOT answer or mention previous topics:""",
         ),
     ]
 )
@@ -503,7 +562,7 @@ def get_answer(
         logging.info("Processing question: %s...", question[:50])
 
         memory = MemoryManager(session_id=session_id, user_id=user_id)
-        chat_history = memory.get_history()
+        chat_history = prepare_clean_chat_history(memory.get_history())
         retriever = Retriever(collection_names=collection_names)
 
         if is_summary_request(question):

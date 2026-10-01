@@ -11,6 +11,7 @@ from src.chains.qa_chain import (
     build_citations,
     build_source_only_citations,
     format_docs,
+    prepare_clean_chat_history,
     sanitize_answer,
 )
 from src.components.memory_manager import MemoryManager
@@ -48,26 +49,9 @@ async def generate_node(state: RAGState) -> Dict[str, Any]:
         if not sources.strip() or sources == "No grounded source passages are available.":
             return {"raw_answer": FALLBACK_ANSWER}
 
-        # Prevent chat history poisoning / refusal cascades / memory summary leaking:
-        # 1. Do NOT pass SystemMessages into QA_PROMPT's chat_history (they confuse the LLM into meta-narration).
-        # 2. Strip previous fallbacks, DATA_NOT_FOUND tokens, and conversation summaries.
-        clean_chat_history = []
-        for msg in chat_history:
-            if getattr(msg, "type", "") == "system":
-                continue
-            content = getattr(msg, "content", "")
-            if isinstance(content, str):
-                content_lower = content.lower()
-                if (
-                    FALLBACK_ANSWER in content
-                    or "DATA_NOT_FOUND" in content
-                    or "couldn't find information" in content_lower
-                    or "could not find relevant information" in content_lower
-                    or "summary of earlier parts of this conversation" in content_lower
-                    or "no further action or decision was made" in content_lower
-                ):
-                    continue
-            clean_chat_history.append(msg)
+        # Prevent chat history poisoning / refusal cascades / memory summary leaking / orphan question bleeding:
+        # Strictly preserves balanced (Human, AI) turn pairs and drops fallback/refusal turns so no orphan questions linger.
+        clean_chat_history = prepare_clean_chat_history(chat_history)
 
         llm = _build_llm()
         parser = StrOutputParser()

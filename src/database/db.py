@@ -111,7 +111,6 @@ def init_db(sql_path: str = "database/init.sql") -> None:
                 id            UUID PRIMARY KEY,
                 username      TEXT,
                 email         TEXT,
-                password_hash TEXT,
                 api_key_hash  TEXT,
                 name          TEXT,
                 is_verified   BOOLEAN NOT NULL DEFAULT true,
@@ -131,7 +130,6 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         """)
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;")
-        _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key_hash TEXT;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT true;")
