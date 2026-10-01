@@ -1,13 +1,14 @@
+import asyncio
+from collections import Counter
 import re
 import sys
-from collections import Counter
-
 from typing import List, Tuple
 
 import yaml
-from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
-from qdrant_client import QdrantClient
+from langchain_qdrant import QdrantVectorStore
+from langsmith import traceable
+from qdrant_client import AsyncQdrantClient
 
 from src.components.vector_store import VectorStore
 from src.exception import (
@@ -20,28 +21,43 @@ from src.logger import logging
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
-# Process-wide cache: QdrantVectorStore.from_existing_collection() secretly
-# costs one embedding API call every time it's constructed (LangChain embeds
-# a "dummy_text" string to validate vector dimensions match). Caching by
-# collection name means that validation cost is paid ONCE per collection
-# per process lifetime, not once per query -- this was the single biggest
-# source of wasted embedding calls against the shared rate limit.
 _qdrant_db_cache: dict[str, QdrantVectorStore] = {}
 
 
 def invalidate_cached_db(collection_name: str):
-    """Call this whenever a collection is deleted, so a future re-upload
-    with the same name doesn't serve a stale cached connection."""
     _qdrant_db_cache.pop(collection_name, None)
 
 
+STOP_WORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can", "can't", "cannot", "could",
+    "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down",
+    "during", "each", "few", "for", "from", "further", "had", "hadn't", "has",
+    "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her",
+    "here", "here's", "hers", "herself", "him", "himself", "his", "how", "how's",
+    "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it",
+    "it's", "its", "itself", "let's", "me", "more", "most", "mustn't", "my",
+    "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other",
+    "ought", "our", "ours", "ourselves", "out", "over", "own", "same", "shan't",
+    "she", "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such",
+    "than", "that", "that's", "the", "their", "theirs", "them", "themselves",
+    "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
+    "they've", "this", "those", "through", "to", "too", "under", "until", "up",
+    "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
+    "weren't", "what", "what's", "when", "when's", "where", "where's", "which",
+    "while", "who", "who's", "whom", "why", "why's", "with", "won't", "would",
+    "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "yourself", "yourselves", "give", "tell", "explain", "describe", "define"
+}
+
 
 class Retriever:
-    """Handles single-collection and multi-collection retrieval."""
+    """Handles single-collection and multi-collection retrieval with async search."""
 
     def __init__(self, collection_names: List[str] | None = None):
         try:
-            logging.info("Initializing Retriever")
+            self.explicit_scope = collection_names is not None
             self.collection_names = [name for name in (collection_names or []) if name]
             self.vs = VectorStore(
                 collection_name=self.collection_names[0] if self.collection_names else None
@@ -54,36 +70,42 @@ class Retriever:
             self.collection_margin = config["retriever"].get("collection_margin", 0.78)
             self.doc_margin = config["retriever"].get("doc_margin", 0.55)
             self.max_query_variants = config["retriever"].get("max_query_variants", 2)
-            logging.info("Retriever initialized successfully")
         except Exception as e:
             raise CustomException(e, sys)
 
     def retrieve(self, query: str) -> List[Document]:
-        """Retrieve the best chunks across one or more collections."""
-        try:
-            ranked_docs = self.retrieve_ranked(query)
-            return [doc for doc, _, _ in ranked_docs]
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
-            raise
-        except Exception as e:
-            raise CustomException(e, sys)
+        return asyncio.run(self.aretrieve(query))
 
-    def retrieve_ranked(self, query: str) -> List[Tuple[Document, float, float]]:
-        """Retrieve the best chunks with final rank and semantic confidence."""
+    async def aretrieve(self, query: str) -> List[Document]:
+        ranked_docs = await self.retrieve_ranked(query)
+        return [doc for doc, _, _ in ranked_docs]
+
+    @traceable(run_type="retriever", name="retrieve_ranked")
+    async def retrieve_ranked(self, query: str) -> List[Tuple[Document, float, float]]:
+        """Retrieve the best chunks with final rank and semantic confidence asynchronously."""
         try:
-            logging.info("Retrieving for: %s...", query[:50])
-            target_collections = self._resolve_target_collections()
+            logging.info("Async Retrieving for: %s...", query[:50])
+            target_collections = await self._resolve_target_collections()
+            if not target_collections:
+                logging.info("retrieve_ranked: no target collections to search (session has no documents)")
+                return []
             query_variants = self._build_query_variants(query)
 
+            tasks = [
+                self._search_collection(coll, query, query_variants)
+                for coll in target_collections
+            ]
+            results = await asyncio.gather(*tasks)
+
             collected_docs: List[Tuple[Document, float]] = []
-            for collection_name in target_collections:
-                collected_docs.extend(
-                    self._search_collection(collection_name, query, query_variants)
-                )
+            for doc_list in results:
+                collected_docs.extend(doc_list)
 
             ranked_docs = self._rerank_documents(query, collected_docs)
-            
-            filtered = [item for item in ranked_docs if item[2] >= self.score_threshold]
+            filtered = [
+                item for item in ranked_docs
+                if item[2] >= self.score_threshold or item[1] >= 12.0
+            ]
 
             if filtered:
                 best_by_collection: dict[str, float] = {}
@@ -103,10 +125,6 @@ class Retriever:
                     if item[0].metadata.get("collection_name") in competitive_collections
                 ]
 
-                # Per-document margin — even within the same (competitive) collection,
-                # only keep chunks close to that collection's OWN best match. Stops
-                # weak neighboring pages from riding along with the one strong page.
-                DOC_MARGIN = self.doc_margin
                 docs = []
                 for coll in competitive_collections:
                     coll_docs = sorted(
@@ -118,7 +136,7 @@ class Retriever:
                         continue
                     coll_best = coll_docs[0][1]
                     docs.extend(
-                        item for item in coll_docs if item[1] >= coll_best * DOC_MARGIN
+                        item for item in coll_docs if item[1] >= coll_best * self.doc_margin
                     )
 
                 docs = sorted(docs, key=lambda item: item[1], reverse=True)[: self.k]
@@ -127,25 +145,13 @@ class Retriever:
 
             if not docs and ranked_docs:
                 best_doc, best_final_score, best_semantic_score = ranked_docs[0]
-                logging.info(
-                    "No chunks met threshold %.2f. Best semantic score: %.4f | final score: %.4f",
-                    self.score_threshold,
-                    best_semantic_score,
-                    best_final_score,
-                )
-
-                if best_semantic_score >= max(self.score_threshold - 0.05, 0.4):
+                if best_semantic_score >= max(self.score_threshold - 0.05, 0.35) or best_final_score >= 10.0:
                     best_collection = best_doc.metadata.get("collection_name")
                     same_collection_docs = [
                         item for item in ranked_docs
                         if item[0].metadata.get("collection_name") == best_collection
                     ]
                     docs = same_collection_docs[: min(self.k, 3)]
-                    logging.info(
-                        "Using top %d chunks from collection '%s' through adaptive fallback",
-                        len(docs),
-                        best_collection,
-                    )
 
             logging.info(
                 "Retrieved %d grounded chunks across %d collections",
@@ -158,87 +164,92 @@ class Retriever:
         except Exception as e:
             raise CustomException(e, sys)
 
-    def retrieve_with_scores(self, query: str) -> List[Tuple[Document, float]]:
-        """Retrieve chunks with similarity scores from the primary collection."""
-        try:
-            logging.info("Retrieving with scores: %s...", query[:50])
-            db = self.vs.get_vectordb()
-            results = db.similarity_search_with_score(query, k=self.k)
-            logging.info("Retrieved %d chunks with scores", len(results))
-            return results
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    def _resolve_target_collections(self) -> List[str]:
-        client = QdrantClient(url=self.vs.qdrant_url)
-        try:
-            available = [c.name for c in client.get_collections().collections]
-        finally:
-            client.close()
-
-        if not available:
-            raise KnowledgeBaseEmptyError(
-                "No documents found. Please upload a document first."
-            )
-
-        if self.collection_names:
+    async def _resolve_target_collections(self) -> List[str]:
+        # If caller explicitly provided collection_names (even if empty):
+        if self.explicit_scope:
+            if not self.collection_names:
+                # No collections attached to this session -> return empty immediately without global leak
+                return []
+            available = await self.vs.alist_collections()
             missing = [name for name in self.collection_names if name not in available]
             if missing:
                 raise CollectionNotFoundError(missing)
             return self.collection_names
 
+        # Unscoped / global fallback (e.g. CLI tools or background workers)
+        available = await self.vs.alist_collections()
+        if not available:
+            raise KnowledgeBaseEmptyError(
+                "No documents found. Please upload a document first."
+            )
         return available
 
-    def _search_collection(
+    async def _search_collection(
         self,
         collection_name: str,
         query: str,
         query_variants: List[str],
     ) -> List[Tuple[Document, float]]:
         db = self._get_cached_db(collection_name)
-
         docs: List[Tuple[Document, float]] = []
+
         for variant in query_variants:
             if self.search_type == "mmr":
-                # max_marginal_relevance_search() picks a diverse subset but
-                # doesn't return similarity scores -- and retrieve_ranked()
-                # later filters everything below score_threshold using that
-                # score. A hardcoded 0.0 here meant every MMR result always
-                # failed that filter, so MMR silently returned nothing.
-                # Fix: look up each selected chunk's real score from a
-                # similarity search over the same fetch_k candidate pool
-                # MMR chose from (safe to key by exact chunk text, since
-                # chunks are unique within one collection).
-                score_lookup = {
-                    doc.page_content: self._normalize_similarity_score(score)
-                    for doc, score in db.similarity_search_with_score(variant, k=self.fetch_k)
-                }
-                mmr_docs = db.max_marginal_relevance_search(
-                    variant,
-                    k=self.k,
-                    fetch_k=self.fetch_k,
-                    lambda_mult=self.lambda_mult,
-                )
+                if self.vs.is_remote:
+                    sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                    score_lookup = {
+                        doc.page_content: self._normalize_similarity_score(score)
+                        for doc, score in sim_res
+                    }
+                    mmr_docs = await db.amax_marginal_relevance_search(
+                        variant,
+                        k=self.k,
+                        fetch_k=self.fetch_k,
+                        lambda_mult=self.lambda_mult,
+                    )
+                else:
+                    sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
+                    score_lookup = {
+                        doc.page_content: self._normalize_similarity_score(score)
+                        for doc, score in sim_res
+                    }
+                    mmr_docs = await asyncio.to_thread(
+                        db.max_marginal_relevance_search,
+                        variant,
+                        k=self.k,
+                        fetch_k=self.fetch_k,
+                        lambda_mult=self.lambda_mult,
+                    )
                 docs.extend(
                     (doc, score_lookup.get(doc.page_content, 0.0)) for doc in mmr_docs
                 )
             else:
-                docs.extend(self._similarity_search_with_scores(db, variant))
+                if self.vs.is_remote:
+                    sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                else:
+                    sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
+                docs.extend(
+                    (doc, self._normalize_similarity_score(score))
+                    for doc, score in sim_res
+                )
 
         for doc, _ in docs:
             doc.metadata.setdefault("collection_name", collection_name)
 
-        return docs
+        # Purge tiny single-word noise chunks (e.g. isolated table cells like 'to', 'chart', 'Quiz:')
+        meaningful_docs = [
+            (doc, score) for doc, score in docs
+            if len(doc.page_content.strip()) >= 25
+        ]
+        return meaningful_docs or docs
 
     def _get_cached_db(self, collection_name: str) -> QdrantVectorStore:
-        """Reuse an existing connection if we've already validated this
-        collection this process lifetime -- avoids paying the hidden
-        dummy-text embedding cost on every single query."""
         if collection_name not in _qdrant_db_cache:
-            _qdrant_db_cache[collection_name] = QdrantVectorStore.from_existing_collection(
-                embedding=self.vs.embedding_model,
+            client = self.vs._client()
+            _qdrant_db_cache[collection_name] = QdrantVectorStore(
+                client=client,
                 collection_name=collection_name,
-                url=self.vs.qdrant_url,
+                embedding=self.vs.embedding_model,
             )
         return _qdrant_db_cache[collection_name]
 
@@ -248,10 +259,18 @@ class Retriever:
         docs: List[Tuple[Document, float]],
     ) -> List[Tuple[Document, float, float]]:
         query_terms = self._tokenize(query)
+        meaningful_query_terms = {
+            t for t in query_terms if t not in STOP_WORDS and len(t) > 2
+        }
         query_phrases = self._extract_phrases(query)
         deduped = {}
 
         for doc, semantic_score in docs:
+            content_clean = doc.page_content.strip()
+            # Discard short fragments that cannot provide meaningful context to the LLM
+            if len(content_clean) < 25:
+                continue
+
             key = (
                 doc.page_content,
                 str(doc.metadata.get("source", "")),
@@ -259,8 +278,14 @@ class Retriever:
                 str(doc.metadata.get("timestamp", "")),
             )
             content_terms = self._tokenize(doc.page_content)
-            term_overlap = len(query_terms & content_terms)
-            overlap_ratio = term_overlap / max(len(query_terms), 1)
+
+            # Meaningful keyword overlap calculation
+            if meaningful_query_terms:
+                term_overlap = len(meaningful_query_terms & content_terms)
+                overlap_ratio = term_overlap / len(meaningful_query_terms)
+            else:
+                term_overlap = len(query_terms & content_terms)
+                overlap_ratio = term_overlap / max(len(query_terms), 1)
 
             text_lower = doc.page_content.lower()
             metadata_text = " ".join(
@@ -275,19 +300,51 @@ class Retriever:
             if "summary" in query_terms and doc.metadata.get("type") == "youtube":
                 bonus += 2
             if any(phrase and phrase in text_lower for phrase in query_phrases):
-                bonus += 8
-            if any(term in metadata_text for term in query_terms if len(term) > 3):
-                bonus += 3
-            if self._looks_like_structured_answer(query_terms, text_lower):
+                bonus += 12
+            if any(term in metadata_text for term in meaningful_query_terms if len(term) > 3):
                 bonus += 4
+            if self._looks_like_structured_answer(query_terms, text_lower):
+                bonus += 3
 
-            locator_bonus = 1 if doc.metadata.get("page") is not None else 0
-            heading_bonus = 2 if self._has_heading_signal(text_lower) else 0
-            density_bonus = min(int(overlap_ratio * 10), 6)
+            # Exact matching for specific topic keywords: gantt, chart, cost, estimate, etc.
+            specific_topics = {"gantt", "chart", "cost", "estimate", "budget", "schedule", "timeline", "milestone", "activities", "duration"}
+            topic_matches = query_terms & specific_topics & content_terms
+            if topic_matches:
+                bonus += 14 * len(topic_matches)
+
+            # Specific proper names or non-stopword tokens in query (like "arpit", "dezlor")
+            query_entity_tokens = {t for t in meaningful_query_terms if t not in specific_topics and len(t) > 3}
+            entity_matches = query_entity_tokens & content_terms
+            if entity_matches:
+                bonus += 12 * len(entity_matches)
+
+            # Author and creator front-matter boosts
+            is_author_query = bool(query_terms & {"author", "writer", "written", "creator", "submitted", "prepared", "student", "intern", "who"})
+            if is_author_query:
+                if any(m in text_lower for m in ["prepared by", "submitted by", "author", "student name", "guided by", "written by", "roll no", "enrollment"]):
+                    bonus += 10
+                if doc.metadata.get("page") in (0, 1) or doc.metadata.get("doc_index", 99) <= 1:
+                    bonus += 6
+
+            # Project name and title front-matter boost
+            is_title_query = bool(query_terms & {"project", "title", "topic", "name"})
+            if is_title_query:
+                if any(m in text_lower for m in ["project name", "project title", "title of the project", "author"]):
+                    bonus += 12
+                if doc.metadata.get("page") in (0, 1) or doc.metadata.get("doc_index", 99) <= 1:
+                    bonus += 6
+
+            # Only reward heading / locator bonuses if there is actual topic relevance
+            has_relevance = term_overlap > 0 or semantic_score >= 0.45 or bonus > 0
+            locator_bonus = 1 if (has_relevance and doc.metadata.get("page") is not None) else 0
+            heading_bonus = 2 if (has_relevance and self._has_heading_signal(text_lower)) else 0
+            density_bonus = min(int(overlap_ratio * 10), 6) if term_overlap > 0 else 0
+
+            # Strong lexical match for substantive keywords in question
             lexical_score = (
-                term_overlap * 5 + bonus + locator_bonus + heading_bonus + density_bonus
+                term_overlap * 12 + bonus + locator_bonus + heading_bonus + density_bonus
             )
-            final_score = lexical_score + (semantic_score * 12)
+            final_score = lexical_score + (semantic_score * 15)
 
             stored = deduped.get(key)
             if stored is None or final_score > stored[0]:
@@ -300,21 +357,6 @@ class Retriever:
         )
         return [(item[1], item[0], item[2]) for item in ranked]
 
-    def _similarity_search_with_scores(
-        self,
-        db: QdrantVectorStore,
-        query: str,
-    ) -> List[Tuple[Document, float]]:
-        try:
-            results = db.similarity_search_with_score(query, k=self.fetch_k)
-            return [
-                (doc, self._normalize_similarity_score(score))
-                for doc, score in results
-            ]
-        except Exception:
-            logging.exception("Similarity search with scores failed")
-            raise
-
     @staticmethod
     def _normalize_similarity_score(score: float | None) -> float:
         if score is None:
@@ -323,11 +365,14 @@ class Retriever:
             value = float(score)
         except (TypeError, ValueError):
             return 0.0
-        if value < 0:
+
+        # Cosine similarity in Qdrant ranges in [-1.0, 1.0], typically [0.0, 1.0] for normalized embeddings.
+        # Higher score = more similar. Never invert low scores.
+        if value < 0.0:
             return 0.0
-        if value <= 1:
+        if value <= 1.0:
             return value
-        return max(0.0, min(1.0, 1 / (1 + value)))
+        return max(0.0, min(1.0, 1.0 / (1.0 + value)))
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
@@ -339,7 +384,7 @@ class Retriever:
         if quoted:
             return [item.strip().lower() for item in quoted if item.strip()]
 
-        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        words = [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w not in STOP_WORDS]
         counts = Counter(words)
         phrases = [
             " ".join(words[index : index + 2])
@@ -353,12 +398,30 @@ class Retriever:
         tokens = re.findall(r"[a-z0-9]+", normalized.lower())
         variants = [normalized]
 
-        significant = [token for token in tokens if len(token) > 3]
+        significant = [token for token in tokens if token not in STOP_WORDS and len(token) > 2]
         if significant:
             variants.append(" ".join(significant[:8]))
-
         if len(tokens) > 5:
             variants.append(" ".join(tokens[:5]))
+
+        # Domain-aware query expansions
+        token_set = set(tokens)
+        if token_set & {"author", "writer", "written", "creator", "submitted", "prepared", "student", "who"}:
+            variants.append("submitted by prepared by author student name")
+            variants.append("prepared by")
+            variants.append("submitted by")
+        if token_set & {"project", "title", "name", "topic"}:
+            variants.append("project title overview abstract report")
+            variants.append("project name author")
+        if token_set & {"gantt", "chart", "schedule", "timeline"}:
+            variants.append("gantt chart project schedule timeline activities weeks")
+        if token_set & {"cost", "estimate", "budget", "price"}:
+            variants.append("cost estimate project budget expenditure total cost")
+
+        # Proper names / distinct entities in query
+        proper_names = [w.lower() for w in re.findall(r"\b[A-Z][a-z0-9]+\b", query) if w.lower() not in STOP_WORDS]
+        if proper_names:
+            variants.append(f"{' '.join(proper_names)} project name author")
 
         deduped = [
             variant for index, variant in enumerate(variants)
@@ -385,15 +448,19 @@ class Retriever:
         first_line = lines[0]
         return len(first_line) < 80 and any(char.isalpha() for char in first_line)
 
-    def get_full_context(self, max_chars: int = 6000) -> List[Document]:
-        """Return chunks in original document order, not similarity-ranked."""
+    @traceable(run_type="retriever", name="get_full_context")
+    async def get_full_context(self, max_chars: int = 6000) -> List[Document]:
+        """Return chunks in original document order asynchronously."""
         try:
-            target_collections = self._resolve_target_collections()
+            target_collections = await self._resolve_target_collections()
+            if not target_collections:
+                logging.info("get_full_context: no target collections to retrieve (session has no documents)")
+                return []
 
             all_docs: List[Document] = []
             for collection_name in target_collections:
                 vs = VectorStore(collection_name=collection_name)
-                docs = vs.get_all_documents()
+                docs = await vs.aget_all_documents()
                 docs.sort(key=lambda d: d.metadata.get("doc_index", 0))
                 all_docs.extend(docs)
 
@@ -406,12 +473,6 @@ class Retriever:
                 selected.append(doc)
                 total_chars += doc_len
 
-            logging.info(
-                "Full-context retrieval: %d chunks (%d chars) across %d collections",
-                len(selected),
-                total_chars,
-                len(target_collections),
-            )
             return selected
         except (CollectionNotFoundError, KnowledgeBaseEmptyError):
             raise

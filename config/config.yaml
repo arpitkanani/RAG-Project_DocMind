@@ -3,10 +3,10 @@ embedding:
   device: "cpu"
 
 llm:
-  provider: "groq" #"google" 
-  model: "openai/gpt-oss-20b" #"gemini-2.0-flash" #
-  temperature: 0.5
-  max_tokens: 2048
+  provider: "groq"
+  model: "openai/gpt-oss-20b"
+  temperature: 0.1
+  max_tokens: 1024
   rate_limit:
     patterns:
       rpd: ["requests per day", "request per day", "rpd", "daily limit", "requests_per_day"]
@@ -19,7 +19,6 @@ llm:
       rpd: "We've hit today's question limit. Please try again after midnight, or contact support if this keeps happening."
       tpd: "We've hit today's usage limit for answers. Please try again tomorrow."
       default: "We're experiencing high demand right now. Please wait a moment and try again."
-
 
 # splitting chunks of text for embedding and retrieval
 splitter:
@@ -37,22 +36,23 @@ splitter:
 # retriver use MMR for divers answer
 retriever:
   search_type: "similarity"
-  k: 4
-  fetch_k: 13
-  lambda_mult: 0.7
-  score_threshold: 0.5
+  k: 7
+  fetch_k: 45
+  max_query_variants: 3
+  lambda_mult: 0.6
+  score_threshold: 0.3
   summary_max_chars: 6000 
-  collection_margin: 0.8   # was hardcoded 0.6 — higher = stricter, less cross-document bleed
-  doc_margin: 0.778
+  collection_margin: 0.8
+  doc_margin: 0.7
 
-#vectore database used chroma
+# vector database
 vectorstore:
   url: "http://localhost:6333"
-  collection_name: "docmind"              # name of collection
+  collection_name: "docmind"
 
 memory:
-  persist_directory: "data/memory"          # saved here on disk
-  window_days: 7                          # how many past interactions to remember
+  persist_directory: "data/memory"
+  window_days: 7
   recent_messages_verbatim: 6
 
 upload:
@@ -64,11 +64,11 @@ upload:
     - ".md"
     - ".xlsx"
   upload_dir: "data/uploads"
-  max_file_size_mb: 20      
-  max_files_count: 5  
+  max_file_size_mb: 100
+  max_files_count: 5
 
 youtube:
-  language: ["en","hi","gu"]   # language for YouTube video transcription
+  language: ["en","hi","gu"]
   max_chars: 150000
 
 postgres:

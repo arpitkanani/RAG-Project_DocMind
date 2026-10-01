@@ -35,3 +35,7 @@ class KnowledgeBaseEmptyError(Exception):
     """Raised when a query is attempted before any collection exists."""
 
     pass
+
+
+# Alias for the DocuVortex rebranding
+DocuVortexException = CustomException

@@ -2,6 +2,7 @@ import sys
 import yaml
 import os
 import re
+from langsmith import traceable
 from src.components.document_loader import DocumentLoader
 from src.components.text_splitter import TextSplitter
 from src.components.vector_store import VectorStore
@@ -43,10 +44,12 @@ class IngestionPipeline:
             logging.error(f"Error initializing Ingestion Pipeline: {e}")
             raise CustomException(e, sys) # type: ignore
         
+    @traceable(run_type="chain", name="ingestion_pipeline")
     def run(self, source:str,
             collection_name:str=None,
             clear_existing:bool = True,
-            on_retry=None) -> dict:
+            on_retry=None,
+            progress_callback=None) -> dict:
         """
         Run full ingestion pipeline on any source.
 
@@ -60,11 +63,11 @@ class IngestionPipeline:
             if collection_name is None:
                 collection_name = self._get_collection_name(source)
             logging.info(f"Collection: {collection_name}")
-            docs = self.loader.load(source)
-            logging.info(f"Loaded {len(docs)} documents")
+            docs_iter = self.loader.load(source)
+            logging.info("Started loading document stream")
 
-            chunks = self.splitter.split(docs)
-            logging.info(f"Created {len(chunks)} chunks")
+            chunks_iter = self.splitter.lazy_split(docs_iter)
+            logging.info("Started chunking stream")
 
             vs = VectorStore(collection_name=collection_name)
 
@@ -72,8 +75,14 @@ class IngestionPipeline:
                 vs.delete_collection()
                 logging.info("Existing collection cleared")
 
+            chunks_count = [0]
+            def wrapped_progress(count: int):
+                chunks_count[0] = count
+                if progress_callback:
+                    progress_callback(count)
+
             try:
-                vs.add_documents(chunks, on_retry=on_retry)
+                vs.add_documents(chunks_iter, on_retry=on_retry, progress_callback=wrapped_progress)
             except Exception:
                 # Ingestion failed partway through -- don't leave a partially
                 # populated, orphaned collection behind. Best-effort cleanup;
@@ -91,18 +100,29 @@ class IngestionPipeline:
                     )
                 raise
 
+            if chunks_count[0] == 0:
+                logging.warning("Ingestion finished with 0 chunks for %s", source)
+                return {
+                    "success": False,
+                    "error": "No readable text could be extracted from this document. If this is a scanned PDF or contains only images, text extraction requires an OCR-readable PDF.",
+                    "source": source,
+                    "collection_name": collection_name,
+                    "chunks_stored": 0,
+                    "is_youtube": is_youtube_url(source),
+                }
+
             result = {
                 "success":         True,
                 "source":          source,
                 "collection_name": collection_name,
-                "documents_loaded": len(docs),
-                "chunks_stored":   len(chunks),
+                "documents_loaded": 1, # Streamed
+                "chunks_stored":   chunks_count[0],
                 "is_youtube":      is_youtube_url(source)
             }
 
             logging.info(
                 f"Ingestion complete | "
-                f"chunks: {len(chunks)} | "
+                f"chunks: {chunks_count[0]} | "
                 f"collection: {collection_name}"
             )
             return result
@@ -110,12 +130,14 @@ class IngestionPipeline:
         except Exception as e:
             raise CustomException(e, sys) # type: ignore
         
+    @traceable(run_type="chain", name="ingestion_pipeline")
     def run_from_bytes(
         self,
         file_bytes: bytes,
         filename: str,
         collection_name: str | None = None,
         on_retry=None,
+        progress_callback=None,
     ) -> dict:
         
         """
@@ -142,7 +164,7 @@ class IngestionPipeline:
             logging.info(f"File saved: {file_path}")
 
             # run normal pipeline on saved file
-            result = self.run(file_path, collection_name=collection_name, on_retry=on_retry)
+            result = self.run(file_path, collection_name=collection_name, on_retry=on_retry, progress_callback=progress_callback)
             return result
 
         except Exception as e:

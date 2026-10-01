@@ -48,8 +48,12 @@ const API = {
   memory: "/memory",
 };
 
-const SESSION_KEY = "docmind.activeSessionId";
-const API_KEY_STORAGE = "docmind.apiKey";
+const SESSION_KEY = "docuvortex.activeSessionId";
+const API_KEY_STORAGE = "docuvortex.apiKey";
+const FALLBACK_ANSWER_TEXT = "I couldn't find information about that in the uploaded document(s).";
+
+// Server-provided last active session ID (recovered during auth check)
+let _serverLastSessionId = null;
 
 // ═══════════════════════════════════════════════════════════════════
 //  BOOT
@@ -62,67 +66,188 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 /**
- * Shows the styled API key modal until a non-empty key is saved.
- * Blocks bootApp() the same way the old window.prompt() loop did,
- * just without the native browser chrome.
+ * Ensures user has an active key or prompts directly with popup on fresh load.
+ * Remembers key across browser refresh, restarts, and tabs.
  */
-function ensureApiKey() {
+async function ensureApiKey() {
   const existing = localStorage.getItem(API_KEY_STORAGE);
-  if (existing) return Promise.resolve(existing);
+  if (existing && existing.trim()) {
+    if (existing === "guest") return existing;
+    try {
+      const statusRes = await fetch("/api/auth/session-status", {
+        headers: { "X-API-Key": existing.trim() },
+        credentials: "include",
+      });
+      if (statusRes.ok) {
+        const authData = await statusRes.json();
+        if (authData && authData.authenticated) {
+          _serverLastSessionId = authData.last_session_id || null;
+          return existing.trim();
+        }
+      }
+    } catch (err) {
+      console.debug("API key check note:", err);
+      return existing.trim(); // Network blip; preserve key
+    }
+    localStorage.removeItem(API_KEY_STORAGE);
+  }
 
+  // Fresh browser / new user — ask directly with popup modal
+  return await openApiKeyModal({ forceRequired: true });
+}
+
+/**
+ * Opens the styled API key modal so users can input/update their seed_user.py key.
+ */
+function openApiKeyModal({ forceRequired = false } = {}) {
   return new Promise((resolve) => {
     const backdrop = el("apiKeyModalBackdrop");
     const input = el("apiKeyInput");
     const errorEl = el("apiKeyError");
     const saveBtn = el("apiKeySave");
+    const guestBtn = el("apiKeyGuest");
 
-    errorEl.style.display = "none";
-    input.value = "";
+    if (!backdrop || !input || !saveBtn) {
+      return resolve("");
+    }
+
+    if (errorEl) errorEl.style.display = "none";
+    const currentKey = localStorage.getItem(API_KEY_STORAGE);
+    input.value = currentKey && currentKey !== "guest" ? currentKey : "";
     backdrop.classList.add("open");
-    setTimeout(() => input.focus(), 50);
+    setTimeout(() => input.focus(), 60);
 
-    function trySave() {
-      const key = input.value.trim();
-      if (!key) {
-        errorEl.textContent = "Please enter your API key.";
-        errorEl.style.display = "block";
-        return;
-      }
-      localStorage.setItem(API_KEY_STORAGE, key);
+    function cleanup() {
       backdrop.classList.remove("open");
       saveBtn.removeEventListener("click", trySave);
       input.removeEventListener("keydown", onKeydown);
-      resolve(key);
+      if (guestBtn) guestBtn.removeEventListener("click", onGuest);
+      backdrop.removeEventListener("click", onBackdrop);
+    }
+
+    function onBackdrop(e) {
+      if (e.target === backdrop && !forceRequired) {
+        cleanup();
+        resolve(localStorage.getItem(API_KEY_STORAGE) || "guest");
+      }
+    }
+
+    async function trySave() {
+      const key = input.value.trim();
+      if (!key) {
+        if (errorEl) {
+          errorEl.textContent = "Please enter your API key.";
+          errorEl.style.display = "block";
+        }
+        return;
+      }
+
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Verifying...";
+      if (errorEl) errorEl.style.display = "none";
+
+      try {
+        const verifyRes = await fetch("/api/auth/verify-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: key }),
+        });
+        const verifyData = await verifyRes.json();
+
+        if (!verifyData?.valid) {
+          if (errorEl) {
+            errorEl.textContent =
+              verifyData?.message ||
+              "Invalid API key. Check key generated with seed_user.py";
+            errorEl.style.display = "block";
+          }
+          saveBtn.disabled = false;
+          saveBtn.textContent = "Save Key";
+          return;
+        }
+
+        // Cache last session ID returned from PostgreSQL
+        if (verifyData.last_session_id) {
+          _serverLastSessionId = verifyData.last_session_id;
+        }
+
+        localStorage.setItem(API_KEY_STORAGE, key);
+        cleanup();
+        showToast("API key verified. Welcome!", "success");
+        await bootApp();
+        resolve(key);
+      } catch (err) {
+        localStorage.setItem(API_KEY_STORAGE, key);
+        cleanup();
+        resolve(key);
+      }
+    }
+
+    function onGuest() {
+      localStorage.setItem(API_KEY_STORAGE, "guest");
+      cleanup();
+      showToast("Continuing in Guest mode.", "success");
+      bootApp();
+      resolve("guest");
     }
 
     function onKeydown(e) {
-      if (e.key === "Enter") trySave();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        trySave();
+      }
+      if (e.key === "Escape" && !forceRequired) {
+        cleanup();
+        resolve(localStorage.getItem(API_KEY_STORAGE) || "guest");
+      }
     }
 
     saveBtn.addEventListener("click", trySave);
     input.addEventListener("keydown", onKeydown);
+    if (guestBtn) guestBtn.addEventListener("click", onGuest);
+    backdrop.addEventListener("click", onBackdrop);
   });
 }
 
-async function bootApp() {
-  const sessions = await loadSessions();
-  const storedId = localStorage.getItem(SESSION_KEY);
+window.openApiKeyModal = openApiKeyModal;
 
-  // 1. Try the stored session first (browser-refresh recovery)
+async function bootApp() {
+  const apiKey = localStorage.getItem(API_KEY_STORAGE);
+
+  // Fetch latest active session from PostgreSQL if not cached
+  if (!_serverLastSessionId && apiKey && apiKey !== "guest") {
+    try {
+      const statusRes = await fetch("/api/auth/session-status", {
+        headers: { "X-API-Key": apiKey },
+        credentials: "include",
+      });
+      if (statusRes.ok) {
+        const authData = await statusRes.json();
+        if (authData?.authenticated && authData.last_session_id) {
+          _serverLastSessionId = authData.last_session_id;
+        }
+      }
+    } catch {}
+  }
+
+  const sessions = await loadSessions();
+  const storedId = localStorage.getItem(SESSION_KEY) || _serverLastSessionId;
+
+  // 1. Try restoring the stored/server session first (persisted in PostgreSQL)
   if (storedId) {
     const ok = await restoreSession(storedId);
     if (ok) return;
     localStorage.removeItem(SESSION_KEY);
   }
 
-  // 2. Fall back to the most-recent available session
-  const fallback = sessions.find((s) => s.session_id !== storedId);
-  if (fallback) {
-    const ok = await restoreSession(fallback.session_id);
+  // 2. Fall back to the most-recent available session from the user's PostgreSQL session list
+  if (sessions && sessions.length > 0) {
+    const latest = sessions[0];
+    const ok = await restoreSession(latest.session_id);
     if (ok) return;
   }
 
-  // 3. Nothing to restore — open a fresh workspace
+  // 3. No prior sessions found in PostgreSQL — start fresh
   await createNewSession();
   renderWelcomeOnly();
 }
@@ -140,18 +265,46 @@ function bindUI() {
   });
   el("clearAllBtn").addEventListener("click", handleClearAll);
 
-  // Modal triggers
-  function isNarrowAttachViewport() {
-    return window.matchMedia("(max-width: 640px)").matches;
+  const apiKeyBtn = el("apiKeyBtn");
+  if (apiKeyBtn) {
+    apiKeyBtn.addEventListener("click", openApiKeyModal);
   }
 
-  el("attachBtn").addEventListener("click", () => {
-    if (isNarrowAttachViewport()) {
-      el("mobileAttachMenu").classList.toggle("open");
-    } else {
+  // Chat input '+' button opens the upload modal with Document and YouTube options
+  const attachBtn = el("attachBtn");
+  if (attachBtn) {
+    attachBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (conversationState.uploadInProgress) {
+        return showToast("Please wait for current upload to complete.", "error");
+      }
       openModal();
-    }
-  });
+    });
+  }
+
+  const ytInput = el("ytInput");
+  if (ytInput) {
+    ytInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleSubmitUpload();
+      }
+    });
+  }
+
+  const chatFileInput = el("chatFileInput") || el("fileInput");
+  if (chatFileInput) {
+    chatFileInput.addEventListener("change", (e) => {
+      if (conversationState.uploadInProgress) {
+        return showToast("Please wait for current upload to complete.", "error");
+      }
+      const files = Array.from(e.target.files || []);
+      if (files.length) {
+        handleFiles(files);
+      }
+      e.target.value = "";
+    });
+  }
 
   el("mobileMenuUpload").addEventListener("click", () => {
     el("mobileAttachMenu").classList.remove("open");
@@ -194,31 +347,43 @@ function bindUI() {
     if (e.target === el("modalBackdrop")) closeModal();
   });
 
-  // Mobile sidebar — off-canvas overlay
+  // Mobile & tablet sidebar — off-canvas drawer or collapsible flex column
   const sidebarEl = el("sidebar");
   const overlayEl = el("sidebarOverlay");
   const sidebarToggle = el("sidebarToggle");
 
   function isMobileViewport() {
-    return window.matchMedia("(max-width: 900px)").matches;
+    return window.matchMedia("(max-width: 768px)").matches;
   }
 
   const sidebarToggleIcon = el("sidebarToggleIcon");
-  const ICON_OPEN = // sidebar is open — show "collapse" (chevrons pointing left)
-    '<polyline points="11 5 4 12 11 19"/><polyline points="19 5 12 12 19 19"/>';
-  const ICON_CLOSED = // sidebar is closed — show "expand" (chevrons pointing right)
-    '<polyline points="13 5 20 12 13 19"/><polyline points="5 5 12 12 5 19"/>';
+  const ICON_COLLAPSE = // chevrons pointing left <<<
+    '<polyline points="9 4 4 10 9 16"/><polyline points="16.5 4 11.5 10 16.5 16"/><polyline points="24 4 19 10 24 16"/>';
+  const ICON_EXPAND = // chevrons pointing right >>>
+    '<polyline points="4 4 9 10 4 16"/><polyline points="11.5 4 16.5 10 11.5 16"/><polyline points="19 4 24 10 19 16"/>';
 
   function openSidebar() {
     sidebarEl.classList.remove("collapsed");
-    overlayEl.classList.add("open");
-    sidebarToggleIcon.innerHTML = ICON_OPEN;
+    document.body.classList.remove("sidebar-collapsed");
+    if (isMobileViewport()) {
+      overlayEl.classList.add("open");
+    } else {
+      overlayEl.classList.remove("open");
+    }
+    if (sidebarToggleIcon) {
+      sidebarToggleIcon.setAttribute("viewBox", "0 0 28 20");
+      sidebarToggleIcon.innerHTML = ICON_COLLAPSE;
+    }
   }
 
   function closeSidebar() {
     sidebarEl.classList.add("collapsed");
+    document.body.classList.add("sidebar-collapsed");
     overlayEl.classList.remove("open");
-    sidebarToggleIcon.innerHTML = ICON_CLOSED;
+    if (sidebarToggleIcon) {
+      sidebarToggleIcon.setAttribute("viewBox", "0 0 28 20");
+      sidebarToggleIcon.innerHTML = ICON_EXPAND;
+    }
   }
 
   sidebarToggle.addEventListener("click", () => {
@@ -228,29 +393,34 @@ function bindUI() {
 
   const sidebarCloseBtn = el("sidebarCloseBtn");
   if (sidebarCloseBtn) {
-    sidebarCloseBtn.addEventListener("click", closeSidebar);
+    sidebarCloseBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeSidebar();
+    });
   }
 
-  overlayEl.addEventListener("click", closeSidebar);
+  overlayEl.addEventListener("click", () => {
+    if (isMobileViewport()) {
+      closeSidebar();
+    }
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && isMobileViewport()) closeSidebar();
   });
 
-  // Sidebar starts collapsed on phones/tablets, open on desktop.
-  // On resize (e.g. rotating a tablet), re-apply the correct default
-  // rather than leaving it stuck in whatever state it was in before.
+  // Sidebar starts collapsed on phones, open on tablets/desktop
   function applyResponsiveSidebarDefault() {
-    if (isMobileViewport()) closeSidebar();
-    else {
-      sidebarEl.classList.remove("collapsed");
-      overlayEl.classList.remove("open");
+    if (isMobileViewport()) {
+      closeSidebar();
+    } else {
+      openSidebar();
     }
   }
   applyResponsiveSidebarDefault();
   window.addEventListener("resize", applyResponsiveSidebarDefault);
 
-  // Selecting a chat on mobile should close the sidebar so the chat is visible
+  // Selecting a chat on mobile should close the sidebar
   el("sidebarChats").addEventListener("click", () => {
     if (isMobileViewport()) closeSidebar();
   });
@@ -334,22 +504,43 @@ async function restoreSession(sessionId) {
 
   workspaceState.sessionId = sessionId;
 
+  const msgs = Array.isArray(data.messages) ? data.messages : [];
+
+  // Track all collections that have already been attached to a user query message in this chat
+  const alreadyQueriedCollections = new Set();
+  msgs.forEach((m) => {
+    if (m.role === "human" && Array.isArray(m.attachments)) {
+      m.attachments.forEach((att) => {
+        if (typeof att === "string") {
+          alreadyQueriedCollections.add(att);
+        } else if (att && att.collection) {
+          alreadyQueriedCollections.add(att.collection);
+        }
+      });
+    }
+  });
+
   // Restore workspace sources from backend attachments
-  workspaceState.sources = (data.attachments || []).map((a) => ({
-    localId: uid(),
-    name: a.name,
-    collection: a.collection,
-    type: a.type || "doc",
-    status: "ready",
-    isNew: false, // restored sources are NOT new — they won't attach to next message
-    active: true, // included in query scope by default; user can toggle off
-  }));
+  workspaceState.sources = (data.attachments || []).map((a) => {
+    // If an attachment has never been attached to any user query message in this chat,
+    // it remains pending (isNew = true). This keeps it visible as a chip above
+    // the input area across chat switches, and attaches it to the first query sent.
+    const isAlreadyQueried = Boolean(a.collection && alreadyQueriedCollections.has(a.collection));
+    return {
+      localId: uid(),
+      name: a.name,
+      collection: a.collection,
+      type: a.type || "doc",
+      status: "ready",
+      isNew: !isAlreadyQueried,
+      active: true, // included in query scope by default; user can toggle off
+    };
+  });
 
   localStorage.setItem(SESSION_KEY, sessionId);
 
   // Restore message thread
   clearMessages();
-  const msgs = Array.isArray(data.messages) ? data.messages : [];
   if (!msgs.length) {
     renderWelcomeOnly();
   } else {
@@ -377,12 +568,19 @@ async function loadSessions() {
 }
 
 async function handleNewChat() {
+  if (conversationState.uploadInProgress) {
+    return showToast("Please wait for current upload to complete.", "error");
+  }
   await createNewSession();
   renderWelcomeOnly();
   await loadSessions();
 }
 
 async function switchSession(sessionId) {
+  if (conversationState.uploadInProgress) {
+    return showToast("Please wait for current upload to complete.", "error");
+  }
+  if (sessionId === workspaceState.sessionId) return;
   const ok = await restoreSession(sessionId);
   if (!ok) {
     showToast("Could not load that chat.", "error");
@@ -631,13 +829,13 @@ async function uploadFile(file) {
         if (src) {
           src.collection = result.collection_name;
           src.status = "ready";
-          // isNew stays true — will attach to the NEXT message the user sends
+          src.isNew = true;
         }
         setUploadBusy(hasProcessing());
         renderComposerChips();
         renderSourcesPanel();
         await loadSessions();
-        showToast(`${file.name} indexed successfully.`, "success");
+        showToast(`${file.name} uploaded successfully.`, "success");
       },
     });
   } catch {
@@ -701,12 +899,13 @@ async function handleYouTube() {
             : "YouTube transcript";
           finalSrc.collection = result.collection_name;
           finalSrc.status = "ready";
+          finalSrc.isNew = true;
         }
         setUploadBusy(hasProcessing());
         renderComposerChips();
         renderSourcesPanel();
         await loadSessions();
-        showToast("YouTube transcript indexed.", "success");
+        showToast("YouTube video indexed successfully.", "success");
       },
     });
   } catch {
@@ -763,40 +962,38 @@ async function sendMessage() {
   const input = el("queryInput");
   const query = input.value.trim();
   if (!query) return;
-  if (conversationState.uploadInProgress)
+  if (
+    conversationState.uploadInProgress ||
+    workspaceState.sources.some((s) => s.status === "processing")
+  ) {
     return showToast(
       "Please wait until the source finishes processing.",
       "error"
     );
+  }
   if (conversationState.isLoading) return;
 
-  // Guard: block query when workspace is completely empty
+  // Check if any sources are uploaded/ready
   const readySources = workspaceState.sources.filter(
     (s) => s.status === "ready" && s.collection
   );
-  if (!readySources.length) {
-    showToast(
-      "Please upload a document or add a YouTube source first.",
-      "error"
-    );
-    return;
-  }
 
-  const activeSources = readySources.filter((s) => s.active !== false);
-  if (!activeSources.length) {
-    showToast(
-      "All sources are excluded. Click a source chip to include it.",
-      "error"
-    );
-    return;
+  // Determine scoped collections
+  let scopedCollectionNames = [];
+
+  if (readySources.length > 0) {
+    const activeSources = readySources.filter((s) => s.active !== false);
+    if (!activeSources.length) {
+      showToast(
+        "All sources are excluded. Click a source chip to include it.",
+        "error"
+      );
+      return;
+    }
+    scopedCollectionNames = activeSources.map((s) => s.collection);
+  } else {
+    scopedCollectionNames = [];
   }
-  // Only send an explicit scope when the user has excluded something —
-  // otherwise omit it so the backend's default "search everything" behavior
-  // is unchanged for anyone who never touches the toggle.
-  const scopedCollectionNames =
-    activeSources.length < readySources.length
-      ? activeSources.map((s) => s.collection)
-      : null;
 
   // Collect newly-added chips — these will appear alongside this message in the chat.
   // Sources uploaded in previous messages (isNew = false) are NOT duplicated here.
@@ -824,70 +1021,313 @@ async function sendMessage() {
   updateSendButton();
 
   conversationState.isLoading = true;
-  const typingId = showTyping();
+
+  let streamedText = "";
+  let messageRow = null;
+  let bubbleEl = null;
+  let activeToolRunning = false;
+  let activeToolLabel = "";
+  let activeToolBadgeType = "tool";
+
+  // Single unified circle-spinner status card created immediately
+  const container = el("messages");
+  messageRow = document.createElement("div");
+  messageRow.className = "msg-row ai";
+  messageRow.innerHTML = `
+    <div class="msg-avatar">AI</div>
+    <div class="msg-body">
+      <div class="tool-status-badge structuring" id="currentToolBadge">
+        <span class="tool-spinner"></span>
+        <span class="tool-label">Structuring answer...</span>
+      </div>
+      <div class="msg-bubble" style="display:none;"></div>
+    </div>`;
+  container.appendChild(messageRow);
+  bubbleEl = messageRow.querySelector(".msg-bubble");
+  container.scrollTop = container.scrollHeight;
 
   try {
-    const data = await apiFetch(API.query, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    await streamQueryAnswer(
+      API.query,
+      {
         query,
         session_id: workspaceState.sessionId,
         message_attachments: messageAttachments.length ? messageAttachments : null,
         collection_names: scopedCollectionNames,
-      }),
-    });
+      },
+      {
+        onStatus: (statusData) => {
+          if (activeToolRunning) return;
+          const statusLabel = statusData.message || "Retrieving data...";
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge) {
+            badge.className = `tool-status-badge ${statusData.stage || "search"}`;
+            badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${statusLabel}</span>`;
+            badge.style.display = "inline-flex";
+          }
+          container.scrollTop = container.scrollHeight;
+        },
+        onToolStatus: (toolData) => {
+          activeToolRunning = true;
+          activeToolLabel = toolData.message || `🔧 Using ${toolData.tool || "tool"}...`;
+          activeToolBadgeType = toolData.badge_type || "tool";
+          const badgeClass = `tool-status-badge ${activeToolBadgeType}`;
 
-    removeTyping(typingId);
+          if (!messageRow) {
+            const container = el("messages");
+            messageRow = document.createElement("div");
+            messageRow.className = "msg-row ai";
+            messageRow.innerHTML = `
+              <div class="msg-avatar">AI</div>
+              <div class="msg-body">
+                <div class="${badgeClass}" id="currentToolBadge">
+                  <span class="tool-spinner"></span>
+                  <span class="tool-label">${activeToolLabel}</span>
+                </div>
+                <div class="msg-bubble" style="display:none;"></div>
+              </div>`;
+            container.appendChild(messageRow);
+            bubbleEl = messageRow.querySelector(".msg-bubble");
+          } else {
+            let badge = messageRow.querySelector("#currentToolBadge");
+            if (!badge) {
+              badge = document.createElement("div");
+              badge.id = "currentToolBadge";
+              messageRow.querySelector(".msg-body").prepend(badge);
+            }
+            badge.className = badgeClass;
+            badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${activeToolLabel}</span>`;
+            badge.style.display = "inline-flex";
+          }
+          const container = el("messages");
+          container.scrollTop = container.scrollHeight;
+        },
+        onToolStart: (toolData) => {
+          if (!activeToolRunning && toolData) {
+            const toolDisplayMap = {
+              "search_tool": ["search", "🔍 Searching the web..."],
+              "duckduckgo_search": ["search", "🔍 Searching the web..."],
+              "calculator_tool": ["calc", "🧮 Calculating..."],
+              "calculator": ["calc", "🧮 Calculating..."],
+              "stock_price_tool": ["stock", "📈 Fetching stock price..."],
+              "get_stock_price": ["stock", "📈 Fetching stock price..."],
+              "get_weather": ["weather", "🌤️ Checking weather..."],
+              "search_arxiv": ["research", "📚 Searching academic papers..."],
+              "summarize_document": ["rag", "Reading document context..."],
+              "rag_query": ["rag", "Searching knowledge base..."],
+            };
+            const match = toolDisplayMap[toolData.name] || ["tool", `🔧 Using ${toolData.name || "tool"}...`];
+            activeToolBadgeType = match[0];
+            activeToolLabel = match[1];
+            const badgeClass = `tool-status-badge ${activeToolBadgeType}`;
 
-    if (!data || data.error_code) {
-      if (data?.error_code === "collection_not_found") {
-        const missing = Array.isArray(data.missing_collections)
-          ? data.missing_collections
-          : [];
-        workspaceState.sources = workspaceState.sources.filter(
-          (s) => !missing.includes(s.collection)
-        );
-        renderComposerChips();
-        renderSourcesPanel();
-        await loadSessions();
-        showToast(
-          "One or more sources were removed. Please upload again if needed.",
-          "error"
-        );
-        return;
+            if (!messageRow) {
+              const container = el("messages");
+              messageRow = document.createElement("div");
+              messageRow.className = "msg-row ai";
+              messageRow.innerHTML = `
+                <div class="msg-avatar">AI</div>
+                <div class="msg-body">
+                  <div class="${badgeClass}" id="currentToolBadge">
+                    <span class="tool-spinner"></span>
+                    <span class="tool-label">${activeToolLabel}</span>
+                  </div>
+                  <div class="msg-bubble" style="display:none;"></div>
+                </div>`;
+              container.appendChild(messageRow);
+              bubbleEl = messageRow.querySelector(".msg-bubble");
+            } else {
+              let badge = messageRow.querySelector("#currentToolBadge");
+              if (!badge) {
+                badge = document.createElement("div");
+                badge.id = "currentToolBadge";
+                messageRow.querySelector(".msg-body").prepend(badge);
+              }
+              badge.className = badgeClass;
+              badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${activeToolLabel}</span>`;
+              badge.style.display = "inline-flex";
+            }
+          }
+        },
+        onToolEnd: () => {
+          // Keep tool badge visible with tool identity until tokens arrive or synthesis begins
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge && activeToolRunning) {
+            badge.className = `tool-status-badge ${activeToolBadgeType}`;
+            badge.innerHTML = `<span class="tool-spinner"></span><span class="tool-label">${activeToolLabel} • Structuring...</span>`;
+            badge.style.display = "inline-flex";
+          }
+        },
+        onClarification: (data) => {
+          activeToolRunning = false;
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge) badge.style.display = "none";
+          streamedText = "__clarification__"; // Mark so done event doesn't overwrite
+
+          const optionsHtml = (data.options || [])
+            .map(
+              (opt) =>
+                `<button type="button" class="clarify-option" data-query="${escHtml(opt)}">${escHtml(opt)}</button>`
+            )
+            .join("");
+
+          if (!messageRow) {
+            messageRow = document.createElement("div");
+            messageRow.className = "msg-row ai";
+            container.appendChild(messageRow);
+          }
+
+          messageRow.innerHTML = `
+            <div class="msg-avatar">AI</div>
+            <div class="msg-body">
+              <div class="msg-bubble clarify-bubble">
+                <p class="clarify-message">${escHtml(data.message || "Your question is a bit vague. Could you be more specific?")}</p>
+                <div class="clarify-options">${optionsHtml}</div>
+                <div class="clarify-divider"><span>or</span></div>
+                <div class="clarify-custom">
+                  <input type="text" class="clarify-input" placeholder="Type your refined question..." />
+                  <button type="button" class="clarify-send" title="Send" disabled>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4Z"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>`;
+
+          bubbleEl = messageRow.querySelector(".msg-bubble");
+          const bubble = messageRow.querySelector(".clarify-bubble");
+          const customInput = bubble.querySelector(".clarify-input");
+          const customSend = bubble.querySelector(".clarify-send");
+          const optionBtns = bubble.querySelectorAll(".clarify-option");
+
+          // Option click -> mutual exclusion, send query
+          optionBtns.forEach((btn) => {
+            btn.addEventListener("click", () => {
+              if (bubble.classList.contains("clarify-resolved")) return;
+              bubble.classList.add("clarify-resolved");
+              optionBtns.forEach((b) => {
+                b.disabled = true;
+                b.classList.add("clarify-dimmed");
+              });
+              btn.classList.remove("clarify-dimmed");
+              btn.classList.add("clarify-selected");
+              customInput.disabled = true;
+              customInput.classList.add("clarify-disabled");
+              customSend.disabled = true;
+              el("queryInput").value = btn.dataset.query;
+              sendMessage();
+            });
+          });
+
+          // Typing in input -> disable option buttons
+          customInput.addEventListener("input", () => {
+            const hasText = customInput.value.trim().length > 0;
+            customSend.disabled = !hasText;
+            optionBtns.forEach((b) => {
+              b.disabled = hasText;
+              b.classList.toggle("clarify-disabled", hasText);
+            });
+          });
+
+          // Custom submit
+          const handleCustomSubmit = () => {
+            if (bubble.classList.contains("clarify-resolved")) return;
+            const q = customInput.value.trim();
+            if (!q) return;
+            bubble.classList.add("clarify-resolved");
+            customInput.disabled = true;
+            customSend.disabled = true;
+            optionBtns.forEach((b) => {
+              b.disabled = true;
+              b.classList.add("clarify-dimmed");
+            });
+            el("queryInput").value = q;
+            sendMessage();
+          };
+
+          customSend.addEventListener("click", handleCustomSubmit);
+          customInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleCustomSubmit();
+            }
+          });
+
+          container.scrollTop = container.scrollHeight;
+        },
+        onToken: (token) => {
+          activeToolRunning = false;
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge) badge.style.display = "none";
+          streamedText += token;
+          if (bubbleEl) {
+            bubbleEl.style.display = "block";
+            bubbleEl.innerHTML = formatContent(streamedText);
+          }
+          container.scrollTop = container.scrollHeight;
+        },
+        onCitations: (citations) => {
+          if (citations && bubbleEl && streamedText !== FALLBACK_ANSWER_TEXT) {
+            const fullContent = `${streamedText}\n\n${citations}`;
+            bubbleEl.innerHTML = formatContent(fullContent);
+          }
+        },
+        onDone: async (doneData) => {
+          activeToolRunning = false;
+          const badge = messageRow ? messageRow.querySelector("#currentToolBadge") : null;
+          if (badge) badge.style.display = "none";
+          if (doneData.session_id) {
+            workspaceState.sessionId = doneData.session_id;
+            localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
+          }
+          if (bubbleEl && doneData.final_answer && streamedText !== "__clarification__") {
+            bubbleEl.style.display = "block";
+            bubbleEl.innerHTML = formatContent(doneData.final_answer);
+          }
+          try {
+            await loadSessions();
+          } catch {}
+        },
+        onError: async (errData) => {
+          if (!streamedText && messageRow) {
+            messageRow.remove();
+          }
+          if (errData?.error_code === "collection_not_found") {
+            const missing = Array.isArray(errData.missing_collections)
+              ? errData.missing_collections
+              : [];
+            workspaceState.sources = workspaceState.sources.filter(
+              (s) => !missing.includes(s.collection)
+            );
+            renderComposerChips();
+            renderSourcesPanel();
+            await loadSessions();
+            showToast(
+              "One or more sources were removed. Please upload again if needed.",
+              "error"
+            );
+            return;
+          }
+          if (errData?.error_code === "knowledge_base_empty") {
+            // Knowledge base empty should not block general conversational flow
+            return;
+          }
+          showToast(errData?.message || "Could not complete that request.", "error");
+        },
       }
-      if (data?.error_code === "knowledge_base_empty") {
-        showToast(
-          data.message || "Please upload a document or add a YouTube source first.",
-          "error"
-        );
-        return;
-      }
-      showToast(data?.message || "Could not complete that request.", "error");
-      return;
-    }
-
-    workspaceState.sessionId = data.session_id || workspaceState.sessionId;
-    localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
-    appendMessage(
-      data.answer || "I couldn't generate a response. Please try again.",
-      "ai"
     );
-
-    try {
-      await loadSessions();
-    } catch {
-      // Non-critical — answer is already shown
-    }
   } catch {
-    removeTyping(typingId);
+    if (!streamedText && messageRow) {
+      messageRow.remove();
+    }
     showToast("Server is down. Please try again.", "error");
   } finally {
     conversationState.isLoading = false;
     updateSendButton();
   }
 }
+
 
 // ═══════════════════════════════════════════════════════════════════
 //  RENDER — COMPOSER CHIPS
@@ -916,8 +1356,7 @@ function renderComposerChips() {
       const typeLabel = src.type === "yt" ? "YT" : "DOC";
       const removeBtn = processing
         ? `<span class="chip-indicator processing" aria-label="Processing"></span>`
-        : `<span class="chip-indicator ready" aria-label="Ready"></span>
-           <button class="chip-remove" data-collection="${escHtml(src.collection)}" title="Remove source">
+        : `<button class="chip-remove" data-collection="${escHtml(src.collection)}" data-local-id="${escHtml(src.localId)}" title="Remove source">
              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5">
                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
              </svg>
@@ -934,7 +1373,19 @@ function renderComposerChips() {
     .join("");
 
   row.querySelectorAll(".chip-remove").forEach((btn) => {
-    btn.addEventListener("click", () => removeSource(btn.dataset.collection));
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const col = btn.dataset.collection;
+      const localId = btn.dataset.localId;
+      if (col) {
+        removeSource(col);
+      } else if (localId) {
+        removeLocalSource(localId);
+        setUploadBusy(hasProcessing());
+        renderComposerChips();
+        renderSourcesPanel();
+      }
+    });
   });
 }
 
@@ -1167,28 +1618,6 @@ function renderSidebar() {
 //  RENDER — WELCOME / MESSAGES
 // ═══════════════════════════════════════════════════════════════════
 
-function showTyping() {
-  const container = el("messages");
-  const id = `typing-${Date.now()}`;
-  const row = document.createElement("div");
-  row.className = "typing-row";
-  row.id = id;
-  row.innerHTML = `
-    <div class="msg-avatar msg-avatar-ai">AI</div>
-    <div class="typing-bubble">
-      <div class="typing-label">Searching your workspace sources...</div>
-      <div class="typing-dots"><span></span><span></span><span></span></div>
-    </div>`;
-  container.appendChild(row);
-  container.scrollTop = container.scrollHeight;
-  return id;
-}
-
-function removeTyping(id) {
-  const node = document.getElementById(id);
-  if (node) node.remove();
-}
-
 function showWelcome() {
   let welcome = el("welcome");
   if (!welcome) {
@@ -1196,7 +1625,7 @@ function showWelcome() {
     welcome.id = "welcome";
     welcome.className = "welcome";
     welcome.innerHTML = `
-      <div class="welcome-logo">DM</div>
+      <div class="welcome-logo">DV</div>
       <h2>Analyze documents with a calm, focused workspace</h2>
       <p>Upload a file or YouTube transcript, then ask grounded questions without losing your document context.</p>
       <div class="suggestions">
@@ -1277,7 +1706,13 @@ window.insertSuggestion = insertSuggestion;
 // ═══════════════════════════════════════════════════════════════════
 
 function showToast(message, type = "success") {
-  const stack = el("toastStack");
+  let stack = el("toastStack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.id = "toastStack";
+    stack.className = "toast-stack";
+    document.body.appendChild(stack);
+  }
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   toast.textContent = message;
@@ -1373,12 +1808,14 @@ function escHtml(v) {
 async function apiFetch(url, options = {}) {
   try {
     const apiKey = localStorage.getItem(API_KEY_STORAGE);
+    const headers = { ...(options.headers || {}) };
+    if (apiKey && apiKey.trim() && apiKey !== "guest") {
+      headers["X-API-Key"] = apiKey.trim();
+    }
     const res = await fetch(url, {
       ...options,
-      headers: {
-        ...(options.headers || {}),
-        "X-API-Key": apiKey || "",
-      },
+      credentials: "include",
+      headers,
     });
 
     const text = await res.text();
@@ -1392,9 +1829,8 @@ async function apiFetch(url, options = {}) {
     }
 
     if (res.status === 401) {
-      // Key missing/invalid/revoked — clear it and force re-entry
       localStorage.removeItem(API_KEY_STORAGE);
-      showToast("Your API key is invalid or missing. Please re-enter it.", "error");
+      showToast("Invalid or expired API key. Please enter a valid API key.", "error");
       ensureApiKey();
       return null;
     }
@@ -1432,4 +1868,111 @@ function formatTime(iso) {
 function autoResize() {
   this.style.height = "auto";
   this.style.height = `${Math.min(this.scrollHeight, 180)}px`;
+}
+
+/**
+ * Streams SSE events from the /query endpoint token-by-token.
+ * @param {string} url
+ * @param {object} payload
+ * @param {object} callbacks
+ * @param {(data: object) => void} callbacks.onStatus
+ * @param {(token: string) => void} callbacks.onToken
+ * @param {(citations: string) => void} callbacks.onCitations
+ * @param {(data: object) => void} callbacks.onToolStart
+ * @param {(data: object) => void} callbacks.onToolEnd
+ * @param {(data: object) => void} callbacks.onDone
+ * @param {(err: object) => void} callbacks.onError
+ * @param {(data: object) => void} [callbacks.onClarification]
+ */
+async function streamQueryAnswer(
+  url,
+  payload,
+  { onStatus, onToolStatus, onToken, onCitations, onToolStart, onToolEnd, onDone, onError, onClarification }
+) {
+  try {
+    const apiKey = localStorage.getItem(API_KEY_STORAGE);
+    const headers = {
+      "Content-Type": "application/json",
+    };
+    if (apiKey && apiKey.trim() && apiKey !== "guest") {
+      headers["X-API-Key"] = apiKey.trim();
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem(API_KEY_STORAGE);
+      showToast("Invalid or expired API key. Please enter a valid API key.", "error");
+      ensureApiKey();
+      onError?.({ error_code: "unauthorized", message: "Invalid API key" });
+      return;
+    }
+
+    if (!res.ok) {
+      let errBody = null;
+      try {
+        errBody = await res.json();
+      } catch {}
+      onError?.(errBody || { error_code: "server_error", message: `Request failed with status ${res.status}` });
+      return;
+    }
+
+    if (!res.body) {
+      onError?.({ error_code: "no_body", message: "No response body received." });
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || ""; // Keep incomplete trailing fragment in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data:")) continue;
+
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr) continue;
+
+        try {
+          const event = JSON.parse(jsonStr);
+          if (event.type === "status") {
+            onStatus?.(event);
+          } else if (event.type === "tool_status") {
+            onToolStatus?.(event);
+          } else if (event.type === "token") {
+            onToken?.(event.content);
+          } else if (event.type === "clarification") {
+            onClarification?.(event);
+          } else if (event.type === "citations") {
+            onCitations?.(event.citations);
+          } else if (event.type === "tool_start") {
+            onToolStart?.(event);
+          } else if (event.type === "tool_end") {
+            onToolEnd?.(event);
+          } else if (event.type === "done") {
+            onDone?.(event);
+          } else if (event.type === "error") {
+            onError?.(event);
+          }
+        } catch (parseErr) {
+          console.error("SSE parse error:", parseErr, jsonStr);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Stream network error:", err);
+    onError?.({ error_code: "network_error", message: "Server is down. Please try again." });
+  }
 }
