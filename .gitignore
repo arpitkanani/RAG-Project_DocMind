@@ -261,5 +261,20 @@ Thumbs.db
 check_db.py
 test.py
 wipe_data.py
-MD-FILES/
+
 walkthrough.md
+# Marimo
+marimo/_static/
+marimo/_lsp/
+__marimo__/
+
+/data
+*.pyc
+__pycache__/
+*.log
+input/
+.env.docker
+
+check_db.py
+test.py
+wipe_data.py
