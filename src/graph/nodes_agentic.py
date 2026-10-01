@@ -221,8 +221,8 @@ TOOL_OR_CHITCHAT_PATTERNS = [
     r"\b\d+\s*[\+\-\*\/]\s*\d+\b",
     # ArXiv & scientific papers
     r"\b(search\s*arxiv|find\s*papers\s*on|research\s*papers?\s*on|arxiv)\b",
-    # Live web search & current news
-    r"\b(search\s*(the\s*)?web|latest\s*news|current\s*events|news\s*today|google\s*search)\b",
+    # Live web search, current news, sports tournaments, winners & temporal queries
+    r"\b(search\s*(the\s*)?web|latest\s*news|current\s*events|news\s*today|google\s*search|who\s*won|winner\s*of|world\s*cup|champions?\s*trophy|tournament|olympics|ipl|fifa|icc|t20|super\s*bowl)\b",
     # Conversational greetings & assistant identity
     r"^\s*(hi|hello|hey|greetings|good\s*morning|good\s*afternoon|good\s*evening|who\s*are\s*you|what\s*are\s*you|what\s*can\s*you\s*do|how\s*are\s*you|help)\s*[\?\!\.]*\s*$",
 ]
@@ -384,7 +384,7 @@ system_instruction = (
     "TOOL USAGE RULES: "
     "1. You MUST call `get_stock_price` whenever the user asks for stock quotes, share prices, or market data. "
     "2. You MUST call `calculator` for any mathematical operations or arithmetic calculations. "
-    "3. You MUST call `search_tool` for current events, latest news, recent developments, real-world facts, or whenever the user asks to look up, search, or check something on the web. Do NOT rely on static memory for current or verifiable facts. "
+    "3. You MUST call `search_tool` for current events, latest news, recent tournament results, sports champions, chronological timeline facts (e.g., 'latest', 'who won', '2024', '2025', '2026'), or whenever real-world facts are queried. Do NOT rely on static memory for temporal facts. "
     "4. For weather inquiries, you MUST use the `get_weather` tool. "
     "5. For requests regarding research papers, academic studies, or scientific literature, you MUST use the `search_arxiv` tool. "
     "NEVER emit conversational preambles (e.g., 'Let me check the weather...'). Call all tools silently. "

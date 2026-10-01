@@ -1,4 +1,7 @@
+from datetime import datetime
 import os
+import re
+import secrets
 import sys
 from typing import Annotated, Any, Dict, Sequence, TypedDict
 
@@ -6,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
@@ -28,31 +31,98 @@ class ChitChatState(TypedDict):
     tools_called: bool
 
 
-CHITCHAT_SYSTEM_PROMPT = (
-    "You are DocuVortex, an intelligent, helpful, and friendly AI assistant.\n\n"
-    "STRICT TOOL SELECTION RULES:\n"
-    "1. Stock Prices / Quotes / Crypto: When asked about the stock price, share price, quote, or ticker of ANY company or asset (e.g., Tesla, Apple, Mahindra, Axis Bank, Tata, Reliance, Bitcoin, Ethereum): "
-    "YOU MUST CALL 'get_stock_price'. NEVER call 'search_tool' for stock prices.\n"
-    "2. Weather / Temperature / Climate: When asked about the weather, temperature, humidity, rain, or climate for any city or location (e.g., Mumbai, New York, London, Delhi): "
-    "YOU MUST CALL 'get_weather'. NEVER call 'search_tool' for weather.\n"
-    "3. Math / Calculations: When asked to calculate or evaluate arithmetic (e.g., 230*460): "
-    "YOU MUST CALL 'calculator'. NEVER call 'search_tool' for math.\n"
-    "4. Academic Papers: When asked for scientific preprints or research papers, call 'search_arxiv'.\n"
-    "5. General Web Search: Call 'search_tool' ONLY for general news, public facts, or current events that are NOT stock quotes, weather, or math.\n\n"
-    "CRITICAL CONVERSATIONAL RULE:\n"
-    "Answer ONLY the user's latest question directly. DO NOT mention, repeat, or summarize past questions, previous tool results, or earlier conversation topics. Keep your answers focused, direct, clean, and helpful."
+TEMPORAL_PATTERNS = re.compile(
+    r"\b(latest|current|recent|most recent|updated|who won|winner|champions?|trophy|cup|tournament|status|this year|last year|next year|today|yesterday|tomorrow|upcoming|202[0-9]|203[0-9])\b",
+    re.IGNORECASE,
 )
 
-RESPONSE_STRUCTURE_PROMPT = (
-    "You are DocuVortex, an intelligent, helpful AI assistant.\n"
-    "Your task is to provide a clean, direct, and well-structured answer to ONLY the user's latest question using the tool results.\n\n"
-    "CRITICAL RULES:\n"
-    "1. Answer ONLY what the user asked in their current question. Do NOT discuss, summarize, or bring up past conversation topics or prior queries.\n"
-    "2. If the user asked about weather, answer ONLY about weather.\n"
-    "3. If the user asked about stock price, answer ONLY about that stock price.\n"
-    "4. Present the information clearly and attractively using bullet points, bold key figures, and clean markdown.\n"
-    "5. Do NOT mention internal tool names (like get_weather or get_stock_price) or raw JSON."
-)
+
+def _get_current_date_str() -> str:
+    """Dynamically format the current absolute system date at runtime."""
+    now = datetime.now()
+    return now.strftime("%A, %B %d, %Y")
+
+
+def _get_dynamic_chitchat_prompt() -> str:
+    """Base system prompt dynamically injected with current runtime date and strict tool rules."""
+    current_date = _get_current_date_str()
+    return (
+        "You are DocuVortex, an intelligent, helpful, and friendly AI assistant.\n\n"
+        f"Current Date: {current_date}\n\n"
+        "STRICT TOOL SELECTION & FRESHNESS RULES:\n"
+        "1. Stock Prices / Quotes / Crypto: When asked about the stock price, share price, quote, or ticker of ANY company or asset (e.g., Tesla, Apple, Mahindra, Axis Bank, Tata, Reliance, Bitcoin, Ethereum): "
+        "YOU MUST CALL 'get_stock_price'. NEVER call 'search_tool' for stock prices.\n"
+        "2. Weather / Temperature / Climate: When asked about the weather, temperature, humidity, rain, or climate for any city or location (e.g., Mumbai, New York, London, Delhi, Paris): "
+        "YOU MUST CALL 'get_weather'. NEVER call 'search_tool' for weather.\n"
+        "3. Math / Calculations: When asked to calculate or evaluate arithmetic (e.g., 230*460): "
+        "YOU MUST CALL 'calculator'. NEVER call 'search_tool' for math.\n"
+        "4. Academic Papers: When asked for scientific preprints or research papers, call 'search_arxiv'.\n"
+        "5. TIME-SENSITIVE / FRESHNESS / HISTORICAL TIMELINE & CURRENT EVENTS (CRITICAL):\n"
+        "   - Your internal weights and parametric memory are COMPLETELY UNRELIABLE and frozen for current facts, recent tournament results, winners, sports championships, and chronological events.\n"
+        "   - YOU MUST CALL 'search_tool' whenever the query contains temporal or freshness markers such as 'latest', 'recent', 'most recent', 'current', 'updated', 'who won', 'winner', 'status', 'this year', 'last year', or explicit years (e.g., 2024, 2025, 2026).\n"
+        "   - NEVER answer from internal memory or declare an event unanswerable without executing 'search_tool' first.\n\n"
+        "OPTIMIZED SEARCH QUERY GENERATION:\n"
+        "When calling 'search_tool' for temporal questions, formulate an objective, factual search string. "
+        "For example, if the user asks 'who won the latest Champion trophy', generate query: 'most recent ICC Champions Trophy winner results history'.\n\n"
+        "CRITICAL CONVERSATIONAL RULE:\n"
+        "Answer ONLY the user's latest question directly. DO NOT mention, repeat, or summarize past questions, previous tool results, or earlier conversation topics. Keep your answers focused, direct, clean, and helpful."
+    )
+
+
+def _get_dynamic_response_structure_prompt() -> str:
+    """Synthesis prompt with dynamic current date and search-payload anti-hallucination priority."""
+    current_date = _get_current_date_str()
+    return (
+        "You are DocuVortex, an intelligent, helpful AI assistant.\n"
+        f"Current Date: {current_date}\n\n"
+        "Your task is to provide a clean, direct, and well-structured answer to ONLY the user's latest question using the tool results.\n\n"
+        "CRITICAL ANTI-HALLUCINATION & FRESHNESS RULES:\n"
+        "1. SEARCH TOOL DATA OVERRULES INTERNAL MEMORY: Your internal training memory is frozen and lacks recent tournament and current event results. You MUST strictly prioritize and verify facts against the live search tool results.\n"
+        "2. If the user asks about the 'latest' or 'most recent' tournament/event, check the search results for the most recent edition held. Never fall back to older tournaments (like 2017) if newer tournaments (like 2025) are mentioned in search or if a future tournament has not yet occurred.\n"
+        "3. If a tournament (such as 2026 T20 World Cup) has not yet taken place relative to the Current Date, state clearly that it is scheduled for that year and has not yet been played.\n"
+        "4. Answer ONLY what the user asked in their current question. Do NOT discuss, summarize, or bring up past conversation topics or prior queries.\n"
+        "5. Present the information clearly and attractively using bullet points, bold key figures, and clean markdown.\n"
+        "6. Do NOT mention internal tool names (like get_weather, get_stock_price, search_tool) or raw JSON."
+    )
+
+
+def _optimize_search_query(user_query: str) -> str:
+    """Reformulate conversational questions with temporal markers into objective, factual search queries."""
+    q = (user_query or "").strip()
+    q_clean = re.sub(
+        r"(?i)^(can you\s+)?(please\s+)?(tell\s+me\s+)?(who\s+won|what\s+is|what's|which\s+team\s+won|who\s+is\s+the\s+winner\s+of)\s+",
+        "",
+        q,
+    )
+    q_clean = re.sub(r"[?!.]+$", "", q_clean).strip()
+
+    lowered = q_clean.lower()
+    if "champion" in lowered and "trophy" in lowered and "icc" not in lowered:
+        q_clean = f"ICC {q_clean}"
+    if "t20" in lowered and "world" in lowered and "icc" not in lowered:
+        q_clean = f"ICC Men's {q_clean}"
+
+    if not any(kw in lowered for kw in ["winner", "results", "history", "final", "schedule"]):
+        q_clean = f"{q_clean} winner results"
+
+    return q_clean.strip()
+
+
+def _should_force_search(query: str) -> bool:
+    """Check if query is time-sensitive and should automatically force DuckDuckGo search."""
+    q = (query or "").lower().strip()
+    if not q:
+        return False
+    # If weather inquiry, keep weather tool as primary
+    if any(w in q for w in ["weather", "temperature", "forecast", "climate", "rain", "humidity"]):
+        return False
+    # If stock inquiry, keep stock tool as primary
+    if any(w in q for w in ["stock", "share price", "ticker", "nasdaq", "nifty", "sensex", "crypto", "bitcoin", "ethereum"]):
+        return False
+    # If pure math expression, keep calculator as primary
+    if re.search(r"^\s*[\d\.\s\+\-\*\/\(\)]+\s*$", q) or any(op in q for op in ["calculate", "multiply", "divide", "add", "subtract"]):
+        return False
+    return bool(TEMPORAL_PATTERNS.search(q))
 
 
 _GROQ_FALLBACK_MODELS = [
@@ -137,9 +207,17 @@ async def chitchat_agent_node(state: ChitChatState, config: RunnableConfig = Non
     """Agent node: decides whether to call tools or generate response."""
     try:
         raw_messages = list(state.get("messages", []))
-        # Ensure SystemMessage is strictly at index 0 (Groq/OpenAI requirement)
+        # Extract latest human query for temporal and tool verification
+        latest_query = ""
+        for m in reversed(raw_messages):
+            if isinstance(m, HumanMessage):
+                latest_query = extract_text(m.content)
+                break
+
+        # Ensure dynamic SystemMessage (with runtime date) is strictly at index 0 (Groq/OpenAI requirement)
         non_system = [m for m in raw_messages if not isinstance(m, SystemMessage)]
-        messages = [SystemMessage(content=CHITCHAT_SYSTEM_PROMPT)] + non_system
+        system_content = _get_dynamic_chitchat_prompt()
+        messages = [SystemMessage(content=system_content)] + non_system
 
         iteration = state.get("iteration_count", 0) + 1
         tools_called = state.get("tools_called", False)
@@ -149,6 +227,28 @@ async def chitchat_agent_node(state: ChitChatState, config: RunnableConfig = Non
         response = await llm_with_tools.ainvoke(messages, config)
 
         tool_calls = getattr(response, "tool_calls", None)
+
+        # Programmatic guardrail: if time-sensitive query did not trigger a tool call on iteration 1, force search_tool
+        if iteration == 1 and not tool_calls and _should_force_search(latest_query):
+            search_q = _optimize_search_query(latest_query)
+            logging.info(
+                "chitchat_agent: programmatically forcing search_tool for temporal query: %r -> %r",
+                latest_query,
+                search_q,
+            )
+            call_id = f"call_{secrets.token_hex(8)}"
+            forced_call = {
+                "name": "search_tool",
+                "args": {"query": search_q},
+                "id": call_id,
+                "type": "tool_call",
+            }
+            response = AIMessage(
+                content="",
+                tool_calls=[forced_call],
+            )
+            tool_calls = [forced_call]
+
         if tool_calls:
             tools_called = True
             logging.info("chitchat_agent requested tool calls: %s (iteration %d/5)", 
@@ -183,10 +283,10 @@ async def structure_answer_node(state: ChitChatState, config: RunnableConfig = N
             current_turn_messages = [m for m in messages if not isinstance(m, SystemMessage)]
             latest_query = ""
 
-        # System prompt MUST be at index 0 for Groq/OpenAI APIs
-        synthesis_system = SystemMessage(content=RESPONSE_STRUCTURE_PROMPT)
+        # System prompt MUST be at index 0 for Groq/OpenAI APIs (with dynamic date & search-overrule rules)
+        synthesis_system = SystemMessage(content=_get_dynamic_response_structure_prompt())
         prompt_message = HumanMessage(
-            content=f"Please synthesize the tool results into a clean, direct, and well-structured answer to ONLY this question: '{latest_query}'. Do NOT include, mention, or summarize any past conversation topics or prior queries."
+            content=f"Please synthesize the tool results into a clean, direct, and well-structured answer to ONLY this question: '{latest_query}'. Overwrite internal training weights with live search results where applicable. Do NOT include, mention, or summarize any past conversation topics or prior queries."
         )
         synthesis_messages = [synthesis_system] + current_turn_messages + [prompt_message]
 

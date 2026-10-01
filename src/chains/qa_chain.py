@@ -294,20 +294,30 @@ def sanitize_answer(answer: str) -> str:
 
     # Clean leaked DATA_NOT_FOUND blocks if the answer contains substantive content
     if NOT_FOUND_TOKEN in text and text != NOT_FOUND_TOKEN:
-        # Pattern matching: Heading\n\nDATA_NOT_FOUND
-        cleaned = re.sub(
-            rf"(?im)^(?:[#*_\s]*[A-Za-z0-9\s\(\)\-\/\:]{{3,80}}[#*_\s]*\n+)?\s*{NOT_FOUND_TOKEN}\s*[\.\!\?]?\s*$",
-            "",
-            text,
-        ).strip()
-        # Pattern matching: Topic: DATA_NOT_FOUND
-        cleaned = re.sub(
-            rf"(?im)^[#*_\s]*[A-Za-z0-9\s\(\)\-\/]{{3,80}}:\s*{NOT_FOUND_TOKEN}\s*[\.\!\?]?\s*$",
-            "",
-            cleaned,
-        ).strip()
-        if cleaned and len(cleaned) >= 30:
-            text = cleaned
+        lines = text.splitlines()
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # If this line is or ends with DATA_NOT_FOUND
+            if (
+                stripped == NOT_FOUND_TOKEN
+                or stripped.strip(" .!?:#*_-") == NOT_FOUND_TOKEN
+                or stripped.endswith(NOT_FOUND_TOKEN)
+                or (NOT_FOUND_TOKEN in stripped and len(stripped) < 35)
+            ):
+                # If previous kept line was an orphan heading or category title, remove it
+                while cleaned_lines and not cleaned_lines[-1].strip():
+                    cleaned_lines.pop()
+                if cleaned_lines:
+                    prev = cleaned_lines[-1].strip()
+                    if len(prev) < 70 and not prev.startswith(("- ", "* ", "• ", "1.", "2.")):
+                        cleaned_lines.pop()
+                continue
+            cleaned_lines.append(line)
+
+        candidate = "\n".join(cleaned_lines).strip()
+        if candidate and len(candidate) >= 30:
+            text = candidate
 
     text = _dedupe_near_identical_sentences(text)
     return text or FALLBACK_ANSWER
@@ -385,7 +395,7 @@ GUIDELINES:
 
 2. Single Question Focus & No Historical Bleeding:
    - CRITICAL: Focus EXCLUSIVELY on answering the current question provided in the final "Question: {{question}}" prompt.
-   - NEVER re-answer, repeat, list, or revisit questions, topics, or headings from earlier turns in the conversation history (e.g. if previous questions asked about estimated cost or author name, do NOT include sections, headings, or {NOT_FOUND_TOKEN} for them).
+   - NEVER re-answer, repeat, list, or revisit questions, topics, or headings from earlier turns in the conversation history. Focus EXCLUSIVELY on answering the current question. Do NOT include unasked sections, categories, or headings.
    - The chat history is provided SOLELY to resolve pronouns (e.g. "it", "they", "this system") or conversational references, NOT as a list of questions to answer again.
    - Never output headings or answers for topics that were not asked in the current question.
 

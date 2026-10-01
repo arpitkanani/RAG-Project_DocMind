@@ -1,9 +1,9 @@
 """
-<<<<<<< HEAD
 DocuVortex — Seed User & API Key Generator
+
 Usage:
     python seed_user.py "my_username"
-    python seed_user.py "test_key"
+    python seed_user.py "test 2"
 
 This script creates or updates a user in the Supabase PostgreSQL database,
 generates a secure `dk_live_...` API key, and prints it out so you can paste
@@ -44,7 +44,7 @@ def seed_user(username_arg: str = "test_user"):
     # 3. Generate raw API key & its SHA-256 hash
     raw_api_key = f"dk_live_{secrets.token_hex(24)}"
     api_key_hash = hashlib.sha256(raw_api_key.encode()).hexdigest()
-    email_clean = f"{username_clean.lower()}@docuvortex.local"
+    email_clean = f"{username_clean.lower().replace(' ', '_')}@docuvortex.local"
 
     print(f"\n[3] Upserting user '{username_clean}' into database...")
     user_id = None
@@ -106,55 +106,14 @@ def seed_user(username_arg: str = "test_user"):
     print("4. Your chat history, sessions, and uploaded documents will now persist")
     print("   permanently across browser refreshes and between new chats!")
     print("=" * 65 + "\n")
+    return user_id, raw_api_key
+
+
+def create_user(name: str):
+    """Backward compatibility helper."""
+    return seed_user(name)
 
 
 if __name__ == "__main__":
     target_username = sys.argv[1] if len(sys.argv) > 1 else "test_user"
     seed_user(target_username)
-=======
-Run this once per user to create their account and issue an API key.
-
-Usage:
-    python seed_user.py "Alice"
-
-The plaintext key is printed ONCE. It is not recoverable afterward —
-only its hash is stored. If lost, generate a new one (and revoke the old row).
-"""
-import hashlib
-import secrets
-import sys
-
-from src.database.db import get_db_cursor
-
-
-def create_user(name: str) -> str:
-    plaintext_key = f"dk_live_{secrets.token_hex(24)}"
-    key_hash = hashlib.sha256(plaintext_key.encode()).hexdigest()
-
-    with get_db_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO users (name, api_key_hash)
-            VALUES (%s, %s)
-            RETURNING id
-            """,
-            (name, key_hash),
-        )
-        user_id = cur.fetchone()["id"]
-
-    return user_id, plaintext_key
-
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python seed_user.py \"User Name\"")
-        sys.exit(1)
-
-    name = sys.argv[1]
-    user_id, plaintext_key = create_user(name)
-
-    print(f"\nUser created: {name}")
-    print(f"user_id: {user_id}")
-    print(f"\nAPI key (save this now, it will not be shown again):")
-    print(f"  {plaintext_key}\n")
->>>>>>> origin/main

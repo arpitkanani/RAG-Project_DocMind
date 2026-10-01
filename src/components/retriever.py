@@ -57,6 +57,7 @@ class Retriever:
 
     def __init__(self, collection_names: List[str] | None = None):
         try:
+            self.explicit_scope = collection_names is not None
             self.collection_names = [name for name in (collection_names or []) if name]
             self.vs = VectorStore(
                 collection_name=self.collection_names[0] if self.collection_names else None
@@ -85,6 +86,9 @@ class Retriever:
         try:
             logging.info("Async Retrieving for: %s...", query[:50])
             target_collections = await self._resolve_target_collections()
+            if not target_collections:
+                logging.info("retrieve_ranked: no target collections to search (session has no documents)")
+                return []
             query_variants = self._build_query_variants(query)
 
             tasks = [
@@ -161,19 +165,23 @@ class Retriever:
             raise CustomException(e, sys)
 
     async def _resolve_target_collections(self) -> List[str]:
-        available = await self.vs.alist_collections()
-
-        if not available:
-            raise KnowledgeBaseEmptyError(
-                "No documents found. Please upload a document first."
-            )
-
-        if self.collection_names:
+        # If caller explicitly provided collection_names (even if empty):
+        if self.explicit_scope:
+            if not self.collection_names:
+                # No collections attached to this session -> return empty immediately without global leak
+                return []
+            available = await self.vs.alist_collections()
             missing = [name for name in self.collection_names if name not in available]
             if missing:
                 raise CollectionNotFoundError(missing)
             return self.collection_names
 
+        # Unscoped / global fallback (e.g. CLI tools or background workers)
+        available = await self.vs.alist_collections()
+        if not available:
+            raise KnowledgeBaseEmptyError(
+                "No documents found. Please upload a document first."
+            )
         return available
 
     async def _search_collection(
@@ -445,6 +453,9 @@ class Retriever:
         """Return chunks in original document order asynchronously."""
         try:
             target_collections = await self._resolve_target_collections()
+            if not target_collections:
+                logging.info("get_full_context: no target collections to retrieve (session has no documents)")
+                return []
 
             all_docs: List[Document] = []
             for collection_name in target_collections:

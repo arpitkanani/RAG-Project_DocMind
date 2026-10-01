@@ -51,6 +51,9 @@ async def retrieve_qa_node(state: RAGState) -> Dict[str, Any]:
     try:
         question = state["question"]
         collection_names = state.get("collection_names")
+        if not collection_names:
+            logging.info("retrieve_qa_node: no collections attached to session, returning empty docs")
+            return {"docs": []}
 
         retriever = Retriever(collection_names=collection_names)
         ranked_docs = await retriever.retrieve_ranked(question)
@@ -76,6 +79,10 @@ async def retrieve_summary_node(state: RAGState) -> Dict[str, Any]:
     """Asynchronously retrieves full document context for summary requests."""
     try:
         collection_names = state.get("collection_names")
+        if not collection_names:
+            logging.info("retrieve_summary_node: no collections attached to session, returning empty docs")
+            return {"docs": []}
+
         retriever = Retriever(collection_names=collection_names)
         docs = await retriever.get_full_context(
             max_chars=config["retriever"].get("summary_max_chars", 6000)
