@@ -267,7 +267,7 @@ walkthrough.md
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-
+git 
 /data
 *.pyc
 __pycache__/

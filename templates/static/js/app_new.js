@@ -1362,11 +1362,12 @@ function renderComposerChips() {
              </svg>
            </button>`;
 
+      const displayName = cleanSourceName(src.name);
       return `
         <div class="chip ${processing ? "processing" : ""}" data-local-id="${escHtml(src.localId)}"
              title="${processing ? escHtml(src.processingMessage || "Processing...") : ""}">
           <span class="chip-type">${typeLabel}</span>
-          <span class="chip-name" title="${escHtml(src.name)}">${escHtml(src.name)}</span>
+          <span class="chip-name" title="${escHtml(displayName)}">${escHtml(displayName)}</span>
           ${removeBtn}
         </div>`;
     })
@@ -1417,10 +1418,11 @@ function renderSourcesPanel() {
     .map((src) => {
       const inactive = src.active === false;
       const typeLabel = src.type === "yt" ? "YT" : "DOC";
+      const displayName = cleanSourceName(src.name);
       return `
         <div class="source-toggle-item ${inactive ? "inactive" : ""}" data-local-id="${escHtml(src.localId)}">
           <span class="chip-type">${typeLabel}</span>
-          <span class="source-toggle-name" title="${escHtml(src.name)}">${escHtml(src.name)}</span>
+          <span class="source-toggle-name" title="${escHtml(displayName)}">${escHtml(displayName)}</span>
           <span class="source-toggle-state">${inactive ? "Excluded" : "Included"}</span>
         </div>`;
     })
@@ -1481,14 +1483,26 @@ function appendMessage(content, role, attachments = []) {
 
 }
 
+function cleanSourceName(name) {
+  if (!name) return "";
+  let clean = String(name).trim();
+  clean = clean.replace(/\\/g, "/");
+  if (clean.includes("/")) {
+    clean = clean.split("/").pop();
+  }
+  clean = clean.replace(/^(?:data\/)?uploads\//i, "");
+  clean = clean.replace(/_[a-f0-9]{8}(\.[a-zA-Z0-9]+)$/i, "$1");
+  return clean || "Document";
+}
+
 function truncateSourceName(name, maxLen = 12) {
-  const clean = (name || "").trim();
+  const clean = cleanSourceName(name);
   if (clean.length <= maxLen) return clean;
   return clean.slice(0, maxLen).trim() + "…";
 }
 
 function truncateMessageChipName(name, type) {
-  const clean = (name || "").trim();
+  const clean = cleanSourceName(name);
 
   if (type === "yt") {
     const maxLen = 14;
@@ -1510,31 +1524,18 @@ function isMobileChipViewport() {
   return window.matchMedia("(max-width: 640px)").matches;
 }
 
-// function truncateChipNameDesktop(name, type) {
-//   const clean = (name || "").trim();
-//   if (type === "yt") {
-//     return clean.length <= 10 ? clean : clean.slice(0, 10) + "…";
-//   }
-//   const words = clean.split(/\s+/).filter(Boolean);
-//   if (words.length <= 1) {
-//     return clean.length <= 14 ? clean : clean.slice(0, 14) + "…";
-//   }
-//   const first = words[0];
-//   const secondTrimmed = words[1].slice(0, 3);
-//   return `${first} ${secondTrimmed}…`;
-// }
-
 function buildReadOnlyChips(chips) {
   const mobile = isMobileChipViewport();
   return chips
     .map((c) => {
+      const clean = cleanSourceName(c.name);
       const displayName = mobile
-        ? truncateSourceName(c.name)
-        : truncateMessageChipName(c.name, c.type);
+        ? truncateSourceName(clean)
+        : truncateMessageChipName(clean, c.type);
       return `
       <div class="chip message-chip chip-hover-controls">
         <span class="chip-type">${c.type === "yt" ? "YT" : "DOC"}</span>
-        <span class="chip-name" title="${escHtml(c.name)}">${escHtml(displayName)}</span>
+        <span class="chip-name" title="${escHtml(clean)}">${escHtml(displayName)}</span>
         <button class="chip-remove" data-collection="${escHtml(c.collection)}" title="Remove source">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -1729,7 +1730,18 @@ function showToast(message, type = "success") {
 function formatContent(text) {
   if (!text) return "<p></p>";
 
-  const lines = escHtml(text).split("\n");
+  // 1. Strip any 'uploads/' or 'data/uploads/' from the text and citations
+  let raw = String(text).replace(/\b(?:data\/)?uploads[\/\\]/gi, "");
+
+  // 2. Normalize and split glued inline items onto new lines:
+  // e.g. "violates the grammar. 2. Parse-Tree Construction" -> "violates the grammar.\n\n2. Parse-Tree Construction"
+  raw = raw.replace(/([.!?])\s+(?=\d+[\.\)]\s+[A-Za-z\*\#])/g, "$1\n\n");
+  // e.g. "according to the language's grammar. - Primary Tasks" -> "according to the language's grammar.\n\n- Primary Tasks"
+  raw = raw.replace(/([.!?])\s+(?=[-•*]\s+[A-Za-z\*\#])/g, "$1\n\n");
+  // e.g. "some text. ### Heading" -> "some text.\n\n### Heading"
+  raw = raw.replace(/([.!?])\s+(?=#{1,6}\s+)/g, "$1\n\n");
+
+  const lines = raw.split("\n");
   const parts = [];
   let listType = null;
 
@@ -1747,20 +1759,50 @@ function formatContent(text) {
       return;
     }
 
-    if (/^-\s+/.test(line)) {
-      if (listType !== "ul") { closeList(); parts.push("<ul>"); listType = "ul"; }
-      parts.push(`<li>${applyInline(line.replace(/^-\s+/, ""))}</li>`);
+    // Markdown headings (#, ##, ###, ####)
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      closeList();
+      const level = Math.min(Math.max(headingMatch[1].length, 2), 4);
+      const headingText = escHtml(headingMatch[2]);
+      parts.push(`<h${level} class="msg-heading">${applyInline(headingText)}</h${level}>`);
       return;
     }
 
-    if (/^\d+\.\s+/.test(line)) {
-      if (listType !== "ol") { closeList(); parts.push("<ol>"); listType = "ol"; }
-      parts.push(`<li>${applyInline(line.replace(/^\d+\.\s+/, ""))}</li>`);
+    // Bullet list items (- , * , • )
+    if (/^[-*•]\s+/.test(line)) {
+      if (listType !== "ul") {
+        closeList();
+        parts.push("<ul>");
+        listType = "ul";
+      }
+      const itemText = escHtml(line.replace(/^[-*•]\s+/, ""));
+      parts.push(`<li>${applyInline(itemText)}</li>`);
       return;
     }
 
+    // Numbered list items (1. , 2. , 1) , 2) )
+    if (/^\d+[\.\)]\s+/.test(line)) {
+      if (listType !== "ol") {
+        closeList();
+        parts.push("<ol>");
+        listType = "ol";
+      }
+      const itemText = escHtml(line.replace(/^\d+[\.\)]\s+/, ""));
+      parts.push(`<li>${applyInline(itemText)}</li>`);
+      return;
+    }
+
+    // Source: citation heading
+    if (/^sources?\s*:?$/i.test(line)) {
+      closeList();
+      parts.push(`<div class="citation-header">Source:</div>`);
+      return;
+    }
+
+    // Regular paragraph
     closeList();
-    parts.push(`<p>${applyInline(line)}</p>`);
+    parts.push(`<p>${applyInline(escHtml(line))}</p>`);
   });
 
   closeList();

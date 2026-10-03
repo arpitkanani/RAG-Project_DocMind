@@ -1,9 +1,8 @@
 """
 DocuVortex — Seed User & API Key Generator
-
 Usage:
     python seed_user.py "my_username"
-    python seed_user.py "test 2"
+    python seed_user.py "test_key"
 
 This script creates or updates a user in the Supabase PostgreSQL database,
 generates a secure `dk_live_...` API key, and prints it out so you can paste
@@ -44,7 +43,7 @@ def seed_user(username_arg: str = "test_user"):
     # 3. Generate raw API key & its SHA-256 hash
     raw_api_key = f"dk_live_{secrets.token_hex(24)}"
     api_key_hash = hashlib.sha256(raw_api_key.encode()).hexdigest()
-    email_clean = f"{username_clean.lower().replace(' ', '_')}@docuvortex.local"
+    email_clean = f"{username_clean.lower()}@docuvortex.local"
 
     print(f"\n[3] Upserting user '{username_clean}' into database...")
     user_id = None
@@ -106,12 +105,6 @@ def seed_user(username_arg: str = "test_user"):
     print("4. Your chat history, sessions, and uploaded documents will now persist")
     print("   permanently across browser refreshes and between new chats!")
     print("=" * 65 + "\n")
-    return user_id, raw_api_key
-
-
-def create_user(name: str):
-    """Backward compatibility helper."""
-    return seed_user(name)
 
 
 if __name__ == "__main__":

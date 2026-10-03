@@ -53,12 +53,20 @@ def _run_upload_job(
         )
 
         if result.get("success") and result.get("collection_name") and result.get("chunks_stored", 0) > 0:
+            import re
+            raw_doc_name = filename or result["collection_name"]
+            clean_doc_name = raw_doc_name.replace("\\", "/")
+            if "/" in clean_doc_name:
+                clean_doc_name = clean_doc_name.split("/")[-1]
+            clean_doc_name = re.sub(r"^(?:data/)?uploads/", "", clean_doc_name, flags=re.IGNORECASE)
+            clean_doc_name = re.sub(r"_[a-f0-9]{8}(\.[a-zA-Z0-9]+)$", r"\1", clean_doc_name)
+
             MemoryManager(session_id=session_id, user_id=user_id).add_attachment(
-                name=filename or result["collection_name"],
+                name=clean_doc_name or result["collection_name"],
                 collection=result["collection_name"],
                 source_type="doc",
             )
-            logging.info("File indexed: %s", result.get("collection_name"))
+            logging.info("File indexed: %s (name: %s)", result.get("collection_name"), clean_doc_name)
             upload_job_manager.mark_ready(job_id, result)
         else:
             err_msg = result.get("error") or "Could not process this file. Please try uploading it again."

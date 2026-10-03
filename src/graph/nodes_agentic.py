@@ -7,6 +7,7 @@ Nodes:
     fallback_response – Polite message when docs are irrelevant
 """
 
+from langchain_community.tools.playwright import extract_text
 import json
 import os
 import re
@@ -216,7 +217,7 @@ TOOL_OR_CHITCHAT_PATTERNS = [
     # Weather & climate (including common typos like 'wheater' and 'whether in ...')
     r"\b(weather|wheater|temperature|temp\s*in|forecast|humidity|climate|rain(ing)?(\s*today)?|whether\s+(in|of|for|at|today|tomorrow|like))\b",
     # Math & Calculations
-    r"\b(calculate|computation|arithmetic)\b",
+    r"\b(calculate|computation|arithmetic|multiplication|addition|substraction|division)\b",
     r"^\s*[\d\.\(\)\+\-\*\/\^\s]+\s*$",
     r"\b\d+\s*[\+\-\*\/]\s*\d+\b",
     # ArXiv & scientific papers

@@ -494,6 +494,21 @@ button {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.9em;
 }
+.msg-bubble .msg-heading {
+  margin: 16px 0 6px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.4;
+}
+.msg-bubble .citation-header {
+  margin-top: 16px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
 .prompt-area {
   padding-top: 8px;
 }

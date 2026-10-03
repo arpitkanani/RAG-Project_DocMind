@@ -65,13 +65,21 @@ def is_summary_request(question: str) -> bool:
 
 
 def _format_source_label(metadata: dict) -> str:
-    source = metadata.get("source", "Unknown source")
+    source = metadata.get("source") or metadata.get("name") or metadata.get("filename") or "Unknown source"
     source_type = metadata.get("type")
 
     if source_type == "youtube":
         return "YouTube transcript"
 
-    return os.path.basename(str(source)) or "Unknown source"
+    label = str(source).strip()
+    label = label.replace("\\", "/")
+    if "/" in label:
+        label = label.split("/")[-1]
+    # Strip any leading 'uploads/' or 'data/uploads/'
+    label = re.sub(r"^(?:data/)?uploads/", "", label, flags=re.IGNORECASE)
+    # Strip uuid suffix: name_a1b2c3d4.pdf -> name.pdf
+    label = re.sub(r"_[a-f0-9]{8}(\.[a-zA-Z0-9]+)$", r"\1", label)
+    return label or "Unknown source"
 
 
 def _format_locator(metadata: dict) -> str:
@@ -185,7 +193,8 @@ def build_citations(docs: list, answer: str = "") -> str:
     if not citations:
         return ""
 
-    return "Source:\n" + "\n".join(citations)
+    clean_citations = [re.sub(r"\b(?:data[/\\])?uploads[/\\]", "", c, flags=re.IGNORECASE) for c in citations]
+    return "Source:\n" + "\n".join(clean_citations)
 
 
 def build_source_only_citations(docs: list) -> str:
@@ -203,7 +212,8 @@ def build_source_only_citations(docs: list) -> str:
             labels.append(label)
     if not labels:
         return ""
-    return "Source:\n" + "\n".join(labels)
+    clean_labels = [re.sub(r"\b(?:data[/\\])?uploads[/\\]", "", l, flags=re.IGNORECASE) for l in labels]
+    return "Source:\n" + "\n".join(clean_labels)
 
 
 def merge_same_location_docs(docs: list) -> list:
@@ -320,7 +330,37 @@ def sanitize_answer(answer: str) -> str:
             text = candidate
 
     text = _dedupe_near_identical_sentences(text)
+    text = format_clean_markdown(text)
     return text or FALLBACK_ANSWER
+
+
+def format_clean_markdown(text: str) -> str:
+    """
+    Ensures that bullet points, numbered items, and headings start on new lines
+    with clean formatting instead of running inline with preceding sentences.
+    Also strips any 'uploads/' prefix from citations or text.
+    """
+    if not text:
+        return text
+
+    # Strip any leaked 'uploads/' or 'data/uploads/'
+    text = re.sub(r"\b(?:data/)?uploads[/\\]", "", text, flags=re.IGNORECASE)
+
+    # If a numbered list item like " 2. " or " 1. " was glued onto the end of a sentence:
+    # e.g., "violates the grammar. 2. Parse-Tree Construction" -> "violates the grammar.\n\n2. Parse-Tree Construction"
+    text = re.sub(r"(?<=[.!?])\s+(?=\d+[\.\)]\s+[A-Za-z\*\#])", "\n\n", text)
+
+    # If a bullet item or section dash like " - Primary Tasks" was glued onto the end of a sentence:
+    # e.g., "according to the language's grammar. - Primary Tasks" -> "according to the language's grammar.\n\n- Primary Tasks"
+    text = re.sub(r"(?<=[.!?])\s+(?=[-•*]\s+[A-Za-z\*\#])", "\n\n", text)
+
+    # If a markdown heading like " ### Heading" was glued after a sentence:
+    text = re.sub(r"(?<=[.!?])\s+(?=#{1,6}\s+)", "\n\n", text)
+
+    # Clean multiple consecutive blank lines down to at most 2 newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
 
 
 def prepare_clean_chat_history(chat_history: list) -> list:
@@ -361,23 +401,52 @@ def prepare_clean_chat_history(chat_history: list) -> list:
 
 def _dedupe_near_identical_sentences(text: str) -> str:
     """
-    Generations sometimes restate the exact same point twice in one reply,
-    just reworded slightly. Drops duplicate points while preserving the
-    overall explanation.
+    Preserves line breaks, lists, code fences, and paragraphs while removing
+    redundant, repeated sentences within paragraphs.
+    NEVER flattens lines into a single sentence.
     """
-    connectors = {"however", "additionally", "furthermore", "also", "moreover", "therefore"}
-    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if not text:
+        return text
+
+    blocks = text.split("\n")
+    cleaned_blocks = []
     seen = set()
-    kept = []
-    for sentence in sentences:
-        words = [w for w in re.findall(r"[a-z0-9]+", sentence.lower()) if w not in connectors]
-        normalized = " ".join(words)
-        if normalized and normalized in seen:
-            continue  # near-identical to a sentence already kept -- drop it
-        if normalized:
-            seen.add(normalized)
-        kept.append(sentence)
-    return " ".join(kept)
+    connectors = {"however", "additionally", "furthermore", "also", "moreover", "therefore"}
+
+    for block in blocks:
+        stripped = block.strip()
+        # Preserve empty lines, list items, headings, quotes, tables, and code fences
+        if (
+            not stripped
+            or stripped.startswith(("- ", "* ", "• ", "#", "|", "```", ">"))
+            or re.match(r"^\d+[\.\)]\s+", stripped)
+        ):
+            # For list items, normalize and check for duplicates without breaking structure
+            item_content = re.sub(r"^([-\*•]|\d+[\.\)])\s+", "", stripped).strip()
+            item_words = " ".join([w for w in re.findall(r"[a-z0-9]+", item_content.lower()) if w not in connectors])
+            if item_words and item_words in seen:
+                continue
+            if item_words:
+                seen.add(item_words)
+            cleaned_blocks.append(block)
+            continue
+
+        # Regular prose paragraph: dedupe identical sentences within paragraph
+        sentences = re.split(r"(?<=[.!?])\s+", stripped)
+        kept_sentences = []
+        for s in sentences:
+            words = [w for w in re.findall(r"[a-z0-9]+", s.lower()) if w not in connectors]
+            norm = " ".join(words)
+            if norm and norm in seen:
+                continue
+            if norm:
+                seen.add(norm)
+            kept_sentences.append(s)
+
+        if kept_sentences:
+            cleaned_blocks.append(" ".join(kept_sentences))
+
+    return "\n".join(cleaned_blocks)
 
 
 QA_PROMPT = ChatPromptTemplate.from_messages(
@@ -409,7 +478,10 @@ GUIDELINES:
    - When asked to summarize, explain, compare, extract key points, or analyze specific topics (such as charts, timelines, or costs) that are present in the context, synthesize the information thoroughly and clearly using the provided context.
 
 5. Clarity & Formatting:
-   - Use clean Markdown (bullet points, bold key terms, tables, or numbered lists) to make information readable.
+   - Use clean Markdown with clear line breaks (bullet points, bold key terms, tables, or numbered lists) to make information readable.
+   - CRITICAL: Every heading, bullet point (- or *), and numbered step (1., 2., 3.) MUST start on its OWN NEW LINE.
+   - NEVER put multiple numbered points (e.g. 1. and 2.) on the same line.
+   - NEVER place a section heading or bullet point at the end of a previous sentence. Place a blank line before new headings and list sections.
    - Be direct: do not use empty meta-filler like "Based on the provided context," "According to the uploaded documents," or "The text states." Start directly with the answer.
    - Never output meta-dialogue commentary about the user or prior assistant responses (e.g. do not say "The user asked..." or "The assistant replied...").
 
