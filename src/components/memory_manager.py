@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
 import sys
 from typing import Any, List, Optional
 
@@ -23,14 +24,14 @@ class MemoryManager:
             raise CustomException(ValueError("MemoryManager requires a user_id"), sys)
         self.session_id = session_id
         self.user_id = user_id
-        self.window_days = config["memory"]["window_days"]
-        self.recent_turns_to_keep = config["memory"].get("recent_messages_verbatim", 6)
+        self.window_days = config.get("memory", {}).get("window_days", 7)
+        self.recent_turns_to_keep = config.get("memory", {}).get("recent_messages_verbatim", 6)
 
     def _ensure_session(self, cur, title: Optional[str] = None):
         cur.execute(
             """
-            INSERT INTO sessions (session_id, user_id, title)
-            VALUES (%s, %s, COALESCE(%s, 'New Chat'))
+            INSERT INTO sessions (session_id, user_id, title, created_at, updated_at)
+            VALUES (%s, %s, COALESCE(%s, 'New Chat'), now(), now())
             ON CONFLICT (session_id) DO UPDATE
                 SET title = COALESCE(%s, sessions.title),
                     updated_at = now()
@@ -206,7 +207,6 @@ class MemoryManager:
 
     def get_messages_payload(self) -> List[dict[str, Any]]:
         try:
-            cutoff = datetime.now() - timedelta(days=self.window_days)
             with get_db_cursor(commit=False) as cur:
                 cur.execute(
                     """
@@ -215,22 +215,28 @@ class MemoryManager:
                     JOIN sessions s ON s.session_id = m.session_id
                     WHERE m.session_id = %s
                       AND s.user_id = %s
-                      AND m.created_at >= %s
+                      AND m.created_at >= (now() - (%s || ' days')::interval)
                     ORDER BY m.created_at ASC
                     """,
-                    (self.session_id, self.user_id, cutoff),
+                    (self.session_id, self.user_id, str(self.window_days)),
                 )
                 rows = cur.fetchall()
 
             result = []
             for row in rows:
+                raw_attachments = row["attachments"]
+                if isinstance(raw_attachments, str):
+                    try:
+                        raw_attachments = json.loads(raw_attachments)
+                    except Exception:
+                        pass
                 payload = {
                     "role": row["role"],
                     "content": row["content"],
-                    "timestamp": row["created_at"].isoformat(),
+                    "timestamp": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
                 }
-                if row["attachments"]:
-                    payload["attachments"] = row["attachments"]
+                if raw_attachments:
+                    payload["attachments"] = raw_attachments
                 result.append(payload)
             return result
         except Exception as e:
@@ -240,10 +246,13 @@ class MemoryManager:
         return await asyncio.to_thread(self.get_messages_payload)
 
     def _prune_expired(self, cur):
-        cutoff = datetime.now() - timedelta(days=self.window_days)
         cur.execute(
-            "DELETE FROM messages WHERE session_id = %s AND created_at < %s",
-            (self.session_id, cutoff),
+            """
+            DELETE FROM messages
+            WHERE session_id = %s
+              AND created_at < (now() - (%s || ' days')::interval)
+            """,
+            (self.session_id, str(self.window_days)),
         )
 
     def add_attachment(
@@ -252,20 +261,35 @@ class MemoryManager:
         collection: str,
         source_type: str,
         extra: Optional[dict[str, Any]] = None,
+        embedding_model: Optional[str] = None,
+        vector_dim: Optional[int] = None,
     ):
         try:
+            from src.components.embedder import Embedder
+            provider = Embedder.get_active_provider(user_id=self.user_id)
+            specs = Embedder.get_model_specs(provider)
+            actual_model = embedding_model or specs["model"]
+            actual_dim = vector_dim or specs["dimension"]
+
             with get_db_cursor() as cur:
                 self._ensure_session(cur)
                 cur.execute(
                     """
-                    INSERT INTO attachments (session_id, name, collection, source_type, extra)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO attachments (session_id, name, collection, source_type, embedding_model, vector_dim, extra)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (session_id, collection) DO UPDATE
                         SET name = EXCLUDED.name,
                             source_type = EXCLUDED.source_type,
+                            embedding_model = EXCLUDED.embedding_model,
+                            vector_dim = EXCLUDED.vector_dim,
                             extra = EXCLUDED.extra
                     """,
-                    (self.session_id, name, collection, source_type, Json(extra) if extra else None),
+                    (self.session_id, name, collection, source_type, actual_model, actual_dim, Json(extra) if extra else None),
+                )
+                # Explicitly touch updated_at so session activity timestamp is refreshed
+                cur.execute(
+                    "UPDATE sessions SET updated_at = now() WHERE session_id = %s",
+                    (self.session_id,),
                 )
         except Exception as e:
             raise CustomException(e, sys)
@@ -276,15 +300,24 @@ class MemoryManager:
         collection: str,
         source_type: str,
         extra: Optional[dict[str, Any]] = None,
+        embedding_model: Optional[str] = None,
+        vector_dim: Optional[int] = None,
     ):
-        return await asyncio.to_thread(self.add_attachment, name, collection, source_type, extra)
+        return await asyncio.to_thread(self.add_attachment, name, collection, source_type, extra, embedding_model, vector_dim)
 
-    def get_attachments(self) -> List[dict[str, str]]:
+    def get_attachments(self) -> List[dict[str, Any]]:
         try:
+            from src.components.embedder import Embedder
+            active_provider = Embedder.get_active_provider(user_id=self.user_id)
+            active_specs = Embedder.get_model_specs(active_provider)
+
             with get_db_cursor(commit=False) as cur:
                 cur.execute(
                     """
-                    SELECT a.name, a.collection, a.source_type AS type, a.extra
+                    SELECT a.name, a.collection, a.source_type AS type,
+                           COALESCE(a.embedding_model, 'text-embedding-3-small') AS embedding_model,
+                           COALESCE(a.vector_dim, 1536) AS vector_dim,
+                           a.extra
                     FROM attachments a
                     JOIN sessions s ON s.session_id = a.session_id
                     WHERE a.session_id = %s AND s.user_id = %s
@@ -296,9 +329,23 @@ class MemoryManager:
 
             results = []
             for row in rows:
-                item = {"name": row["name"], "collection": row["collection"], "type": row["type"]}
+                needs_reindex = (row["vector_dim"] != active_specs["dimension"])
+                item = {
+                    "name": row["name"],
+                    "collection": row["collection"],
+                    "type": row["type"],
+                    "embedding_model": row["embedding_model"],
+                    "vector_dim": row["vector_dim"],
+                    "needs_reindex": needs_reindex,
+                }
                 if row["extra"]:
-                    item.update(row["extra"])
+                    if isinstance(row["extra"], str):
+                        try:
+                            item.update(json.loads(row["extra"]))
+                        except Exception:
+                            pass
+                    elif isinstance(row["extra"], dict):
+                        item.update(row["extra"])
                 results.append(item)
             return results
         except Exception as e:
@@ -344,8 +391,7 @@ class MemoryManager:
     def cleanup_attachments(self, valid_collections: List[str]) -> List[str]:
         try:
             if not valid_collections:
-                # Safety guard: if valid_collections is empty (e.g. Qdrant unreachable or empty check),
-                # do NOT delete attachments to prevent accidental data loss.
+                # Safety guard: if valid_collections is empty, do NOT delete attachments
                 return []
             valid_set = set(valid_collections)
             current = self.get_attachments()
@@ -377,6 +423,149 @@ class MemoryManager:
     async def aget_title(self) -> str:
         return await asyncio.to_thread(self.get_title)
 
+    def get_session_details(self, valid_collections: Optional[List[str]] = None) -> dict:
+        """
+        Batches messages, attachments, title, and optional stale attachment cleanup
+        into a single DB query/transaction for fast chat loading.
+        """
+        try:
+            with get_db_cursor(commit=bool(valid_collections)) as cur:
+                # 1. Fetch messages
+                cur.execute(
+                    """
+                    SELECT m.role, m.content, m.attachments, m.created_at
+                    FROM messages m
+                    JOIN sessions s ON s.session_id = m.session_id
+                    WHERE m.session_id = %s
+                      AND s.user_id = %s
+                      AND m.created_at >= (now() - (%s || ' days')::interval)
+                    ORDER BY m.created_at ASC
+                    """,
+                    (self.session_id, self.user_id, str(self.window_days)),
+                )
+                msg_rows = cur.fetchall()
+
+                # 2. Fetch attachments
+                cur.execute(
+                    """
+                    SELECT a.name, a.collection, a.source_type AS type,
+                           COALESCE(a.embedding_model, 'text-embedding-3-small') AS embedding_model,
+                           COALESCE(a.vector_dim, 1536) AS vector_dim,
+                           a.extra
+                    FROM attachments a
+                    JOIN sessions s ON s.session_id = a.session_id
+                    WHERE a.session_id = %s AND s.user_id = %s
+                    ORDER BY a.created_at ASC
+                    """,
+                    (self.session_id, self.user_id),
+                )
+                att_rows = cur.fetchall()
+
+                # 3. Fetch session record for timestamps and title
+                cur.execute(
+                    "SELECT title, created_at, updated_at FROM sessions WHERE session_id = %s AND user_id = %s",
+                    (self.session_id, self.user_id),
+                )
+                s_row = cur.fetchone() or {}
+
+                # Derive title
+                title = next(
+                    (
+                        r["content"].strip()[:60]
+                        for r in msg_rows
+                        if r.get("role") == "human" and r.get("content", "").strip()
+                    ),
+                    None,
+                )
+                if not title:
+                    title = s_row.get("title") if s_row else "New Chat"
+
+                # Check session inactivity age (7 days)
+                now_dt = datetime.now(timezone.utc)
+                timestamps = []
+                for m in msg_rows:
+                    if m.get("created_at"):
+                        timestamps.append(m["created_at"])
+                if s_row.get("updated_at"):
+                    timestamps.append(s_row["updated_at"])
+                if s_row.get("created_at"):
+                    timestamps.append(s_row["created_at"])
+
+                latest_activity = max(timestamps) if timestamps else now_dt
+                if latest_activity.tzinfo is None:
+                    latest_activity = latest_activity.replace(tzinfo=timezone.utc)
+
+                session_age_seconds = (now_dt - latest_activity).total_seconds()
+                is_older_than_7_days = session_age_seconds >= (7 * 86400)
+
+            messages = []
+            for row in msg_rows:
+                raw_attachments = row["attachments"]
+                if isinstance(raw_attachments, str):
+                    try:
+                        raw_attachments = json.loads(raw_attachments)
+                    except Exception:
+                        pass
+                item = {
+                    "role": row["role"],
+                    "content": row["content"],
+                    "timestamp": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+                }
+                if raw_attachments:
+                    item["attachments"] = raw_attachments
+                messages.append(item)
+
+            from src.components.embedder import Embedder
+            active_provider = Embedder.get_active_provider(user_id=self.user_id)
+            active_specs = Embedder.get_model_specs(active_provider)
+
+            valid_set = set(valid_collections) if valid_collections is not None else None
+            has_expired_attachments = False
+
+            attachments = []
+            for row in att_rows:
+                extra = row.get("extra")
+                if isinstance(extra, str):
+                    try:
+                        extra = json.loads(extra)
+                    except Exception:
+                        pass
+                v_dim = row.get("vector_dim", 1536)
+                needs_reindex = (v_dim != active_specs["dimension"])
+
+                col = row.get("collection")
+                is_col_missing = bool(valid_set is not None and len(valid_set) > 0 and col and col not in valid_set)
+                is_expired = is_older_than_7_days or is_col_missing
+                if is_expired:
+                    has_expired_attachments = True
+
+                item = {
+                    "name": row["name"],
+                    "collection": col,
+                    "type": row["type"],
+                    "embedding_model": row.get("embedding_model", "text-embedding-3-small"),
+                    "vector_dim": v_dim,
+                    "needs_reindex": needs_reindex,
+                    "expired": is_expired,
+                }
+                if extra and isinstance(extra, dict):
+                    item.update(extra)
+                attachments.append(item)
+
+            return {
+                "session_id": self.session_id,
+                "title": title or "New Chat",
+                "messages": messages,
+                "attachments": attachments,
+                "is_older_than_7_days": is_older_than_7_days,
+                "has_expired_attachments": has_expired_attachments,
+            }
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    async def aget_session_details(self, valid_collections: Optional[List[str]] = None) -> dict:
+        return await asyncio.to_thread(self.get_session_details, valid_collections)
+
     def clear(self):
         try:
             with get_db_cursor() as cur:
@@ -407,12 +596,111 @@ class MemoryManager:
         return await asyncio.to_thread(MemoryManager.clear_all, user_id)
 
     @staticmethod
-    def list_sessions(user_id: str, valid_collections: Optional[List[str]] = None) -> List[dict]:
+    def prune_expired_sessions(user_id: str) -> List[dict]:
+        """
+        Finds all sessions for this user where ALL activity (latest message,
+        latest attachment, updated_at, and created_at) is strictly older than window_days (7 days).
+        Deletes all their Qdrant collections and removes their database records.
+        Returns a list of pruned session dictionaries: [{'session_id': ..., 'title': ...}]
+        """
         try:
-            window_days = config["memory"]["window_days"]
-            cutoff = datetime.now() - timedelta(days=window_days)
+            window_days = config.get("memory", {}).get("window_days", 7)
 
-            with get_db_cursor(commit=False) as cur:
+            with get_db_cursor(commit=True) as cur:
+                # Find expired sessions where ALL activity is strictly older than window_days
+                cur.execute(
+                    """
+                    SELECT
+                        s.session_id,
+                        COALESCE(
+                            (
+                                SELECT content FROM messages
+                                WHERE session_id = s.session_id AND role = 'human'
+                                ORDER BY created_at ASC LIMIT 1
+                            ),
+                            s.title,
+                            'New Chat'
+                        ) AS title,
+                        ARRAY_AGG(DISTINCT a.collection) FILTER (WHERE a.collection IS NOT NULL) AS collections
+                    FROM sessions s
+                    LEFT JOIN messages m ON m.session_id = s.session_id
+                    LEFT JOIN attachments a ON a.session_id = s.session_id
+                    WHERE s.user_id = %s
+                    GROUP BY s.session_id, s.title, s.updated_at, s.created_at
+                    HAVING GREATEST(
+                        COALESCE(MAX(m.created_at), '1970-01-01 00:00:00+00'::timestamptz),
+                        COALESCE(MAX(a.created_at), '1970-01-01 00:00:00+00'::timestamptz),
+                        COALESCE(s.updated_at, '1970-01-01 00:00:00+00'::timestamptz),
+                        COALESCE(s.created_at, '1970-01-01 00:00:00+00'::timestamptz)
+                    ) < (now() - (%s || ' days')::interval)
+                    """,
+                    (user_id, str(window_days)),
+                )
+                expired_rows = cur.fetchall()
+
+                if not expired_rows:
+                    return []
+
+                expired_ids = [r["session_id"] for r in expired_rows]
+                collections_to_delete = []
+                expired_info = []
+
+                for r in expired_rows:
+                    clean_title = (r["title"] or "New Chat").strip()[:60]
+                    expired_info.append({
+                        "session_id": r["session_id"],
+                        "title": clean_title,
+                    })
+                    if r["collections"]:
+                        collections_to_delete.extend(r["collections"])
+
+                # Atomic cascade deletion in PostgreSQL
+                cur.execute(
+                    "DELETE FROM sessions WHERE session_id = ANY(%s) AND user_id = %s",
+                    (expired_ids, user_id),
+                )
+
+            # Purge associated vector collections from Qdrant
+            if collections_to_delete:
+                from src.utils.helpers import delete_collections
+                delete_collections(collections_to_delete)
+
+            logging.info(
+                "Pruned %d expired sessions (> %d days) for user %s: %s",
+                len(expired_info),
+                window_days,
+                user_id,
+                expired_ids,
+            )
+            return expired_info
+
+        except Exception as e:
+            logging.warning("Error pruning expired sessions: %s", e)
+            return []
+
+    @staticmethod
+    async def aprune_expired_sessions(user_id: str) -> List[dict]:
+        return await asyncio.to_thread(MemoryManager.prune_expired_sessions, user_id)
+
+    @staticmethod
+    def list_sessions(user_id: str, valid_collections: Optional[List[str]] = None) -> List[dict]:
+        """
+        Fast single-query listing of active sessions without N+1 loops.
+        """
+        try:
+            with get_db_cursor(commit=True) as cur:
+                # Clean up truly empty ghost sessions only if older than 2 hours in DB time and completely inactive
+                cur.execute(
+                    """
+                    DELETE FROM sessions
+                    WHERE user_id = %s
+                      AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id = sessions.session_id)
+                      AND NOT EXISTS (SELECT 1 FROM attachments WHERE session_id = sessions.session_id)
+                      AND created_at < (now() - interval '2 hours')
+                    """,
+                    (user_id,),
+                )
+
                 cur.execute(
                     """
                     SELECT
@@ -420,9 +708,10 @@ class MemoryManager:
                         s.title,
                         s.updated_at,
                         s.created_at,
-                        COUNT(DISTINCT m.id) FILTER (WHERE m.created_at >= %s) AS message_count,
+                        COUNT(DISTINCT m.id) AS message_count,
                         COUNT(DISTINCT a.id) AS attachment_count,
                         MAX(m.created_at) AS last_message_at,
+                        MAX(a.created_at) AS last_attachment_at,
                         (
                             SELECT content FROM messages
                             WHERE session_id = s.session_id AND role = 'human'
@@ -434,22 +723,18 @@ class MemoryManager:
                     WHERE s.user_id = %s
                     GROUP BY s.session_id
                     """,
-                    (cutoff, user_id),
+                    (user_id,),
                 )
                 rows = cur.fetchall()
 
             sessions = []
             for row in rows:
-                if row["message_count"] == 0 and row["attachment_count"] == 0:
-                    MemoryManager(session_id=row["session_id"], user_id=user_id).clear()
-                    continue
-
-                if valid_collections is not None:
-                    MemoryManager(
-                        session_id=row["session_id"], user_id=user_id
-                    ).cleanup_attachments(valid_collections)
-
-                last_active = row["last_message_at"] or row["updated_at"] or row["created_at"]
+                last_active = (
+                    row["last_message_at"]
+                    or row["last_attachment_at"]
+                    or row["updated_at"]
+                    or row["created_at"]
+                )
                 title = (
                     (row["first_human_message"] or "").strip()[:60]
                     or row["title"]
@@ -462,8 +747,8 @@ class MemoryManager:
                         "title": title,
                         "message_count": row["message_count"],
                         "attachment_count": row["attachment_count"],
-                        "last_active": last_active.isoformat(),
-                        "last_active_label": last_active.strftime("%b %d, %H:%M"),
+                        "last_active": last_active.isoformat() if hasattr(last_active, "isoformat") else str(last_active),
+                        "last_active_label": last_active.strftime("%b %d, %H:%M") if hasattr(last_active, "strftime") else str(last_active),
                     }
                 )
 

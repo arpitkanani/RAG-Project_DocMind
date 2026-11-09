@@ -20,9 +20,6 @@ SILENT_PERIOD_DAYS = 14
 GUEST_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
-
-
-
 def hash_token(token: str) -> str:
     """SHA-256 hash of a session token."""
     return hashlib.sha256(token.encode()).hexdigest()
@@ -151,16 +148,15 @@ async def get_current_user(
 ) -> str:
     """
     FastAPI dependency that resolves the current user:
-    1. Check X-API-Key header or query param (Primary authentication)
+    1. Check X-API-Key header or query param (Primary authentication via DocuVortex API key)
     2. Check Cookie or Bearer Token (logged in user) with DB existence check
-    3. Fallback to GUEST_USER_ID if unauthenticated
+    3. If unauthenticated, raises 401 Unauthorized (Strict API-Key authentication)
     """
     # Strategy 1: Check X-API-Key (sent explicitly by web frontend or programmatic caller)
     clean_key = (x_api_key or request.query_params.get("api_key") or "").strip()
     if clean_key:
         if clean_key == "guest":
-            await anyio.to_thread.run_sync(_ensure_guest_user)
-            return GUEST_USER_ID
+            raise HTTPException(status_code=401, detail="Guest mode has been disabled. Please provide a valid API key.")
         key_hash = hashlib.sha256(clean_key.encode()).hexdigest()
         row = await anyio.to_thread.run_sync(_lookup_api_key_user, key_hash)
         if row:
@@ -190,8 +186,7 @@ async def get_current_user(
                         logging.warning("Session lookup warning: %s", e)
                 return user_id
             else:
-                logging.warning("Stale token referencing non-existent user_id: %s. Falling back to guest.", user_id)
+                logging.warning("Stale token referencing non-existent user_id: %s", user_id)
 
-    # Strategy 3: Unauthenticated Fallback -> Guest User (prevents upload & query crashes)
-    await anyio.to_thread.run_sync(_ensure_guest_user)
-    return GUEST_USER_ID
+    # Strategy 3: Unauthenticated Access Prohibited
+    raise HTTPException(status_code=401, detail="Authentication required. Please provide a valid API key.")

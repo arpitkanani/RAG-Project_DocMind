@@ -7,12 +7,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/static/css/main.css" />
-  <link rel="stylesheet" href="/static/css/landing.css" />
-  <link rel="stylesheet" href="/static/css/auth.css" />
+  <link rel="stylesheet" href="/static/css/main.css?v=5" />
+  <link rel="stylesheet" href="/static/css/landing.css?v=5" />
 </head>
 <body>
 
@@ -22,6 +21,7 @@
       <span class="logo-mark">DV</span> DocuVortex
     </a>
     <div class="nav-right">
+      <button type="button" id="navCreateKeyBtn" class="nav-link-ghost" style="cursor: pointer;">Create API Key</button>
       <a href="/app" class="nav-link-primary">Open Workspace →</a>
     </div>
   </nav>
@@ -31,12 +31,18 @@
     <div class="badge">DocuVortex · Intelligent Document Reasoning Engine</div>
     <h1>Reason across your<br /><span>documents &amp; videos</span> with AI</h1>
     <p>
-      Upload PDF, DOCX, CSV, XLSX, or Markdown files — or paste any YouTube link —
+      Upload PDF, DOCX files — or paste any YouTube URL (with Caption only) —
       and ask grounded questions in natural language. DocuVortex synthesizes answers
       using verifiable source excerpts, page numbers, and video timestamps.
     </p>
     <div class="hero-cta-wrap">
       <a href="/app" class="hero-btn" style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center;">Launch Workspace →</a>
+      <button type="button" id="heroCreateKeyBtn" class="hero-btn-outline" style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5L10 10.5 12 12.5l-6 6H2v-4l6-6 2 2 3-3-1.5-1.5L14 3.5l1.5-1.5L21 2z"/>
+        </svg>
+        Create API Key
+      </button>
     </div>
   </section>
 
@@ -55,7 +61,7 @@
       <div class="rag-step">
         <div class="icon">📄</div>
         <div class="label">Knowledge Ingestion</div>
-        <div class="sub">PDF / DOCX / CSV / XLSX / MD / YouTube</div>
+        <div class="sub">PDF / DOCX / YouTube URL (with Caption only)</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
@@ -67,7 +73,7 @@
       <div class="rag-step">
         <div class="icon">🔢</div>
         <div class="label">Dense Embeddings</div>
-        <div class="sub">Vectorized via BAAI/bge-small</div>
+        <div class="sub">Azure OpenAI (text-embedding-3-small, 1536-dim) &amp; BGE</div>
       </div>
       <div class="rag-arrow">→</div>
       <div class="rag-step">
@@ -109,14 +115,14 @@
         <p>Dual-pool architecture: direct connection (port 5432) for LangGraph checkpointer and transaction pooler (6543) for sessions.</p>
       </div>
       <div class="stack-card">
-        <div class="stack-role">LLM Inference</div>
-        <h3>Groq &amp; Gemini</h3>
-        <p>Low-latency reasoning models powering grounded document answering and conversational tools.</p>
+        <div class="stack-role">LLM Inference &amp; Fallback</div>
+        <h3>Groq, Gemini &amp; Azure OpenAI</h3>
+        <p>High-speed reasoning with Groq &amp; Gemini free tiers, backed by Azure OpenAI (gpt-5.4-nano) enterprise cloud fallback.</p>
       </div>
       <div class="stack-card">
         <div class="stack-role">Authentication</div>
-        <h3>OTP &amp; Google OAuth</h3>
-        <p>Email OTP verification, Google OAuth2, 30-day session lifecycle, and registered API key support.</p>
+        <h3>API Key &amp; Session Tokens</h3>
+        <p>SHA-256 hashed API key authentication, 30-day session lifecycle, and automatic guest fallback.</p>
       </div>
       <div class="stack-card">
         <div class="stack-role">API Layer</div>
@@ -131,7 +137,7 @@
   <!-- YouTube Ingestion Pipeline -->
   <section class="section">
     <div class="section-label">Multimodal</div>
-    <h2>Automated YouTube Transcription</h2>
+    <h2>Automated YouTube URL (with Caption only) Ingestion</h2>
     <p>Convert video lectures, podcasts, and presentations into queryable knowledge bases.</p>
 
     <div class="process-list">
@@ -145,7 +151,7 @@
       <div class="process-step">
         <div class="process-num">2</div>
         <div class="process-body">
-          <h4>Transcript Extraction</h4>
+          <h4>Caption Extraction</h4>
           <p>Retrieve multilingual caption segments asynchronously with high-accuracy timestamps.</p>
         </div>
       </div>
@@ -183,7 +189,7 @@
       <div class="use-card">
         <div class="uc-icon">🔗</div>
         <h3>Precision Citations</h3>
-        <p>Jump directly to supporting pages, spreadsheet rows, or transcript timestamps.</p>
+        <p>Jump directly to supporting pages or video timestamps.</p>
       </div>
       <div class="use-card">
         <div class="uc-icon">🌤️</div>
@@ -198,12 +204,115 @@
     </div>
   </section>
 
+  <!-- ══════════════════════ API KEY GENERATION MODAL ══════════════════════ -->
+  <div class="landing-modal-backdrop" id="createKeyModalBackdrop">
+    <div class="landing-modal" id="createKeyModal">
+      
+      <!-- Close button -->
+      <button type="button" class="landing-modal-close" id="closeCreateKeyModal" aria-label="Close modal">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+
+      <!-- Step 1: Initial Input Screen -->
+      <div id="modalStepInput">
+        <div class="landing-modal-header">
+          <div class="landing-modal-icon">🔑</div>
+          <div>
+            <h3 class="landing-modal-title">Create Workspace API Key</h3>
+            <p class="landing-modal-sub">Generate your personal key to unlock the workspace and keep your chat sessions &amp; documents saved.</p>
+          </div>
+        </div>
+
+        <div class="landing-input-group">
+          <label for="usernameInput" class="landing-input-label">Username <span style="color: #e74c3c;">*</span></label>
+          <input
+            type="text"
+            id="usernameInput"
+            class="landing-input"
+            placeholder="e.g. john_walker"
+            autocomplete="off"
+            maxlength="40"
+            minlength="3"
+            required
+          />
+          <span class="landing-input-hint">Enter your username (at least 3 characters). If your username already exists, your past chat history will be automatically preserved.</span>
+        </div>
+
+        <div id="modalInputError" class="landing-error-msg" style="display: none;"></div>
+
+        <div class="landing-modal-actions">
+          <button type="button" class="modal-btn-ghost" id="cancelCreateKeyBtn">Cancel</button>
+          <button type="button" class="modal-btn-primary" id="submitCreateKeyBtn">
+            <span id="submitBtnText">Generate Key</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 1b: Collision Alert Screen (If username already exists) -->
+      <div id="modalStepExists" style="display: none;">
+        <div class="landing-modal-header">
+          <div class="landing-modal-icon" style="background: #fffbe6; color: #d46b08;">⚠️</div>
+          <div>
+            <h3 class="landing-modal-title">Account Already Exists</h3>
+            <p class="landing-modal-sub">An account for <strong id="existingUsernameLabel"></strong> is already registered.</p>
+          </div>
+        </div>
+
+        <div class="landing-alert-box">
+          <p id="existingUserDesc">This user account already exists with saved chat history and documents. You can rotate your API key to generate a fresh key and resume right where you left off, or choose a different username.</p>
+        </div>
+
+        <div class="landing-modal-actions">
+          <button type="button" class="modal-btn-ghost" id="pickDifferentUserBtn">Use Different Name</button>
+          <button type="button" class="modal-btn-primary" id="rotateKeyConfirmBtn">Rotate API Key &amp; Resume Workspace</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Key Generated Success Screen -->
+      <div id="modalStepSuccess" style="display: none;">
+        <div class="landing-modal-header">
+          <div class="landing-modal-icon" style="background: #f6ffed; color: #389e0d;">✓</div>
+          <div>
+            <h3 class="landing-modal-title">Your API Key is Ready!</h3>
+            <p class="landing-modal-sub">Copy this key now. You can paste it in the workspace prompt to authenticate.</p>
+          </div>
+        </div>
+
+        <div id="accountRestoredBadge" class="badge-restored" style="display: none;">
+          ✓ Linked to existing account — your chat history will be restored!
+        </div>
+
+        <div class="key-box-wrap">
+          <span class="key-box-text" id="generatedKeyText">dk_live_...</span>
+          <button type="button" class="key-copy-btn" id="copyKeyBtn" title="Copy to clipboard">
+            <span id="copyBtnIcon">📋</span>
+            <span id="copyBtnLabel">Copy</span>
+          </button>
+        </div>
+
+        <p class="landing-key-note">
+          🔒 <strong>Save this key:</strong> For security, we never store the raw key in plaintext. Once copied, click below to open your workspace!
+        </p>
+
+        <div class="landing-modal-actions" style="margin-top: 1.5rem;">
+          <button type="button" class="modal-btn-primary" id="openWorkspaceWithKeyBtn" style="width: 100%; justify-content: center;">
+            Launch Workspace &rarr;
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
   <!-- Footer -->
   <footer>
     DocuVortex: Intelligent Document Reasoning Engine · Powered by LangGraph, Qdrant &amp; Supabase ·
-    <a href="/home">Go to Workspace →</a>
+    <a href="/app">Go to Workspace →</a>
   </footer>
 
-  <script src="/static/js/landing.js"></script>
+  <script src="/static/js/landing.js?v=11"></script>
 </body>
 </html>

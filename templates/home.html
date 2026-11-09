@@ -7,10 +7,71 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/static/css/style.css?v=19" />
+  <!-- Early Client-to-Server Error & Event Telemetry Logger -->
+  <script>
+    window.__reportTelemetry = function(payload) {
+      try {
+        fetch("/api/telemetry/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          keepalive: true
+        }).catch(function() {});
+      } catch (e) {}
+    };
+
+    window.onerror = function (msg, url, line, col, error) {
+      window.__reportTelemetry({
+        type: "error",
+        message: String(msg),
+        file: String(url),
+        line: line,
+        col: col,
+        stack: error && error.stack ? String(error.stack) : ""
+      });
+    };
+
+    window.addEventListener("unhandledrejection", function (event) {
+      window.__reportTelemetry({
+        type: "unhandledrejection",
+        message: event.reason ? (event.reason.message || String(event.reason)) : "Unknown rejection",
+        stack: event.reason && event.reason.stack ? String(event.reason.stack) : ""
+      });
+    });
+
+    window.__reportTelemetry({ type: "info", message: "🚀 home.html Head initialized telemetry logger" });
+  </script>
+
+  <!-- Instant Pre-Render Authentication Guard: Redirect direct unauthenticated /app visits to landing page -->
+  <script>
+    (function () {
+      try {
+        var params = new URLSearchParams(window.location.search);
+        var key = (params.get("api_key") || sessionStorage.getItem("staged_api_key") || localStorage.getItem("docuvortex.apiKey") || "").trim();
+        window.__reportTelemetry && window.__reportTelemetry({
+          type: "info",
+          message: "Auth Guard check. Key found: " + Boolean(key && key.startsWith("dk_live_"))
+        });
+        if (!key || !key.startsWith("dk_live_") || key === "guest") {
+          window.__reportTelemetry && window.__reportTelemetry({
+            type: "warn",
+            message: "Auth Guard: No valid API key found. Redirecting to /?action=create_key"
+          });
+          window.location.replace("/?action=create_key");
+        }
+      } catch (e) {
+        window.__reportTelemetry && window.__reportTelemetry({
+          type: "error",
+          message: "Auth Guard exception: " + e.message
+        });
+        window.location.replace("/?action=create_key");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/css/style.css?v=47" />
 </head>
 <body>
 
@@ -63,8 +124,8 @@
     <div class="sidebar-chats" id="sidebarChats"></div>
 
     <div class="sidebar-footer">
-      <button class="footer-btn" id="apiKeyBtn" style="margin-bottom: 8px;">API Key</button>
-      <button class="footer-btn" id="clearAllBtn">Clear All</button>
+      <button class="footer-btn" id="settingsBtn">⚙️ Settings</button>
+      <button class="footer-btn footer-btn-clear" id="clearAllBtn">Clear All</button>
     </div>
   </aside>
 
@@ -76,14 +137,12 @@
       <span class="mobile-topbar-title">DocuVortex</span>
     </div>
 
-    
-
     <!-- Message thread -->
     <div class="messages" id="messages">
       <div class="welcome" id="welcome">
         <div class="welcome-logo">DV</div>
         <h2>Analyze documents with a calm, focused workspace</h2>
-        <p>Upload a file or YouTube transcript, then ask grounded questions without losing your document context.</p>
+        <p>Upload a PDF, DOCX file, or YouTube URL (with Caption only), then ask grounded questions without losing your document context.</p>
         <div class="suggestions">
           <button class="suggest-card" onclick="insertSuggestion('Summarize the main ideas in this document')">
             <span>01</span> Summarize the document
@@ -119,7 +178,7 @@
               <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
           </button>
-          <input type="file" id="chatFileInput" multiple accept=".pdf,.txt,.docx,.csv,.xlsx,.md" style="display:none;" />
+          <input type="file" id="chatFileInput" multiple accept=".pdf,.docx" style="display:none;" />
           <div class="mobile-attach-menu" id="mobileAttachMenu">
             <button class="mobile-attach-menu-item" id="mobileMenuUpload">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
@@ -161,16 +220,16 @@
       </div>
 
       <div class="modal-tabs">
-        <button class="modal-tab active" data-tab="file">Upload Document</button>
-        <button class="modal-tab" data-tab="yt">Add YouTube Video</button>
+        <button class="modal-tab active" data-tab="file">Upload PDF / DOCX</button>
+        <button class="modal-tab" data-tab="yt">Add YouTube URL (with Caption only)</button>
       </div>
 
       <div class="tab-panel active" id="tab-file">
         <div class="drop-zone" id="dropZone">
-          <div class="drop-icon">PDF</div>
+          <div class="drop-icon">PDF / DOCX</div>
           <p>Drag and drop files here, or <span class="drop-link">click to browse</span></p>
-          <small>PDF, TXT, DOCX, CSV, XLSX, MD</small>
-          <input type="file" id="fileInput" multiple accept=".pdf,.txt,.docx,.csv,.xlsx,.md" hidden />
+          <small>PDF, DOCX</small>
+          <input type="file" id="fileInput" multiple accept=".pdf,.docx" hidden />
         </div>
       </div>
 
@@ -179,7 +238,7 @@
           <span class="yt-icon">YT</span>
           <input type="text" id="ytInput" placeholder="https://youtube.com/watch?v=..." />
         </div>
-        <p class="modal-note">Fetches the video transcript and indexes it for chat.</p>
+        <p class="modal-note">Fetches YouTube URL (with Caption only) and indexes it for chat.</p>
       </div>
 
       <div class="modal-actions">
@@ -189,15 +248,102 @@
     </div>
   </div>
 
+  <!-- ══════════════════════ SETTINGS MODAL ══════════════════════ -->
+  <div class="modal-backdrop" id="settingsModalBackdrop">
+    <div class="modal" id="settingsModal">
+      <div class="modal-header">
+        <span>Workspace Settings</span>
+        <button class="modal-close" id="settingsModalClose">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Settings Nav Tabs -->
+      <div class="modal-tabs" style="margin-bottom: 4px;">
+        <button class="tab-btn active" id="tabBtnEmbedding" type="button">Embedding Model</button>
+        <button class="tab-btn" id="tabBtnApiKey" type="button">API Key &amp; Access</button>
+      </div>
+
+      <!-- Tab 1: Embedding Provider -->
+      <div class="tab-panel active" id="settingsTabEmbedding" style="padding: 14px 0;">
+        <h3 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 6px;">Active Embedding Model</h3>
+        <p class="modal-note" style="margin-bottom: 14px; font-size: 0.83rem; color: var(--text-muted, #666);">
+          Choose the embedding model used to index new documents and execute similarity searches.
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;" id="embeddingOptionsList">
+          <label class="provider-radio-label" style="display: flex; align-items: flex-start; gap: 12px; padding: 12px; border: 1px solid var(--border, #ddd); border-radius: 10px; cursor: pointer;">
+            <input type="radio" name="embeddingProviderRadio" value="azure" id="radioAzure" style="margin-top: 3px;" />
+            <div>
+              <div style="font-weight: 600; font-size: 0.88rem;">Azure OpenAI (text-embedding-3-small)</div>
+              <div style="font-size: 0.78rem; color: var(--text-muted, #777);">1536-dimensional cloud embeddings (Default)</div>
+            </div>
+          </label>
+
+          <label class="provider-radio-label" id="labelBge" style="display: flex; align-items: flex-start; gap: 12px; padding: 12px; border: 1px solid var(--border, #ddd); border-radius: 10px; cursor: pointer;">
+            <input type="radio" name="embeddingProviderRadio" value="bge" id="radioBge" style="margin-top: 3px;" />
+            <div>
+              <div style="font-weight: 600; font-size: 0.88rem;">BAAI/bge-small-en-v1.5 (Local HuggingFace)</div>
+              <div style="font-size: 0.78rem; color: var(--text-muted, #777);" id="bgeDesc">384-dimensional local CPU embeddings (Loaded once in memory)</div>
+            </div>
+          </label>
+        </div>
+
+        <div style="margin-top: 14px; padding: 10px 12px; background: rgba(230, 126, 34, 0.08); border-left: 3px solid #e67e22; border-radius: 6px; font-size: 0.8rem; color: #b95d09;">
+          <strong>Notice:</strong> Switching models does not delete old documents, but old documents require switching back or re-uploading to search.
+        </div>
+
+        <div style="margin-top: 10px; padding: 10px 12px; background: rgba(52, 152, 219, 0.08); border-left: 3px solid #3498db; border-radius: 6px; font-size: 0.8rem; color: #1f618d;">
+          <strong>LLM Fallback Pipeline:</strong> Groq (Fast LPU) &rarr; Google Gemini Flash &rarr; Azure OpenAI <code>gpt-5.4-nano</code> (Resilient Cloud Fallback).
+        </div>
+      </div>
+
+      <!-- Tab 2: API Key Configuration -->
+      <div class="tab-panel" id="settingsTabApiKey" style="padding: 14px 0; display: none;">
+        <h3 style="font-size: 0.92rem; font-weight: 600; margin-bottom: 6px;">Workspace Access Key</h3>
+        <p class="modal-note" style="margin-bottom: 12px; font-size: 0.83rem; color: var(--text-muted, #666);">
+          View or update your personal DocuVortex API key.
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <input
+            type="text"
+            id="settingsApiKeyInput"
+            class="yt-input-wrap-input"
+            placeholder="dk_live_..."
+            autocomplete="off"
+            style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border, #ddd); font-family: 'JetBrains Mono', monospace; font-size: 0.84rem;"
+          />
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
+            <span id="settingsKeyStatus" style="font-size: 0.8rem; color: var(--text-muted, #777);">Current status: No active key</span>
+          </div>
+          <p class="modal-note" id="settingsApiKeyError" style="color: #c0392b; display: none; margin-top: 6px; font-size: 0.8rem;"></p>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px;">
+        <button class="btn-ghost" id="settingsModalCancel">Cancel</button>
+        <button class="btn-primary" id="settingsModalSave">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ══════════════════════ API KEY MODAL ══════════════════════ -->
   <div class="modal-backdrop" id="apiKeyModalBackdrop">
     <div class="modal" id="apiKeyModal">
       <div class="modal-header">
-        <span>Enter API Key</span>
+        <span>Workspace API Key</span>
+        <button class="modal-close" id="apiKeyModalClose" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
       </div>
       <div class="tab-panel active">
         <p class="modal-note" style="margin-bottom: 12px;">
-          Enter the API key you received when your account was created.
+          Enter your DocuVortex API key to authenticate and access your chat history.
         </p>
         <input
           type="text"
@@ -209,8 +355,8 @@
         />
         <p class="modal-note" id="apiKeyError" style="color: #c0392b; display: none; margin-top: 8px;"></p>
       </div>
-      <div class="modal-actions" style="display: flex; justify-content: flex-end; align-items: center; gap: 10px;">
-        <button class="btn-ghost" id="apiKeyGuest" style="font-size: 0.85rem;">Continue as Guest</button>
+      <div class="modal-actions" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px;">
+        <a href="/?action=create_key" class="btn-ghost" style="font-size: 0.82rem; text-decoration: none; padding: 7px 12px; border-radius: 8px;">Create API Key &rarr;</a>
         <button class="btn-primary" id="apiKeySave">Save Key</button>
       </div>
     </div>
@@ -240,6 +386,6 @@
   <!-- Toast notifications -->
   <div class="toast-stack" id="toastStack"></div>
 
-  <script src="/static/js/app_new.js?v=27"></script>
+  <script src="/static/js/app_new.js?v=47"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@ import socket
 import sys
 import threading
 import urllib.parse
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Optional
 
 import yaml
 from langchain_core.documents import Document
@@ -13,8 +13,10 @@ from qdrant_client import AsyncQdrantClient, QdrantClient
 
 from src.components.embedder import Embedder
 from src.exception import (
+    CollectionEmbeddingMismatchError,
     CollectionNotFoundError,
     CustomException,
+    EmbeddingUnavailableError,
     KnowledgeBaseEmptyError,
 )
 from src.logger import logging
@@ -23,15 +25,23 @@ with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
 
-def _is_remote_qdrant_up(url: str, timeout: float = 0.5) -> bool:
-    """Quick socket check to verify whether remote Qdrant port is listening."""
+def _is_remote_qdrant_up(url: str, api_key: str | None = None, timeout: float = 5.0) -> bool:
+    """Check whether remote Qdrant is listening and reachable (supports local HTTP and Cloud HTTPS)."""
+    if not url:
+        return False
     try:
         parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or 6333
-        with socket.create_connection((host, port), timeout=timeout):
+        if parsed.scheme == "https":
+            client = QdrantClient(url=url, api_key=api_key, timeout=timeout, check_compatibility=False)
+            client.get_collections()
             return True
-    except Exception:
+        else:
+            host = parsed.hostname or "localhost"
+            port = parsed.port or 6333
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+    except Exception as e:
+        logging.warning("Remote Qdrant check failed for %s: %s", url, e)
         return False
 
 
@@ -53,34 +63,87 @@ def _get_local_client(storage_path: str = "data/qdrant_storage") -> QdrantClient
 
 class VectorStore:
     """Manages Qdrant vector storage for DocuVortex with sync and async operations,
-    automatically falling back to local embedded disk storage if remote Qdrant is unreachable."""
+    enforcing strict vector dimensions and collection model compatibility."""
 
-    def __init__(self, collection_name: str | None = None):
+    def __init__(self, collection_name: str | None = None, user_id: str | None = None, provider: str | None = None):
         try:
-            # Prefer QDRANT_URL env var (set by docker-compose) over config.yaml
+            self.user_id = user_id
             self.qdrant_url = os.environ.get(
-                "QDRANT_URL", config["vectorstore"]["url"]
+                "QDRANT_URL", config.get("vectorstore", {}).get("url", "http://localhost:6333")
             )
-            self.default_collection = config["vectorstore"]["collection_name"]
+            self.qdrant_api_key = os.environ.get("QDRANT_API_KEY")
+            self.default_collection = config.get("vectorstore", {}).get("collection_name", "docmind")
             self.collection_name = collection_name or self.default_collection
-            self.is_remote = _is_remote_qdrant_up(self.qdrant_url)
-            embedder = Embedder()
+            self.is_remote = _is_remote_qdrant_up(self.qdrant_url, api_key=self.qdrant_api_key)
+
+            embedder = Embedder(provider=provider, user_id=user_id)
+            self.embedder = embedder
             self.embedding_model = embedder.get_embedding_model(for_query=True)
             self.document_embedding_model = embedder.get_embedding_model(for_query=False)
+            self.active_specs = Embedder.get_model_specs(embedder.provider)
+        except EmbeddingUnavailableError:
+            raise
         except Exception as e:
             raise CustomException(e, sys)
 
     def _client(self) -> QdrantClient:
         if self.is_remote:
             try:
-                return QdrantClient(url=self.qdrant_url, timeout=5)
+                return QdrantClient(
+                    url=self.qdrant_url,
+                    api_key=self.qdrant_api_key,
+                    timeout=35.0,
+                    check_compatibility=False,
+                )
             except Exception as e:
                 logging.warning("Remote Qdrant connection to %s failed: %s. Using local disk fallback.", self.qdrant_url, e)
                 self.is_remote = False
         return _get_local_client()
 
     def _async_client(self) -> AsyncQdrantClient:
-        return AsyncQdrantClient(url=self.qdrant_url, timeout=5)
+        return AsyncQdrantClient(
+            url=self.qdrant_url,
+            api_key=self.qdrant_api_key,
+            timeout=35.0,
+            check_compatibility=False,
+        )
+
+    def get_collection_vector_dimension(self, collection_name: str) -> Optional[int]:
+        """Inspects Qdrant collection configuration to get the exact vector dimension."""
+        client = self._client()
+        try:
+            info = client.get_collection(collection_name=collection_name)
+            params = info.config.params.vectors
+            if hasattr(params, "size"):
+                return params.size
+            if isinstance(params, dict) and "size" in params:
+                return params["size"]
+            if hasattr(params, "values"):
+                # Named vectors case
+                for v in params.values():
+                    if hasattr(v, "size"):
+                        return v.size
+            return None
+        except Exception as e:
+            logging.debug("Could not inspect collection %s dimension: %s", collection_name, e)
+            return None
+
+    def verify_collection_compatibility(self, collection_name: str):
+        """Ensures that the collection's vector dimension matches the active embedding model.
+        Fails fast if there is a mismatch so incompatible searches never reach Qdrant."""
+        actual_dim = self.get_collection_vector_dimension(collection_name)
+        expected_dim = self.active_specs["dimension"]
+        expected_model = self.active_specs["model"]
+
+        if actual_dim is not None and actual_dim != expected_dim:
+            actual_model = "BAAI/bge-small-en-v1.5" if actual_dim == 384 else "text-embedding-3-small"
+            raise CollectionEmbeddingMismatchError(
+                collection_name=collection_name,
+                expected_model=expected_model,
+                actual_model=actual_model,
+                expected_dim=expected_dim,
+                actual_dim=actual_dim,
+            )
 
     def _initialize_vectordb(self) -> QdrantVectorStore:
         try:
@@ -90,13 +153,16 @@ class VectorStore:
             if self.collection_name not in all_collections:
                 raise CollectionNotFoundError([self.collection_name])
 
+            # Fail fast if dimension does not match active embedding model
+            self.verify_collection_compatibility(self.collection_name)
+
             client = self._client()
             return QdrantVectorStore(
                 client=client,
                 collection_name=self.collection_name,
                 embedding=self.embedding_model,
             )
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError):
             raise
         except Exception as e:
             raise CustomException(e, sys)
@@ -125,20 +191,21 @@ class VectorStore:
                     except Exception:
                         exists = False
 
+                expected_dim = self.active_specs["dimension"]
+
                 if not exists:
                     from qdrant_client.http import models as rest
                     try:
-                        sample_vec = self.document_embedding_model.embed_query("doc")
-                        dim = len(sample_vec)
-                    except Exception:
-                        dim = 384
-                    try:
                         client.create_collection(
                             collection_name=self.collection_name,
-                            vectors_config=rest.VectorParams(size=dim, distance=rest.Distance.COSINE),
+                            vectors_config=rest.VectorParams(size=expected_dim, distance=rest.Distance.COSINE),
                         )
+                        logging.info("Created collection %s with vector dimension %d", self.collection_name, expected_dim)
                     except Exception as coll_err:
                         logging.warning("Collection creation notice: %s", coll_err)
+                else:
+                    # Enforce that existing collection matches our active dimension before inserting
+                    self.verify_collection_compatibility(self.collection_name)
 
                 store = QdrantVectorStore(
                     client=client,
@@ -161,6 +228,8 @@ class VectorStore:
                 chunk.metadata["doc_index"] = total_added + len(current_batch)
                 chunk.metadata["content_length"] = len(chunk.page_content)
                 chunk.metadata["collection_name"] = self.collection_name
+                chunk.metadata["embedding_model"] = self.active_specs["model"]
+                chunk.metadata["vector_dim"] = self.active_specs["dimension"]
                 current_batch.append(chunk)
 
                 if len(current_batch) >= batch_size:
@@ -178,6 +247,8 @@ class VectorStore:
 
             logging.info("Successfully added %d chunks", total_added)
             return db
+        except (CollectionEmbeddingMismatchError, EmbeddingUnavailableError):
+            raise
         except Exception as e:
             raise CustomException(e, sys)
 

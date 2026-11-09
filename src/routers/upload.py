@@ -28,6 +28,22 @@ def _run_upload_job(
     """Runs in the background (FastAPI BackgroundTasks) after the request
     has already returned a job_id to the client."""
     try:
+        try:
+            from langsmith.run_helpers import get_current_run_tree
+            run_tree = get_current_run_tree()
+            if run_tree:
+                run_tree.name = f"Document Ingestion: {filename} [{session_id[:8]}]"
+                run_tree.tags = list(set((run_tree.tags or []) + ["ingestion", "upload", f"session:{session_id}", f"user:{user_id}"]))
+                run_tree.metadata = {
+                    **(run_tree.metadata or {}),
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "filename": filename,
+                    "collection_name": collection_name,
+                }
+        except Exception:
+            pass
+
         pipeline = IngestionPipeline()
 
         def on_retry(attempt: int, wait_seconds: float):
@@ -54,6 +70,7 @@ def _run_upload_job(
 
         if result.get("success") and result.get("collection_name") and result.get("chunks_stored", 0) > 0:
             import re
+            from src.components.embedder import Embedder
             raw_doc_name = filename or result["collection_name"]
             clean_doc_name = raw_doc_name.replace("\\", "/")
             if "/" in clean_doc_name:
@@ -61,12 +78,19 @@ def _run_upload_job(
             clean_doc_name = re.sub(r"^(?:data/)?uploads/", "", clean_doc_name, flags=re.IGNORECASE)
             clean_doc_name = re.sub(r"_[a-f0-9]{8}(\.[a-zA-Z0-9]+)$", r"\1", clean_doc_name)
 
+            active_provider = Embedder.get_active_provider(user_id=user_id)
+            specs = Embedder.get_model_specs(active_provider)
+
             MemoryManager(session_id=session_id, user_id=user_id).add_attachment(
                 name=clean_doc_name or result["collection_name"],
                 collection=result["collection_name"],
                 source_type="doc",
+                embedding_model=specs["model"],
+                vector_dim=specs["dimension"],
             )
-            logging.info("File indexed: %s (name: %s)", result.get("collection_name"), clean_doc_name)
+            logging.info("File indexed: %s (name: %s, model: %s, dim: %d)", result.get("collection_name"), clean_doc_name, specs["model"], specs["dimension"])
+            result["embedding_model"] = specs["model"]
+            result["vector_dim"] = specs["dimension"]
             upload_job_manager.mark_ready(job_id, result)
         else:
             err_msg = result.get("error") or "Could not process this file. Please try uploading it again."
@@ -74,8 +98,11 @@ def _run_upload_job(
     except Exception as err:
         logging.exception("Background upload job failed: %s", job_id)
         err_str = str(err)
-        if "connection" in err_str.lower() or "connect" in err_str.lower() or "6333" in err_str:
-            user_msg = "Could not connect to Qdrant vector store (port 6333). Please ensure Qdrant is running."
+        from src.exception import EmbeddingUnavailableError
+        if isinstance(err, EmbeddingUnavailableError) or ("embedding" in err_str.lower() and "unavailable" in err_str.lower()):
+            user_msg = "The embedding model is unavailable. You can switch the embedding model in Settings."
+        elif "connection" in err_str.lower() or "connect" in err_str.lower() or "6333" in err_str:
+            user_msg = "Could not connect to the vector store. Please ensure Qdrant Cloud or local service is reachable."
         else:
             user_msg = "Could not process this file. Please try uploading it again."
         upload_job_manager.mark_failed(job_id, user_msg)
@@ -107,16 +134,24 @@ async def upload_file(
             )
 
         collection_name = build_collection_name(file.filename or "document", prefix="doc")
-        job_id = upload_job_manager.create_job()
 
-        background_tasks.add_task(
-            _run_upload_job,
-            job_id,
-            file_bytes,
-            file.filename,
-            collection_name,
-            session_id,
-            user_id,
+        is_large = len(file_bytes) > 10 * 1024 * 1024
+        init_msg = (
+            "Processing large document (>10MB)... parsing chunks and generating vector embeddings."
+            if is_large
+            else "Processing document..."
+        )
+
+        job_id = upload_job_manager.submit_job(
+            lambda jid: _run_upload_job(
+                jid,
+                file_bytes,
+                file.filename,
+                collection_name,
+                session_id,
+                user_id,
+            ),
+            initial_message=init_msg,
         )
 
         return {"job_id": job_id, "status": "processing"}

@@ -1,14 +1,14 @@
 """DocuVortex LangGraph StateGraph — Agentic RAG workflow with intent
-classification and grounded generation (grade_documents temporarily bypassed).
+classification, grounded retrieval, and synthesis.
 
 Graph shape:
     START → load_context → classify_intent
        ├─(conversational)→ chitchat → finalize → END
        └─(retrieval)→ route_query_mode
-            ├─(qa)→ retrieve_qa ─┐
-            └─(summary)→ retrieve_summary ─┤
-                                           ├─(docs exist)→ generate → finalize → END
-                                           └─(empty)→ fallback_response → finalize → END
+            ├─(qa)→ retrieve_qa ─┬─(empty)→ fallback_response → finalize → END
+            │                    └─(docs exist)→ generate → finalize → END
+            └─(summary)→ retrieve_summary ─┬─(empty)→ fallback_response → finalize → END
+                                           └─(docs exist)→ generate → finalize → END
 """
 
 from langgraph.graph import END, START, StateGraph
@@ -44,17 +44,24 @@ def route_after_intent(state: RAGState) -> str:
     return "retrieve_qa"
 
 
-def check_docs_exist(state: RAGState) -> str:
-    """Route directly to generate (or fallback when no docs retrieved), temporarily bypassing grade_documents."""
+def check_docs_exist_qa(state: RAGState) -> str:
+    """Route QA retrieval directly to generate when docs exist, or fallback when empty."""
     docs = state.get("docs", [])
     if not docs:
         return "fallback_response"
-    # Temporarily bypassing grade_documents: route directly to generate
+    return "generate"
+
+
+def check_docs_exist_summary(state: RAGState) -> str:
+    """Summary retrieval fetches full context; route directly to generate if docs exist."""
+    docs = state.get("docs", [])
+    if not docs:
+        return "fallback_response"
     return "generate"
 
 
 def route_grade(state: RAGState) -> str:
-    """Route based on document grading result (preserved for when grading is re-enabled)."""
+    """Route based on document grading result."""
     grade = state.get("grade", "relevant")
     if grade == "irrelevant":
         return "fallback_response"
@@ -67,7 +74,7 @@ def build_rag_graph(checkpointer=None):
     """Compiles the asynchronous LangGraph StateGraph workflow."""
     builder = StateGraph(RAGState)
 
-    # Register all nodes (grade_documents code preserved)
+    # Register all nodes
     builder.add_node("load_context", load_context_node)
     builder.add_node("classify_intent", classify_intent)
     builder.add_node("clarify_question", clarify_question)
@@ -103,30 +110,21 @@ def build_rag_graph(checkpointer=None):
     # Chitchat → finalize → END
     builder.add_edge("chitchat", "finalize")
 
-    # After retrieval: route directly to generate if docs exist, fallback if empty
-    # (grade_documents is temporarily bypassed)
+    # After retrieval:
+    # QA routes directly to generate (grade_documents permanently bypassed for speed & reliability)
     builder.add_conditional_edges(
         "retrieve_qa",
-        check_docs_exist,
+        check_docs_exist_qa,
         {
             "generate": "generate",
             "fallback_response": "fallback_response",
         },
     )
 
+    # Summary routes directly to generate
     builder.add_conditional_edges(
         "retrieve_summary",
-        check_docs_exist,
-        {
-            "generate": "generate",
-            "fallback_response": "fallback_response",
-        },
-    )
-
-    # Grade routing (preserved in case grade_documents is reconnected)
-    builder.add_conditional_edges(
-        "grade_documents",
-        route_grade,
+        check_docs_exist_summary,
         {
             "generate": "generate",
             "fallback_response": "fallback_response",

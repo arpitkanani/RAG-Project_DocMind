@@ -22,6 +22,11 @@ def favicon():
     return Response(status_code=204)
 
 
+@router.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
+def chrome_devtools_endpoint():
+    return Response(status_code=204)
+
+
 @router.get("/", response_class=HTMLResponse)
 @router.get("/landing", response_class=HTMLResponse)
 async def landing_page():
@@ -32,10 +37,3 @@ async def landing_page():
 @router.get("/app", response_class=HTMLResponse)
 async def chat_app():
     return render_template_safely("home.html")
-
-
-from fastapi.responses import HTMLResponse, RedirectResponse
-
-@router.get("/login")
-async def login_page():
-    return RedirectResponse(url="/app", status_code=302)

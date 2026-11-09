@@ -69,7 +69,7 @@ def _format_source_label(metadata: dict) -> str:
     source_type = metadata.get("type")
 
     if source_type == "youtube":
-        return "YouTube transcript"
+        return "YouTube URL (with Caption only)"
 
     label = str(source).strip()
     label = label.replace("\\", "/")
@@ -85,7 +85,7 @@ def _format_source_label(metadata: dict) -> str:
 def _format_locator(metadata: dict) -> str:
     if metadata.get("page") is not None:
         try:
-            return f"page {int(metadata['page']) + 1}"
+            return f"page {int(metadata['page'])}"
         except (TypeError, ValueError):
             return f"page {metadata['page']}"
 
@@ -135,32 +135,33 @@ def build_citations(docs: list, answer: str = "") -> str:
     if not docs:
         return ""
 
+    if not answer or not answer.strip() or answer.strip() == FALLBACK_ANSWER or FALLBACK_ANSWER in answer:
+        return ""
+
     citations = []
     seen = set()
 
     # Smart filtering: only include docs whose terms or concepts are used in the answer
     used_docs = []
-    if answer and answer.strip() and answer != FALLBACK_ANSWER:
-        # Extract meaningful tokens (lowercase words >= 4 chars, excluding stopwords)
-        answer_tokens = set(re.findall(r"\b[a-zA-Z0-9]{4,}\b", answer.lower()))
-        common_words = {
-            "that", "with", "this", "from", "they", "were", "been", "have", "their", "which",
-            "about", "would", "there", "these", "could", "other", "into", "more", "first",
-            "than", "them", "some", "what", "when", "where", "also", "only", "such", "after",
-            "project", "document", "report", "system", "please", "using", "based"
-        }
-        distinctive_tokens = answer_tokens - common_words
+    # Extract meaningful tokens (lowercase words >= 4 chars, excluding stopwords)
+    answer_tokens = set(re.findall(r"\b[a-zA-Z0-9]{4,}\b", answer.lower()))
+    common_words = {
+        "that", "with", "this", "from", "they", "were", "been", "have", "their", "which",
+        "about", "would", "there", "these", "could", "other", "into", "more", "first",
+        "than", "them", "some", "what", "when", "where", "also", "only", "such", "after",
+        "project", "document", "report", "system", "please", "using", "based"
+    }
+    distinctive_tokens = answer_tokens - common_words
 
-        for doc in docs:
-            content = (doc.page_content or "").lower()
-            doc_tokens = set(re.findall(r"\b[a-zA-Z0-9]{4,}\b", content))
-            overlap = distinctive_tokens & doc_tokens
-            if len(overlap) >= 2 or len(docs) == 1:
-                used_docs.append(doc)
+    for doc in docs:
+        content = (doc.page_content or "").lower()
+        doc_tokens = set(re.findall(r"\b[a-zA-Z0-9]{4,}\b", content))
+        overlap = distinctive_tokens & doc_tokens
+        if len(overlap) >= 1 or len(docs) == 1:
+            used_docs.append(doc)
 
-        if not used_docs:
-            return ""
-    else:
+    if not used_docs:
+        # Grounded answer with minimal distinctive token overlap: fall back to top retrieved doc
         used_docs = docs[:1]
 
     for doc in used_docs:
@@ -453,39 +454,46 @@ QA_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            f"""You are DocuVortex, an intelligent, helpful, and highly accurate document assistant.
-Your goal is to provide clear, thorough, and informative answers based strictly on the provided document context.
+            f"""You are DocuVortex, an intelligent, concise, and highly accurate document assistant.
+Your goal is to provide direct, well-structured, and strictly grounded answers based on the provided document context.
 
 GUIDELINES:
 1. Strictly Grounded:
    - Rely EXCLUSIVELY on the facts, concepts, details, and entities contained in the uploaded document context.
    - NEVER use external pre-trained knowledge to invent, extrapolate, or introduce external technologies, modern features, or unmentioned topics that are not present in the uploaded document context.
-   - Do NOT invent hypothetical comparisons or lists of outside features (for example, if asked what is missing or what new features are not in the document, do NOT invent external modern AI tools, models, or frameworks from outside knowledge).
+   - Do NOT invent hypothetical comparisons or lists of outside features.
 
-2. Single Question Focus & No Historical Bleeding:
+2. Adaptive Depth & Structured Breakdown:
+   - Default Depth (Direct Questions): Deliver the answer directly in 2 to 4 focused sentences or a clean, compact bulleted list. Skip introductory pleasantries, preambles, and meta-filler (e.g. NEVER say "Based on the provided documents...", "According to the context...", "The uploaded file mentions..."). Start immediately with the core technical content.
+   - Detailed & Multi-Topic Explanations: When the user asks for details (e.g. "explain in details", "detailed", "breakdown", "elaborate", "comprehensive") or asks about multiple concepts/topics (e.g. "X and Y in deep learning"):
+     * Do NOT compress distinct concepts into a single summary sentence or parenthetical list.
+     * Itemize each distinct type, model, variant, or algorithm found in the context with its own bullet point, bold name, and a 1-2 sentence explanation of its mechanism, role, and properties based on the context.
+     * When multiple distinct topics are asked in one query (e.g., Activation Functions AND Optimization), organize the response into dedicated, clearly labeled sections for EACH topic (e.g. "### Activation Functions" and "### Optimization"), with itemized explanations under each.
+     * Ensure every relevant concept mentioned in the context is explained rather than merely listed.
+
+3. Single Question Focus & No Historical Bleeding:
    - CRITICAL: Focus EXCLUSIVELY on answering the current question provided in the final "Question: {{question}}" prompt.
    - NEVER re-answer, repeat, list, or revisit questions, topics, or headings from earlier turns in the conversation history. Focus EXCLUSIVELY on answering the current question. Do NOT include unasked sections, categories, or headings.
    - The chat history is provided SOLELY to resolve pronouns (e.g. "it", "they", "this system") or conversational references, NOT as a list of questions to answer again.
    - Never output headings or answers for topics that were not asked in the current question.
 
-3. Missing or Uncovered Topics:
-   - If the uploaded document context does NOT contain information about the asked concept, technology, or topic (e.g. asking about "Convolution Neural Network and Transfer Learning" or modern features not discussed in the document), reply with: {NOT_FOUND_TOKEN}
-   - If the user asks what the document does or does not cover, describe only what is explicitly in the context; do not extrapolate or introduce ungrounded outside subjects.
-   - If only partial information is available in the context, provide what the document explicitly covers and clarify what aspects are not mentioned.
+4. Missing or Partial Topics:
+   - If the uploaded document context contains information on the main asked subject or concept, answer thoroughly and directly using the provided text.
+   - If specific sub-entities, models, or related items (e.g. ResNet, MobileNet) are not mentioned in the context, state what IS covered and simply clarify: "The uploaded document does not contain information on [unmentioned sub-entity]."
+   - ONLY reply with {NOT_FOUND_TOKEN} if the document context contains ABSOLUTELY ZERO information relevant to the user's question.
 
-4. Helpful & Flexible Understanding:
-   - Understand synonyms, abbreviations, and related terms for entities that ARE in the context (e.g. if the user asks "what project is Arpit making" and the document lists "Project name: X" with "Author: Arpit", clearly state the project name and author).
-   - When asked to summarize, explain, compare, extract key points, or analyze specific topics (such as charts, timelines, or costs) that are present in the context, synthesize the information thoroughly and clearly using the provided context.
+5. Helpful & Flexible Understanding:
+   - Understand synonyms, abbreviations, and related terms for entities that ARE in the context (e.g. if the user asks "what project is John Walker making" and the document lists "Project name: X" with "Author: John Walker", clearly state the project name and author).
+   - When asked to summarize, compare, extract key points, or analyze specific topics that are present in the context, synthesize the core facts concisely and clearly.
 
-5. Clarity & Formatting:
+6. Formatting Rules:
    - Use clean Markdown with clear line breaks (bullet points, bold key terms, tables, or numbered lists) to make information readable.
    - CRITICAL: Every heading, bullet point (- or *), and numbered step (1., 2., 3.) MUST start on its OWN NEW LINE.
    - NEVER put multiple numbered points (e.g. 1. and 2.) on the same line.
    - NEVER place a section heading or bullet point at the end of a previous sentence. Place a blank line before new headings and list sections.
-   - Be direct: do not use empty meta-filler like "Based on the provided context," "According to the uploaded documents," or "The text states." Start directly with the answer.
-   - Never output meta-dialogue commentary about the user or prior assistant responses (e.g. do not say "The user asked..." or "The assistant replied...").
+   - Never output meta-dialogue commentary about the user or prior assistant responses.
 
-6. Priority:
+7. Priority:
    - Always evaluate the freshly provided document context for the CURRENT question independently.
 """,
         ),
@@ -497,7 +505,7 @@ GUIDELINES:
 
 Question: {question}
 
-Answer ONLY the specific question asked above ("{question}") clearly and helpfully using the context above. Do NOT answer or mention previous topics:""",
+Answer the specific question asked above ("{question}") directly and accurately using the context above. If the question requests details or covers multiple concepts, provide a thorough, structured breakdown itemizing each distinct concept, type, and algorithm present in the text with its explanation. Do NOT answer or mention unasked previous topics:""",
         ),
     ]
 )
@@ -524,18 +532,48 @@ GEMINI_MODELS = [
 def _build_llm():
     """
     Constructs the chat LLM with automatic cross-provider fallback.
-    If primary model hits rate limit or error, automatically tries
-    fallback models from both Gemini and Groq in priority order.
+    Hierarchy:
+    1. Groq models (Primary, ultra-fast free tier)
+    2. Google Gemini models (Secondary fallback)
+    3. Azure OpenAI gpt-5.4-nano (Tertiary resilient cloud fallback)
     """
     google_api_key = os.getenv("GOOGLE_API_KEY")
     groq_api_key = os.getenv("GROQ_API_KEY")
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    azure_model_key = os.getenv("AZURE_OPENAI_MODEL_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+    raw_azure_endpoint = os.getenv("AZURE_OPENAI_MODEL_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_deployment = (
+        os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+        or os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
+        or "gpt-5.4-nano"
+    ).strip("\"'")
+    azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01").strip("\"'")
+    azure_model_version = os.getenv("AZURE_OPENAI_MODEL_VERSION", "2026-03-17").strip("\"'")
+
     temperature = config["llm"].get("temperature", 0.1)
     max_tokens = config["llm"].get("max_tokens", 1024)
 
     llm_instances = []
-    primary_provider = os.getenv("LLM_PROVIDER", config["llm"].get("provider", "google")).lower()
 
-    if primary_provider == "google" and google_api_key:
+    # 1. Groq Models (Primary)
+    if groq_api_key:
+        from langchain_groq import ChatGroq
+        for m in GROQ_MODELS:
+            try:
+                llm_instances.append(
+                    ChatGroq(
+                        model=m,
+                        temperature=temperature,
+                        api_key=groq_api_key,
+                        groq_api_key=groq_api_key,
+                        max_tokens=max_tokens,
+                    )
+                )
+            except Exception:
+                pass
+
+    # 2. Gemini Models (Secondary fallback)
+    if google_api_key:
         from langchain_google_genai import ChatGoogleGenerativeAI
         for m in GEMINI_MODELS:
             try:
@@ -549,54 +587,48 @@ def _build_llm():
                 )
             except Exception:
                 pass
-        if groq_api_key:
-            from langchain_groq import ChatGroq
-            for m in GROQ_MODELS:
-                try:
-                    llm_instances.append(
-                        ChatGroq(
-                            model=m,
-                            temperature=temperature,
-                            api_key=groq_api_key,
-                            groq_api_key=groq_api_key,
-                            max_tokens=max_tokens,
-                        )
-                    )
-                except Exception:
-                    pass
-    else:
-        if groq_api_key:
-            from langchain_groq import ChatGroq
-            for m in GROQ_MODELS:
-                try:
-                    llm_instances.append(
-                        ChatGroq(
-                            model=m,
-                            temperature=temperature,
-                            api_key=groq_api_key,
-                            groq_api_key=groq_api_key,
-                            max_tokens=max_tokens,
-                        )
-                    )
-                except Exception:
-                    pass
-        if google_api_key:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            for m in GEMINI_MODELS:
-                try:
-                    llm_instances.append(
-                        ChatGoogleGenerativeAI(
-                            model=m,
-                            temperature=temperature,
-                            google_api_key=google_api_key,
-                            max_output_tokens=max_tokens,
-                        )
-                    )
-                except Exception:
-                    pass
+
+    # 3. Azure OpenAI gpt-5.4-nano (Tertiary fallback)
+    if azure_model_key and raw_azure_endpoint:
+        try:
+            from langchain_openai import AzureChatOpenAI
+            clean_endpoint = raw_azure_endpoint.strip().rstrip("/")
+            clean_endpoint = re.sub(r"/openai(?:/v\d+)?(?:/.*)?/?$", "", clean_endpoint, flags=re.IGNORECASE)
+            clean_endpoint = re.sub(r"/responses/?$", "", clean_endpoint, flags=re.IGNORECASE)
+
+            azure_kwargs = {
+                "azure_endpoint": clean_endpoint,
+                "api_key": azure_model_key,
+                "azure_deployment": azure_deployment,
+                "api_version": azure_api_version,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "max_retries": 1,
+            }
+            if azure_model_version:
+                azure_kwargs["model_version"] = azure_model_version
+
+            llm_instances.append(AzureChatOpenAI(**azure_kwargs))
+        except Exception as az_err:
+            logging.warning("Could not initialize AzureChatOpenAI fallback: %s", az_err)
+
+    # 4. Standard OpenAI fallback if configured
+    if openai_api_key:
+        try:
+            from langchain_openai import ChatOpenAI
+            llm_instances.append(
+                ChatOpenAI(
+                    model=config["llm"].get("model", "gpt-4o-mini"),
+                    temperature=temperature,
+                    api_key=openai_api_key,
+                    max_tokens=max_tokens,
+                )
+            )
+        except Exception:
+            pass
 
     if not llm_instances:
-        raise ValueError("Neither GROQ_API_KEY nor GOOGLE_API_KEY is configured.")
+        raise ValueError("No LLM provider keys (Groq, Gemini, or Azure OpenAI) are configured.")
 
     primary = llm_instances[0]
     if len(llm_instances) > 1:

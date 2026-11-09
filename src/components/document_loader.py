@@ -55,6 +55,37 @@ class DocumentLoader:
 
     def _load_pdf(self, path: str) -> Iterator[Document]:
         try:
+            # 1. Primary: PyMuPDF (preserves proper word spacing and mathematical glyphs)
+            try:
+                import fitz  # PyMuPDF
+                doc = fitz.open(path)
+                pymupdf_pages = []
+                for idx, page in enumerate(doc):
+                    txt = page.get_text() or ""
+                    if txt and txt.strip():
+                        space_ratio = txt.count(" ") / max(len(txt), 1)
+                        if space_ratio < 0.10:
+                            logging.warning(
+                                "Low space ratio (%.3f) on page %d of %s",
+                                space_ratio,
+                                idx + 1,
+                                path,
+                            )
+                        pymupdf_pages.append(
+                            Document(
+                                page_content=txt.strip(),
+                                metadata={"source": path, "page": idx + 1},
+                            )
+                        )
+                if pymupdf_pages:
+                    logging.info("PyMuPDF extracted %d pages with text from %s", len(pymupdf_pages), path)
+                    for p in pymupdf_pages:
+                        yield p
+                    return
+            except Exception as fitz_err:
+                logging.warning("PyMuPDF extraction failed or not available: %s. Falling back to PyPDFLoader.", fitz_err)
+
+            # 2. Fallback: PyPDFLoader
             pages = []
             try:
                 loader = PyPDFLoader(path)
@@ -69,11 +100,14 @@ class DocumentLoader:
             if has_text:
                 valid_pages = [p for p in pages if p.page_content and p.page_content.strip()]
                 for page in valid_pages:
+                    sr = page.page_content.count(" ") / max(len(page.page_content), 1)
+                    if sr < 0.10:
+                        logging.warning("Low space ratio (%.3f) in PyPDFLoader page for %s", sr, path)
                     yield page
                 logging.info("PyPDFLoader stream completed: %d pages with text", len(valid_pages))
                 return
 
-            # Fallback: Direct pypdf.PdfReader with layout and plain extraction modes
+            # 3. Direct pypdf.PdfReader with layout and plain extraction modes
             try:
                 from pypdf import PdfReader
                 reader = PdfReader(path)

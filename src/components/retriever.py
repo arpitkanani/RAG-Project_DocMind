@@ -4,14 +4,17 @@ import re
 import sys
 from typing import List, Tuple
 
+import httpx
 import yaml
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableConfig
 from langchain_qdrant import QdrantVectorStore
 from langsmith import traceable
 from qdrant_client import AsyncQdrantClient
 
 from src.components.vector_store import VectorStore
 from src.exception import (
+    CollectionEmbeddingMismatchError,
     CollectionNotFoundError,
     CustomException,
     KnowledgeBaseEmptyError,
@@ -81,7 +84,7 @@ class Retriever:
         return [doc for doc, _, _ in ranked_docs]
 
     @traceable(run_type="retriever", name="retrieve_ranked")
-    async def retrieve_ranked(self, query: str) -> List[Tuple[Document, float, float]]:
+    async def retrieve_ranked(self, query: str, config: RunnableConfig = None) -> List[Tuple[Document, float, float]]:
         """Retrieve the best chunks with final rank and semantic confidence asynchronously."""
         try:
             logging.info("Async Retrieving for: %s...", query[:50])
@@ -136,7 +139,8 @@ class Retriever:
                         continue
                     coll_best = coll_docs[0][1]
                     docs.extend(
-                        item for item in coll_docs if item[1] >= coll_best * self.doc_margin
+                        item for item in coll_docs
+                        if item[1] >= coll_best * self.doc_margin or item[2] >= 0.48
                     )
 
                 docs = sorted(docs, key=lambda item: item[1], reverse=True)[: self.k]
@@ -159,7 +163,7 @@ class Retriever:
                 len(target_collections),
             )
             return docs
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError):
             raise
         except Exception as e:
             raise CustomException(e, sys)
@@ -190,48 +194,102 @@ class Retriever:
         query: str,
         query_variants: List[str],
     ) -> List[Tuple[Document, float]]:
-        db = self._get_cached_db(collection_name)
-        docs: List[Tuple[Document, float]] = []
+        try:
+            db = self._get_cached_db(collection_name)
+        except CollectionEmbeddingMismatchError:
+            raise
+        except Exception as e:
+            err_str = str(e).lower()
+            if "vector dimension" in err_str or "dimension error" in err_str or "wrong input" in err_str or "dim:" in err_str:
+                actual_dim = self.vs.get_collection_vector_dimension(collection_name) or (384 if self.vs.active_specs["dimension"] == 1536 else 1536)
+                actual_model = "BAAI/bge-small-en-v1.5" if actual_dim == 384 else "text-embedding-3-small"
+                raise CollectionEmbeddingMismatchError(
+                    collection_name=collection_name,
+                    expected_model=self.vs.active_specs["model"],
+                    actual_model=actual_model,
+                    expected_dim=self.vs.active_specs["dimension"],
+                    actual_dim=actual_dim,
+                )
+            raise
 
-        for variant in query_variants:
-            if self.search_type == "mmr":
-                if self.vs.is_remote:
-                    sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
-                    score_lookup = {
-                        doc.page_content: self._normalize_similarity_score(score)
-                        for doc, score in sim_res
-                    }
-                    mmr_docs = await db.amax_marginal_relevance_search(
-                        variant,
-                        k=self.k,
-                        fetch_k=self.fetch_k,
-                        lambda_mult=self.lambda_mult,
+        async def _search_one_variant(variant: str) -> List[Tuple[Document, float]]:
+            v_docs: List[Tuple[Document, float]] = []
+            try:
+                if self.search_type == "mmr":
+                    if self.vs.is_remote:
+                        sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                        score_lookup = {
+                            doc.page_content: self._normalize_similarity_score(score)
+                            for doc, score in sim_res
+                        }
+                        mmr_docs = await db.amax_marginal_relevance_search(
+                            variant,
+                            k=self.k,
+                            fetch_k=self.fetch_k,
+                            lambda_mult=self.lambda_mult,
+                        )
+                    else:
+                        sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
+                        score_lookup = {
+                            doc.page_content: self._normalize_similarity_score(score)
+                            for doc, score in sim_res
+                        }
+                        mmr_docs = await asyncio.to_thread(
+                            db.max_marginal_relevance_search,
+                            variant,
+                            k=self.k,
+                            fetch_k=self.fetch_k,
+                            lambda_mult=self.lambda_mult,
+                        )
+                    v_docs.extend(
+                        (doc, score_lookup.get(doc.page_content, 0.0)) for doc in mmr_docs
                     )
                 else:
-                    sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
-                    score_lookup = {
-                        doc.page_content: self._normalize_similarity_score(score)
-                        for doc, score in sim_res
-                    }
-                    mmr_docs = await asyncio.to_thread(
-                        db.max_marginal_relevance_search,
-                        variant,
-                        k=self.k,
-                        fetch_k=self.fetch_k,
-                        lambda_mult=self.lambda_mult,
+                    sim_res = None
+                    try:
+                        if self.vs.is_remote:
+                            sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
+                        else:
+                            sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
+                    except (httpx.TimeoutException, httpx.NetworkError) as net_err:
+                        logging.warning("Qdrant search timeout/network glitch on variant %r: %s. Retrying once...", variant[:30], net_err)
+                        await asyncio.sleep(1.0)
+                        try:
+                            sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
+                        except Exception as retry_err:
+                            logging.error("Qdrant retry search also failed: %s", retry_err)
+                            sim_res = []
+
+                    if sim_res:
+                        v_docs.extend(
+                            (doc, self._normalize_similarity_score(score))
+                            for doc, score in sim_res
+                        )
+            except CollectionEmbeddingMismatchError:
+                raise
+            except Exception as search_err:
+                err_str = str(search_err).lower()
+                if "timeout" in err_str or "timed out" in err_str or "read operation" in err_str:
+                    logging.warning("Recovering from Qdrant timeout in collection %s: %s", collection_name, search_err)
+                    return []
+                if "vector dimension" in err_str or "dimension error" in err_str or "wrong input" in err_str or "dim:" in err_str:
+                    actual_dim = self.vs.get_collection_vector_dimension(collection_name) or (384 if self.vs.active_specs["dimension"] == 1536 else 1536)
+                    actual_model = "BAAI/bge-small-en-v1.5" if actual_dim == 384 else "text-embedding-3-small"
+                    raise CollectionEmbeddingMismatchError(
+                        collection_name=collection_name,
+                        expected_model=self.vs.active_specs["model"],
+                        actual_model=actual_model,
+                        expected_dim=self.vs.active_specs["dimension"],
+                        actual_dim=actual_dim,
                     )
-                docs.extend(
-                    (doc, score_lookup.get(doc.page_content, 0.0)) for doc in mmr_docs
-                )
-            else:
-                if self.vs.is_remote:
-                    sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
-                else:
-                    sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
-                docs.extend(
-                    (doc, self._normalize_similarity_score(score))
-                    for doc, score in sim_res
-                )
+                logging.warning("Error searching collection %s: %s", collection_name, search_err)
+                return []
+            return v_docs
+
+        variant_results = await asyncio.gather(*[_search_one_variant(v) for v in query_variants])
+        docs: List[Tuple[Document, float]] = []
+        for v_res in variant_results:
+            docs.extend(v_res)
 
         for doc, _ in docs:
             doc.metadata.setdefault("collection_name", collection_name)
@@ -244,6 +302,8 @@ class Retriever:
         return meaningful_docs or docs
 
     def _get_cached_db(self, collection_name: str) -> QdrantVectorStore:
+        # Enforce dimension compatibility check before returning or constructing vector store
+        self.vs.verify_collection_compatibility(collection_name)
         if collection_name not in _qdrant_db_cache:
             client = self.vs._client()
             _qdrant_db_cache[collection_name] = QdrantVectorStore(
@@ -281,10 +341,12 @@ class Retriever:
 
             # Meaningful keyword overlap calculation
             if meaningful_query_terms:
-                term_overlap = len(meaningful_query_terms & content_terms)
+                matching_terms = meaningful_query_terms & content_terms
+                term_overlap = len(matching_terms)
                 overlap_ratio = term_overlap / len(meaningful_query_terms)
             else:
-                term_overlap = len(query_terms & content_terms)
+                matching_terms = query_terms & content_terms
+                term_overlap = len(matching_terms)
                 overlap_ratio = term_overlap / max(len(query_terms), 1)
 
             text_lower = doc.page_content.lower()
@@ -292,59 +354,67 @@ class Retriever:
                 str(value).lower() for value in doc.metadata.values() if value is not None
             )
 
-            bonus = 0
+            bonus = 0.0
             if "project" in query_terms and "project" in text_lower:
-                bonus += 4
+                bonus += 2.0
             if "experience" in query_terms and "experience" in text_lower:
-                bonus += 3
+                bonus += 2.0
             if "summary" in query_terms and doc.metadata.get("type") == "youtube":
-                bonus += 2
+                bonus += 2.0
             if any(phrase and phrase in text_lower for phrase in query_phrases):
-                bonus += 12
+                bonus += 6.0
             if any(term in metadata_text for term in meaningful_query_terms if len(term) > 3):
-                bonus += 4
+                bonus += 2.0
             if self._looks_like_structured_answer(query_terms, text_lower):
-                bonus += 3
+                bonus += 2.0
 
             # Exact matching for specific topic keywords: gantt, chart, cost, estimate, etc.
             specific_topics = {"gantt", "chart", "cost", "estimate", "budget", "schedule", "timeline", "milestone", "activities", "duration"}
             topic_matches = query_terms & specific_topics & content_terms
             if topic_matches:
-                bonus += 14 * len(topic_matches)
+                bonus += min(4.0 * len(topic_matches), 8.0)
 
             # Specific proper names or non-stopword tokens in query (like "arpit", "dezlor")
             query_entity_tokens = {t for t in meaningful_query_terms if t not in specific_topics and len(t) > 3}
             entity_matches = query_entity_tokens & content_terms
             if entity_matches:
-                bonus += 12 * len(entity_matches)
+                bonus += min(2.5 * len(entity_matches), 10.0)
 
             # Author and creator front-matter boosts
             is_author_query = bool(query_terms & {"author", "writer", "written", "creator", "submitted", "prepared", "student", "intern", "who"})
             if is_author_query:
                 if any(m in text_lower for m in ["prepared by", "submitted by", "author", "student name", "guided by", "written by", "roll no", "enrollment"]):
-                    bonus += 10
+                    bonus += 5.0
                 if doc.metadata.get("page") in (0, 1) or doc.metadata.get("doc_index", 99) <= 1:
-                    bonus += 6
+                    bonus += 3.0
 
             # Project name and title front-matter boost
             is_title_query = bool(query_terms & {"project", "title", "topic", "name"})
             if is_title_query:
                 if any(m in text_lower for m in ["project name", "project title", "title of the project", "author"]):
-                    bonus += 12
+                    bonus += 5.0
                 if doc.metadata.get("page") in (0, 1) or doc.metadata.get("doc_index", 99) <= 1:
-                    bonus += 6
+                    bonus += 3.0
 
-            # Only reward heading / locator bonuses if there is actual topic relevance
             has_relevance = term_overlap > 0 or semantic_score >= 0.45 or bonus > 0
-            locator_bonus = 1 if (has_relevance and doc.metadata.get("page") is not None) else 0
-            heading_bonus = 2 if (has_relevance and self._has_heading_signal(text_lower)) else 0
-            density_bonus = min(int(overlap_ratio * 10), 6) if term_overlap > 0 else 0
+            locator_bonus = 1.0 if (has_relevance and doc.metadata.get("page") is not None) else 0.0
+            heading_bonus = 2.0 if (has_relevance and self._has_heading_signal(text_lower)) else 0.0
+            lexical_boost = min(overlap_ratio * 20.0, 20.0)
 
-            # Strong lexical match for substantive keywords in question
-            lexical_score = (
-                term_overlap * 12 + bonus + locator_bonus + heading_bonus + density_bonus
+            # Base score strongly driven by semantic confidence (0.0 to 1.0 -> 0.0 to 60.0)
+            base_semantic_score = semantic_score * 60.0
+            final_score = base_semantic_score + lexical_boost + bonus + locator_bonus + heading_bonus
+
+            # Index & Glossary page penalty:
+            # Prevents textbook index pages or keyword listings (e.g. "Chess, 2 Chord, 575 ... CNN, 326")
+            # from dominating explanation chapters when the user did not ask for an index.
+            is_index = bool(
+                re.search(r"(?i)\bindex\b\s*\n\s*[a-z],\s*\d+", text_lower)
+                or re.search(r"(?i)^index\s*\n", text_lower)
+                or len(re.findall(r"\b[a-zA-Z\s\-]{3,30},\s*\d{1,4}\b", text_lower)) >= 4
             )
-            final_score = lexical_score + (semantic_score * 15)
+            if is_index and not any(k in query_terms for k in ("index", "page", "where", "location")):
+                final_score *= 0.1
 
             stored = deduped.get(key)
             if stored is None or final_score > stored[0]:
@@ -406,6 +476,22 @@ class Retriever:
 
         # Domain-aware query expansions
         token_set = set(tokens)
+        ACRONYM_MAP = {
+            "cnn": "convolutional neural network convolutional networks",
+            "cnns": "convolutional neural networks convolutional networks",
+            "rnn": "recurrent neural network",
+            "rnns": "recurrent neural networks",
+            "lstm": "long short term memory",
+            "gan": "generative adversarial network",
+            "nlp": "natural language processing",
+            "cv": "computer vision",
+            "llm": "large language model",
+        }
+        for token in tokens:
+            if token in ACRONYM_MAP:
+                variants.append(ACRONYM_MAP[token])
+                variants.append(f"{token} {ACRONYM_MAP[token]}")
+
         if token_set & {"author", "writer", "written", "creator", "submitted", "prepared", "student", "who"}:
             variants.append("submitted by prepared by author student name")
             variants.append("prepared by")
@@ -474,7 +560,7 @@ class Retriever:
                 total_chars += doc_len
 
             return selected
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError):
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError):
             raise
         except Exception as e:
             raise CustomException(e, sys)

@@ -7,7 +7,7 @@ Nodes:
     fallback_response – Polite message when docs are irrelevant
 """
 
-from langchain_community.tools.playwright import extract_text
+from src.utils.helpers import extract_text
 import json
 import os
 import re
@@ -76,8 +76,42 @@ def _get_gemini_flash():
                 except Exception:
                     pass
 
+        # 3. Azure OpenAI gpt-5.4-nano (Tertiary Fallback)
+        azure_model_key = os.getenv("AZURE_OPENAI_MODEL_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+        raw_azure_endpoint = os.getenv("AZURE_OPENAI_MODEL_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT")
+        azure_deployment = (
+            os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            or os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
+            or "gpt-5.4-nano"
+        ).strip("\"'")
+        azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01").strip("\"'")
+        azure_model_version = os.getenv("AZURE_OPENAI_MODEL_VERSION", "2026-03-17").strip("\"'")
+
+        if azure_model_key and raw_azure_endpoint:
+            try:
+                from langchain_openai import AzureChatOpenAI
+                clean_endpoint = raw_azure_endpoint.strip().rstrip("/")
+                clean_endpoint = re.sub(r"/openai(?:/v\d+)?(?:/.*)?/?$", "", clean_endpoint, flags=re.IGNORECASE)
+                clean_endpoint = re.sub(r"/responses/?$", "", clean_endpoint, flags=re.IGNORECASE)
+
+                azure_kwargs = {
+                    "azure_endpoint": clean_endpoint,
+                    "api_key": azure_model_key,
+                    "azure_deployment": azure_deployment,
+                    "api_version": azure_api_version,
+                    "temperature": 0,
+                    "max_tokens": 1024,
+                    "max_retries": 1,
+                }
+                if azure_model_version:
+                    azure_kwargs["model_version"] = azure_model_version
+
+                instances.append(AzureChatOpenAI(**azure_kwargs))
+            except Exception as e:
+                logging.debug("Azure OpenAI agentic fallback init note: %s", e)
+
         if not instances:
-            raise ValueError("Neither GOOGLE_API_KEY nor GROQ_API_KEY is configured.")
+            raise ValueError("No LLM providers (Groq, Google Gemini, or Azure OpenAI) are configured.")
 
         primary = instances[0]
         _gemini_flash = primary.with_fallbacks(instances[1:]) if len(instances) > 1 else primary
@@ -247,12 +281,13 @@ def _was_last_response_clarification(chat_history: list) -> bool:
     return False
 
 
-@traceable(name="Intent_Classifier")
-async def classify_intent(state: RAGState) -> Dict[str, Any]:
+async def classify_intent(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
     """Detect whether to perform document retrieval, request clarification, or general conversational AI.
 
     Logic:
-        - If query matches explicit real-time tools (stock, weather, math, search, greeting) -> 'chitchat'.
+        - Pure conversational greetings always route to 'chitchat'.
+        - If document sources are attached and question explicitly references document content -> 'retrieval'.
+        - If query matches explicit real-time tools (stock, weather, math, search) -> 'chitchat'.
         - If a document source is selected/uploaded:
           Check question clarity. If vague/underspecified, route to 'clarify'.
           Otherwise, route to 'retrieval'.
@@ -262,13 +297,13 @@ async def classify_intent(state: RAGState) -> Dict[str, Any]:
     question = state.get("question") or state.get("query") or ""
     q_lower = question.lower().strip()
 
-    # 1. Real-time tools & conversational queries always take priority
-    for pattern in TOOL_OR_CHITCHAT_PATTERNS:
-        if re.search(pattern, q_lower):
-            logging.info("→ classify_intent: matched tool/chitchat pattern '%s', routing to chitchat", pattern)
-            return {"intent": "chitchat"}
+    # Pure conversational greetings always take priority
+    greeting_pattern = r"^\s*(hi|hello|hey|greetings|good\s*morning|good\s*afternoon|good\s*evening|who\s*are\s*you|what\s*are\s*you|what\s*can\s*you\s*do|how\s*are\s*you|help)\s*[\?\!\.]*\s*$"
+    if re.search(greeting_pattern, q_lower):
+        logging.info("→ classify_intent: matched greeting pattern, routing to chitchat")
+        return {"intent": "chitchat"}
 
-    # 2. Check if a document source is active in this session
+    # Check if a document source is active in this session
     has_source = bool(
         state.get("source_selected")
         or state.get("collection_names")
@@ -276,6 +311,23 @@ async def classify_intent(state: RAGState) -> Dict[str, Any]:
         or state.get("document_id")
         or state.get("docs")
     )
+
+    doc_referencing_words = {
+        "document", "doc", "file", "paper", "pdf", "report", "table",
+        "chart", "section", "chapter", "author", "mentioned", "in this",
+        "from this", "summary", "summarize", "page"
+    }
+    explicitly_mentions_doc = any(w in q_lower for w in doc_referencing_words)
+
+    if has_source and explicitly_mentions_doc:
+        logging.info("→ classify_intent: document active and explicitly referenced, routing to retrieval")
+        return {"intent": "retrieval"}
+
+    # Real-time tools inquiries (weather, stock ticker, math expression, web search)
+    for pattern in TOOL_OR_CHITCHAT_PATTERNS:
+        if re.search(pattern, q_lower):
+            logging.info("→ classify_intent: matched tool/chitchat pattern '%s', routing to chitchat", pattern)
+            return {"intent": "chitchat"}
 
     if has_source:
         chat_history = state.get("chat_history", [])
@@ -348,8 +400,7 @@ async def _generate_clarification_options(question: str) -> list:
     ]
 
 
-@traceable(name="Clarify_Question")
-async def clarify_question(state: RAGState) -> Dict[str, Any]:
+async def clarify_question(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
     """Provide interactive clarification with clickable options."""
     question = state.get("question", "")
     feedback = state.get("clarification_feedback") or (
@@ -394,7 +445,6 @@ system_instruction = (
 
 
 # 2. ReAct Chitchat Agent powered by chitchat_subgraph
-@traceable(name="ReAct_Chitchat_Agent")
 async def run_react_agent(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
     """Execute prebuilt tool-calling chitchat subgraph with config and LangSmith naming."""
     from src.graph.chitchat_subgraph import chitchat_subgraph
@@ -523,8 +573,7 @@ run_chitchat = run_react_agent
 # Node: Document_Grader (grade_documents)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@traceable(name="Document_Grader")
-async def grade_documents(state: RAGState) -> Dict[str, Any]:
+async def grade_documents(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
     """Evaluate whether retrieved chunks contain relevant information.
 
     Strategy to avoid Gemini 429 errors and context size issues:
@@ -574,8 +623,7 @@ async def grade_documents(state: RAGState) -> Dict[str, Any]:
 # Node: fallback_response
 # ══════════════════════════════════════════════════════════════════════════════
 
-@traceable(name="fallback_response")
-async def fallback_response(state: RAGState) -> Dict[str, Any]:
+async def fallback_response(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
     """Return a polite message when documents don't contain relevant information."""
     logging.info("→ fallback_response: no relevant docs found")
     return {
