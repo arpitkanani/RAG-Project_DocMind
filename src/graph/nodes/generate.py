@@ -2,7 +2,7 @@ import sys
 from typing import Any, Dict
 
 from langchain_core.output_parsers import StrOutputParser #type: ignore
-from langsmith import traceable
+from langchain_core.runnables import RunnableConfig
 
 from src.chains.qa_chain import (
     FALLBACK_ANSWER,
@@ -33,8 +33,7 @@ def fallback_node(state: RAGState) -> Dict[str, Any]:
     }
 
 
-@traceable(name="RAG_Generator")
-async def generate_node(state: RAGState) -> Dict[str, Any]:
+async def generate_node(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
     """Generates the grounded answer from retrieved docs and chat history."""
     try:
         question = state["question"]
@@ -67,10 +66,11 @@ async def generate_node(state: RAGState) -> Dict[str, Any]:
                     "sources": sources,
                     "question": question,
                     "chat_history": clean_chat_history,
-                }
+                },
+                config=config,
             )
             raw_answer = extract_text(raw_answer)
-            logging.info("generate_node: raw_answer received (len=%d): %r", len(raw_answer), raw_answer[:120])
+            logging.info("generate_node: raw_answer received (len=%d): %s", len(raw_answer), raw_answer[:200])
         except Exception as e:
             raise_as_rate_limit_error(e)
 
@@ -81,8 +81,7 @@ async def generate_node(state: RAGState) -> Dict[str, Any]:
         raise CustomException(e, sys)
 
 
-@traceable(name="Finalize_Response")
-async def finalize_node(state: RAGState) -> Dict[str, Any]:
+async def finalize_node(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
     """Sanitizes raw generation, builds citations, and asynchronously saves to PostgreSQL."""
     try:
         import json
@@ -114,30 +113,37 @@ async def finalize_node(state: RAGState) -> Dict[str, Any]:
             await memory.asave_message("ai", db_save_text)
             logging.info("Chitchat/conversational answer finalized for session %s", session_id)
             return {
+                "clean_answer": final_answer,
                 "final_answer": final_answer,
                 "citations": citations,
             }
 
         if raw_answer == FALLBACK_ANSWER or not raw_answer:
+            clean_answer = FALLBACK_ANSWER
             final_answer = FALLBACK_ANSWER
             citations = ""
         else:
-            final_answer = sanitize_answer(raw_answer)
+            clean_answer = sanitize_answer(raw_answer)
             citations = ""
 
-            if is_summary:
+            if clean_answer == FALLBACK_ANSWER or FALLBACK_ANSWER in clean_answer:
+                citations = ""
+            elif is_summary:
                 citations = build_source_only_citations(docs)
             else:
-                citations = build_citations(docs, final_answer)
+                citations = build_citations(docs, clean_answer)
 
-            if final_answer != FALLBACK_ANSWER and citations:
-                final_answer = f"{final_answer}\n\n{citations}"
+            if clean_answer != FALLBACK_ANSWER and citations:
+                final_answer = f"{clean_answer}\n\n{citations}"
+            else:
+                final_answer = clean_answer
 
         memory = MemoryManager(session_id=session_id, user_id=user_id)
         await memory.asave_message("ai", final_answer)
 
         logging.info("Answer finalized and persisted for session %s", session_id)
         return {
+            "clean_answer": clean_answer,
             "final_answer": final_answer,
             "citations": citations,
         }

@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import time
 from typing import List, Optional
 import uuid
 
@@ -94,13 +95,7 @@ def build_collection_name(source_name: str, prefix: str = "doc") -> str:
 async def aresolve_session_scope(
     session_id: str, requested_scope: Optional[List[str]], user_id: str
 ) -> List[str]:
-    """Asynchronously resolves session scope, enforcing collection ownership.
-
-    When the client explicitly requests specific collections, each collection is
-    verified to actually belong to this user's session before being returned.
-    This prevents one user from querying another user's collection by crafting a
-    ``collection_names`` payload.
-    """
+    """Asynchronously resolves session scope, enforcing collection ownership."""
     if requested_scope is not None and not requested_scope:
         return []
 
@@ -108,9 +103,6 @@ async def aresolve_session_scope(
     memory = MemoryManager(session_id=session_id, user_id=user_id)
 
     if requested_scope is not None:
-        # Ownership check: filter down to only the collections that are
-        # both available in Qdrant AND attached to this user's session.
-        # Only cleanup if available_collections is non-empty to prevent accidental wipe on network blip
         if available_collections:
             await memory.acleanup_attachments(available_collections)
         user_collections = set(await memory.aget_attachment_collections())
@@ -120,7 +112,6 @@ async def aresolve_session_scope(
             raise CollectionNotFoundError(requested_scope)
         return owned
 
-    # No explicit scope: use whatever is attached to this session.
     if available_collections:
         await memory.acleanup_attachments(available_collections)
     attachments = await memory.aget_attachment_collections()
@@ -161,6 +152,17 @@ def resolve_session_scope(
     )
 
 
+# In-memory TTL cache for available collections (reduces redundant Qdrant socket checks)
+_collections_cache = {"data": None, "expires": 0.0}
+_CACHE_TTL = 30.0  # seconds
+
+
+def invalidate_collections_cache():
+    """Invalidate cached Qdrant collections on ingest or delete."""
+    _collections_cache["data"] = None
+    _collections_cache["expires"] = 0.0
+
+
 def delete_collections(collection_names: List[str]) -> List[str]:
     deleted: List[str] = []
     seen = set()
@@ -176,6 +178,8 @@ def delete_collections(collection_names: List[str]) -> List[str]:
         except Exception:
             logging.exception("Failed to delete collection during cleanup: %s", collection_name)
 
+    if deleted:
+        invalidate_collections_cache()
     return deleted
 
 
@@ -194,23 +198,37 @@ async def adelete_collections(collection_names: List[str]) -> List[str]:
         except Exception:
             logging.exception("Failed to delete collection during cleanup: %s", collection_name)
 
+    if deleted:
+        invalidate_collections_cache()
     return deleted
 
 
-def get_available_collections() -> List[str]:
+def get_available_collections() -> Optional[List[str]]:
+    now = time.monotonic()
+    if _collections_cache["data"] is not None and now < _collections_cache["expires"]:
+        return _collections_cache["data"]
     try:
-        return VectorStore().list_collections()
+        colls = VectorStore().list_collections()
+        _collections_cache["data"] = colls
+        _collections_cache["expires"] = now + _CACHE_TTL
+        return colls
     except Exception:
         logging.exception("Failed to list available collections")
-        return []
+        return _collections_cache["data"]
 
 
-async def aget_available_collections() -> List[str]:
+async def aget_available_collections() -> Optional[List[str]]:
+    now = time.monotonic()
+    if _collections_cache["data"] is not None and now < _collections_cache["expires"]:
+        return _collections_cache["data"]
     try:
-        return await VectorStore().alist_collections()
+        colls = await VectorStore().alist_collections()
+        _collections_cache["data"] = colls
+        _collections_cache["expires"] = now + _CACHE_TTL
+        return colls
     except Exception:
         logging.exception("Failed to list available collections")
-        return []
+        return _collections_cache["data"]
 
 
 def create_session_id() -> str:

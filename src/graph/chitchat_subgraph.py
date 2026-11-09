@@ -18,7 +18,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from src.exception import CustomException
-from src.graph.chitchat_tools import chitchat_tools
+from src.graph.tools import chitchat_tools
 from src.logger import logging
 from src.utils.helpers import extract_text
 from src.utils.rate_limiter import llm_rate_limiter
@@ -52,7 +52,7 @@ def _get_dynamic_chitchat_prompt() -> str:
         "STRICT TOOL SELECTION & FRESHNESS RULES:\n"
         "1. Stock Prices / Quotes / Crypto: When asked about the stock price, share price, quote, or ticker of ANY company or asset (e.g., Tesla, Apple, Mahindra, Axis Bank, Tata, Reliance, Bitcoin, Ethereum): "
         "YOU MUST CALL 'get_stock_price'. NEVER call 'search_tool' for stock prices.\n"
-        "2. Weather / Temperature / Climate: When asked about the weather, temperature, humidity, rain, or climate for any city or location (e.g., Mumbai, New York, London, Delhi, Paris): "
+        "2. Weather / Temperature / Climate: When asked about the weather, temperature, humidity, rain, or climate for any city or location (e.g., Gandhinagar, Mumbai, New York, London, Delhi, Paris): "
         "YOU MUST CALL 'get_weather'. NEVER call 'search_tool' for weather.\n"
         "3. Math / Calculations: When asked to calculate or evaluate arithmetic (e.g., 230*460): "
         "YOU MUST CALL 'calculator'. NEVER call 'search_tool' for math.\n"
@@ -65,7 +65,7 @@ def _get_dynamic_chitchat_prompt() -> str:
         "When calling 'search_tool' for temporal questions, formulate an objective, factual search string. "
         "For example, if the user asks 'who won the latest Champion trophy', generate query: 'most recent ICC Champions Trophy winner results history'.\n\n"
         "CRITICAL CONVERSATIONAL RULE:\n"
-        "Answer ONLY the user's latest question directly. DO NOT mention, repeat, or summarize past questions, previous tool results, or earlier conversation topics. Keep your answers focused, direct, clean, and helpful."
+        "Answer ONLY the user's latest question directly. DO NOT mention, repeat, or summarize past questions answer in latest questoin, previous tool results, or earlier conversation topics. Keep your answers focused, direct, clean, and helpful."
     )
 
 
@@ -77,12 +77,13 @@ def _get_dynamic_response_structure_prompt() -> str:
         f"Current Date: {current_date}\n\n"
         "Your task is to provide a clean, direct, and well-structured answer to ONLY the user's latest question using the tool results.\n\n"
         "CRITICAL ANTI-HALLUCINATION & FRESHNESS RULES:\n"
-        "1. SEARCH TOOL DATA OVERRULES INTERNAL MEMORY: Your internal training memory is frozen and lacks recent tournament and current event results. You MUST strictly prioritize and verify facts against the live search tool results.\n"
+        "1. SEARCH & WEATHER TOOL DATA OVERRULES INTERNAL MEMORY: Your internal training memory is frozen and lacks recent tournament, current events, and live conditions. You MUST strictly prioritize and verify facts against the live tool results.\n"
         "2. If the user asks about the 'latest' or 'most recent' tournament/event, check the search results for the most recent edition held. Never fall back to older tournaments (like 2017) if newer tournaments (like 2025) are mentioned in search or if a future tournament has not yet occurred.\n"
         "3. If a tournament (such as 2026 T20 World Cup) has not yet taken place relative to the Current Date, state clearly that it is scheduled for that year and has not yet been played.\n"
         "4. Answer ONLY what the user asked in their current question. Do NOT discuss, summarize, or bring up past conversation topics or prior queries.\n"
         "5. Present the information clearly and attractively using bullet points, bold key figures, and clean markdown.\n"
-        "6. Do NOT mention internal tool names (like get_weather, get_stock_price, search_tool) or raw JSON."
+        "6. Do NOT mention internal tool names (like get_weather, get_stock_price, search_tool) or raw JSON.\n"
+        "7. LIVE WEATHER AND TEMPERATURE: State the current temperature and conditions clearly using today's live data. NEVER cite past months or old article dates (such as September or earlier) when answering live weather inquiries."
     )
 
 
@@ -108,13 +109,32 @@ def _optimize_search_query(user_query: str) -> str:
     return q_clean.strip()
 
 
+def _is_weather_inquiry(query: str) -> bool:
+    """Check if query is asking for weather or temperature."""
+    q = (query or "").lower().strip()
+    return any(w in q for w in ["weather", "temperature", "forecast", "climate", "rain", "humidity", "temp"])
+
+
+def _extract_weather_location(query: str) -> str:
+    """Extract clean location name from a weather inquiry."""
+    q = (query or "").strip()
+    clean = re.sub(
+        r"(?i)\b(what is the|what's the|tell me the|check the|find the|show me the|current|today's|live|weather in|weather of|weather at|weather for|weather|temperature in|temperature of|temperature at|temperature for|temperature|temp in|temp of|temp at|temp for|temp|forecast in|forecast of|forecast for|forecast|climate in|climate of|climate for|climate|in|of|at|for|today|now)\b",
+        " ",
+        q,
+    )
+    clean = re.sub(r"[?!.,'\"`]+", "", clean)
+    extracted = " ".join(clean.split()).strip()
+    return extracted if extracted else q
+
+
 def _should_force_search(query: str) -> bool:
     """Check if query is time-sensitive and should automatically force DuckDuckGo search."""
     q = (query or "").lower().strip()
     if not q:
         return False
     # If weather inquiry, keep weather tool as primary
-    if any(w in q for w in ["weather", "temperature", "forecast", "climate", "rain", "humidity"]):
+    if _is_weather_inquiry(q):
         return False
     # If stock inquiry, keep stock tool as primary
     if any(w in q for w in ["stock", "share price", "ticker", "nasdaq", "nifty", "sensex", "crypto", "bitcoin", "ethereum"]):
@@ -228,8 +248,32 @@ async def chitchat_agent_node(state: ChitChatState, config: RunnableConfig = Non
 
         tool_calls = getattr(response, "tool_calls", None)
 
-        # Programmatic guardrail: if time-sensitive query did not trigger a tool call on iteration 1, force search_tool
-        if iteration == 1 and not tool_calls and _should_force_search(latest_query):
+        # Programmatic guardrail 1: Weather and temperature inquiries
+        if _is_weather_inquiry(latest_query):
+            loc = _extract_weather_location(latest_query)
+            if tool_calls:
+                for tc in tool_calls:
+                    if tc.get("name") == "search_tool":
+                        logging.info("chitchat_agent: Redirecting search_tool to get_weather for query %r -> loc %r", latest_query, loc)
+                        tc["name"] = "get_weather"
+                        tc["args"] = {"location": loc}
+            elif iteration == 1:
+                logging.info("chitchat_agent: programmatically forcing get_weather for query: %r -> %r", latest_query, loc)
+                call_id = f"call_{secrets.token_hex(8)}"
+                forced_call = {
+                    "name": "get_weather",
+                    "args": {"location": loc},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+                response = AIMessage(
+                    content="",
+                    tool_calls=[forced_call],
+                )
+                tool_calls = [forced_call]
+
+        # Programmatic guardrail 2: if time-sensitive non-weather query did not trigger a tool call on iteration 1, force search_tool
+        elif iteration == 1 and not tool_calls and _should_force_search(latest_query):
             search_q = _optimize_search_query(latest_query)
             logging.info(
                 "chitchat_agent: programmatically forcing search_tool for temporal query: %r -> %r",

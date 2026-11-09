@@ -1,8 +1,17 @@
+from datetime import datetime
+import os
+import re
 import sys
 from typing import Any, List, Optional
+import warnings
+import xml.etree.ElementTree as ET
 
-from langchain_core.tools import tool #type: ignore
-from langsmith import traceable #type: ignore
+from dotenv import load_dotenv
+import httpx
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_core.tools import tool  # type: ignore
+from langsmith import traceable  # type: ignore
+import requests
 import yaml
 
 from src.chains.qa_chain import (
@@ -14,6 +23,13 @@ from src.chains.qa_chain import (
 from src.components.retriever import Retriever
 from src.exception import CollectionNotFoundError, CustomException, KnowledgeBaseEmptyError
 from src.logger import logging
+
+load_dotenv()
+
+# Suppress noisy upstream library deprecation and unclosed socket warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
+warnings.filterwarnings("ignore", category=UserWarning, module="duckduckgo_search")
+warnings.filterwarnings("ignore", category=ResourceWarning)
 
 with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
@@ -120,15 +136,179 @@ AVAILABLE_TOOLS = [rag_query, summarize_document]
 # Non-Document Conversational (Chitchat) ReAct Tools
 # ══════════════════════════════════════════════════════════════════════════════
 
-import os
-import re
-import requests
-import httpx
-import xml.etree.ElementTree as ET
-from dotenv import load_dotenv
-from langchain_community.tools import DuckDuckGoSearchRun
+WMO_WEATHER_CODES = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Foggy",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Slight rain",
+    62: "Moderate rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Heavy freezing rain",
+    71: "Slight snow fall",
+    73: "Moderate snow fall",
+    75: "Heavy snow fall",
+    77: "Snow grains",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail",
+}
 
-load_dotenv()
+
+def _clean_weather_location(raw_loc: str) -> str:
+    """Extract and normalize clean city or location name from natural language query."""
+    loc = str(raw_loc or "").strip()
+    loc = re.sub(
+        r"(?i)\b(what is the|what's the|tell me the|check the|find the|show me the|current|today's|live|weather in|weather of|weather at|weather for|weather|temperature in|temperature of|temperature at|temperature for|temperature|temp in|temp of|temp at|temp for|temp|forecast in|forecast of|forecast for|forecast|climate in|climate of|climate for|climate|in|of|at|for|today|now)\b",
+        " ",
+        loc,
+    )
+    loc = re.sub(r"[?!.,'\"`]+", "", loc)
+    cleaned = " ".join(loc.split()).strip()
+    return cleaned if cleaned else raw_loc.strip()
+
+
+def _fetch_open_meteo_weather_sync(location: str) -> Optional[str]:
+    """Synchronously fetch real-time weather from Open-Meteo (100% free, no API key needed, fast and accurate)."""
+    clean_loc = _clean_weather_location(location)
+    if not clean_loc:
+        clean_loc = location.strip()
+    if not clean_loc:
+        return None
+
+    try:
+        headers = {
+            "User-Agent": "DocuVortex-Weather/2.0 (assistant@docuvortex.local)",
+            "Accept": "application/json",
+        }
+        # 1. Geocoding lookup
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(clean_loc)}&count=1&language=en&format=json"
+        geo_resp = requests.get(geo_url, headers=headers, timeout=6)
+        if geo_resp.status_code != 200:
+            return None
+        geo_data = geo_resp.json()
+        results = geo_data.get("results", [])
+        if not results:
+            return None
+
+        first = results[0]
+        lat = first.get("latitude")
+        lon = first.get("longitude")
+        name = first.get("name", clean_loc)
+        admin1 = first.get("admin1", "")
+        country = first.get("country", "")
+
+        loc_parts = [p for p in [name, admin1, country] if p]
+        display_name = ", ".join(loc_parts)
+
+        # 2. Live forecast lookup
+        fc_url = (
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m"
+            f"&timezone=auto"
+        )
+        fc_resp = requests.get(fc_url, headers=headers, timeout=6)
+        if fc_resp.status_code != 200:
+            return None
+
+        fc_data = fc_resp.json()
+        curr = fc_data.get("current", {})
+        temp = curr.get("temperature_2m", "N/A")
+        feels_like = curr.get("apparent_temperature", temp)
+        humidity = curr.get("relative_humidity_2m", "N/A")
+        wind = curr.get("wind_speed_10m", "N/A")
+        w_code = curr.get("weather_code", 0)
+        desc = WMO_WEATHER_CODES.get(w_code, "Clear")
+
+        now_str = datetime.now().strftime("%A, %B %d, %Y")
+        return (
+            f"Weather in {display_name} (Live real-time data for today, {now_str}):\n"
+            f"• Current Temperature: {temp}°C (Feels like {feels_like}°C)\n"
+            f"• Condition: {desc}\n"
+            f"• Relative Humidity: {humidity}%\n"
+            f"• Wind Speed: {wind} km/h"
+        )
+    except Exception as e:
+        logging.warning("_fetch_open_meteo_weather_sync failed for %s: %s", location, e)
+        return None
+
+
+async def _fetch_open_meteo_weather_async(location: str) -> Optional[str]:
+    """Asynchronously fetch real-time weather from Open-Meteo."""
+    clean_loc = _clean_weather_location(location)
+    if not clean_loc:
+        clean_loc = location.strip()
+    if not clean_loc:
+        return None
+
+    try:
+        headers = {
+            "User-Agent": "DocuVortex-Weather/2.0 (assistant@docuvortex.local)",
+            "Accept": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=7.0, headers=headers) as client:
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={requests.utils.quote(clean_loc)}&count=1&language=en&format=json"
+            geo_resp = await client.get(geo_url)
+            if geo_resp.status_code != 200:
+                return None
+            geo_data = geo_resp.json()
+            results = geo_data.get("results", [])
+            if not results:
+                return None
+
+            first = results[0]
+            lat = first.get("latitude")
+            lon = first.get("longitude")
+            name = first.get("name", clean_loc)
+            admin1 = first.get("admin1", "")
+            country = first.get("country", "")
+
+            loc_parts = [p for p in [name, admin1, country] if p]
+            display_name = ", ".join(loc_parts)
+
+            fc_url = (
+                f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+                f"&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m"
+                f"&timezone=auto"
+            )
+            fc_resp = await client.get(fc_url)
+            if fc_resp.status_code != 200:
+                return None
+
+            fc_data = fc_resp.json()
+            curr = fc_data.get("current", {})
+            temp = curr.get("temperature_2m", "N/A")
+            feels_like = curr.get("apparent_temperature", temp)
+            humidity = curr.get("relative_humidity_2m", "N/A")
+            wind = curr.get("wind_speed_10m", "N/A")
+            w_code = curr.get("weather_code", 0)
+            desc = WMO_WEATHER_CODES.get(w_code, "Clear")
+
+            now_str = datetime.now().strftime("%A, %B %d, %Y")
+            return (
+                f"Weather in {display_name} (Live real-time data for today, {now_str}):\n"
+                f"• Current Temperature: {temp}°C (Feels like {feels_like}°C)\n"
+                f"• Condition: {desc}\n"
+                f"• Relative Humidity: {humidity}%\n"
+                f"• Wind Speed: {wind} km/h"
+            )
+    except Exception as e:
+        logging.warning("_fetch_open_meteo_weather_async failed for %s: %s", location, e)
+        return None
+
 
 # 1. Search tool for live web information and current events
 @tool
@@ -141,13 +321,26 @@ def search_tool(query: str) -> str:
     if not q:
         return "No search query provided."
 
-    # Strategy 1: Try duckduckgo_search library directly (more up-to-date and configurable)
+    # Guardrail: Intercept weather / temperature queries and route directly to live weather lookup
+    q_lower = q.lower()
+    weather_keywords = ["weather", "temperature", "forecast", "climate", "rain", "humidity"]
+    if any(kw in q_lower for kw in weather_keywords):
+        logging.info("search_tool: intercepted weather query: %r. Routing directly to live weather lookup.", q)
+        live_w = _fetch_open_meteo_weather_sync(q)
+        if live_w:
+            return live_w
+
+    # Strategy 1: Try ddgs / duckduckgo_search library directly
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+
         with DDGS() as ddgs:
-            # Try text search with backend fallbacks
+            # Try text search with modern backend fallbacks ('auto', 'html', 'lite')
             results = None
-            for backend in ("api", "html", "lite"):
+            for backend in ("auto", "html", "lite"):
                 try:
                     results = list(ddgs.text(q, max_results=5, backend=backend))
                     if results:
@@ -288,33 +481,22 @@ TICKER_MAP = {
     "MCDONALDS": "MCD",
     "MCDONALD'S": "MCD",
     "MCD": "MCD",
-    "BOEING": "BA",
-    "BA": "BA",
-    "WALMART": "WMT",
-    "WMT": "WMT",
-    "TARGET": "TGT",
-    "TGT": "TGT",
-    "COSTCO": "COST",
-    "COST": "COST",
     "NIKE": "NKE",
     "NKE": "NKE",
-    "BERKSHIRE": "BRK-B",
-    "BERKSHIRE HATHAWAY": "BRK-B",
+    "WALMART": "WMT",
+    "WMT": "WMT",
     "JPMORGAN": "JPM",
     "JP MORGAN": "JPM",
     "JPM": "JPM",
     "GOLDMAN SACHS": "GS",
+    "GOLDMAN": "GS",
     "GS": "GS",
-    "MORGAN STANLEY": "MS",
-    "MS": "MS",
     "VISA": "V",
     "V": "V",
     "MASTERCARD": "MA",
     "MA": "MA",
-    "SPOTIFY": "SPOT",
-    "SPOT": "SPOT",
-    "COINBASE": "COIN",
-    "COIN": "COIN",
+    "BERKSHIRE": "BRK-B",
+    "BERKSHIRE HATHAWAY": "BRK-B",
     # Crypto
     "BITCOIN": "BTC-USD",
     "BTC": "BTC-USD",
@@ -324,49 +506,36 @@ TICKER_MAP = {
     "SOL": "SOL-USD",
     "DOGECOIN": "DOGE-USD",
     "DOGE": "DOGE-USD",
-    # Indices & ETFs
-    "SP500": "SPY",
-    "S&P 500": "SPY",
-    "S&P500": "SPY",
-    "SPY": "SPY",
-    "NASDAQ": "QQQ",
-    "QQQ": "QQQ",
-    "DOW": "DIA",
-    "DOW JONES": "DIA",
-    "DIA": "DIA",
-    "NIFTY": "^NSEI",
-    "NIFTY 50": "^NSEI",
-    "NIFTY50": "^NSEI",
-    "SENSEX": "^BSESN",
-    "BSE SENSEX": "^BSESN",
-    # Indian / Global Equities (NSE/BSE)
-    "MAHINDRA": "M&M.NS",
-    "MAHINDRA & MAHINDRA": "M&M.NS",
-    "MAHINDRA AND MAHINDRA": "M&M.NS",
-    "M&M": "M&M.NS",
-    "TATA MOTORS": "TATAMOTORS.NS",
-    "TATA MOTOR": "TATAMOTORS.NS",
-    "TATAMOTORS": "TATAMOTORS.NS",
+    "RIPPLE": "XRP-USD",
+    "XRP": "XRP-USD",
+    # Major Indian Stocks (NSE .NS)
     "TATA": "TATAMOTORS.NS",
-    "TATA STEEL": "TATASTEEL.NS",
-    "TATASTEEL": "TATASTEEL.NS",
+    "TATA MOTORS": "TATAMOTORS.NS",
+    "TATAMOTORS": "TATAMOTORS.NS",
     "TCS": "TCS.NS",
     "TATA CONSULTANCY SERVICES": "TCS.NS",
-    "INFOSYS": "INFY.NS",
-    "INFY": "INFY.NS",
+    "TATA STEEL": "TATASTEEL.NS",
+    "TATASTEEL": "TATASTEEL.NS",
+    "TATA POWER": "TATAPOWER.NS",
+    "TATAPOWER": "TATAPOWER.NS",
     "RELIANCE": "RELIANCE.NS",
     "RELIANCE INDUSTRIES": "RELIANCE.NS",
     "RIL": "RELIANCE.NS",
+    "INFOSYS": "INFY.NS",
+    "INFY": "INFY.NS",
+    "M&M": "M&M.NS",
+    "MAHINDRA": "M&M.NS",
+    "MAHINDRA & MAHINDRA": "M&M.NS",
+    "MAHINDRA AND MAHINDRA": "M&M.NS",
     "HDFC": "HDFCBANK.NS",
     "HDFC BANK": "HDFCBANK.NS",
     "HDFCBANK": "HDFCBANK.NS",
     "ICICI": "ICICIBANK.NS",
     "ICICI BANK": "ICICIBANK.NS",
     "ICICIBANK": "ICICIBANK.NS",
-    "STATE BANK OF INDIA": "SBIN.NS",
     "SBI": "SBIN.NS",
+    "STATE BANK OF INDIA": "SBIN.NS",
     "SBIN": "SBIN.NS",
-    "AXIS BANK": "AXISBANK.NS",
     "AXIS": "AXISBANK.NS",
     "AXISBANK": "AXISBANK.NS",
     "KOTAK": "KOTAKBANK.NS",
@@ -579,18 +748,23 @@ def get_stock_price(symbol: str = "", ticker: str = "", company: str = "") -> di
 @traceable(name="get_weather")
 async def get_weather(location: str = "", city: str = "") -> str:
     """Get live weather conditions, current temperature, humidity, wind, and description for ANY city or location worldwide.
-    Examples: 'Mumbai', 'Delhi', 'New York', 'London', 'Tokyo', 'San Francisco', etc.
+    Examples: 'Gandhinagar', 'Mumbai', 'Delhi', 'New York', 'London', 'Tokyo', 'San Francisco', etc.
     CRITICAL: ALWAYS use this tool for ANY question asking about weather, temperature, rain, or climate. Never use search_tool for weather queries."""
     clean_loc = str(location or city or "").strip()
     if not clean_loc:
         return "Please specify a location to get the weather for."
 
-    # Strategy 1: OpenWeatherMap API if key is available
+    # Strategy 1: Open-Meteo API (100% free, no key needed, fast, highly accurate worldwide)
+    om_result = await _fetch_open_meteo_weather_async(clean_loc)
+    if om_result:
+        return om_result
+
+    # Strategy 2: OpenWeatherMap API if key is available
     api_key = os.getenv("OPENWEATHER_API_KEY")
     if api_key:
         url = f"http://api.openweathermap.org/data/2.5/weather?q={requests.utils.quote(clean_loc)}&appid={api_key}&units=metric"
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(timeout=6.0) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -602,14 +776,15 @@ async def get_weather(location: str = "", city: str = "") -> str:
                     city_name = data.get("name", clean_loc)
                     country = data.get("sys", {}).get("country", "")
                     loc_label = f"{city_name}, {country}" if country else city_name
-                    return f"Weather in {loc_label}: {temp}°C, {desc.capitalize()}, Humidity: {humidity}%"
+                    now_str = datetime.now().strftime("%A, %B %d, %Y")
+                    return f"Weather in {loc_label} (Live data for today, {now_str}): {temp}°C, {desc.capitalize()}, Humidity: {humidity}%"
         except Exception as e:
             logging.warning("get_weather OpenWeatherMap attempt failed for %s: %s", clean_loc, e)
 
-    # Strategy 2: Resilient free wttr.in fallback (no API key required, reliable worldwide)
+    # Strategy 3: wttr.in fallback
     try:
         wttr_url = f"https://wttr.in/{requests.utils.quote(clean_loc)}?format=j1"
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.get(wttr_url)
             if resp.status_code == 200:
                 data = resp.json()
@@ -624,9 +799,10 @@ async def get_weather(location: str = "", city: str = "") -> str:
                 area_name = nearest.get("areaName", [{}])[0].get("value", clean_loc)
                 country_name = nearest.get("country", [{}])[0].get("value", "")
                 loc_label = f"{area_name}, {country_name}" if country_name else area_name
+                now_str = datetime.now().strftime("%A, %B %d, %Y")
 
                 return (
-                    f"Weather in {loc_label}: {temp_c}°C (Feels like {feels_like}°C), "
+                    f"Weather in {loc_label} (Live data for today, {now_str}): {temp_c}°C (Feels like {feels_like}°C), "
                     f"{desc}, Humidity: {humidity}%, Wind: {wind} km/h"
                 )
     except Exception as e2:

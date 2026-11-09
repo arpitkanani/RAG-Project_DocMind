@@ -45,14 +45,23 @@ CREATE TABLE IF NOT EXISTS messages (
 
 -- 5. Attachments Table (Associated Workspace Documents / Videos)
 CREATE TABLE IF NOT EXISTS attachments (
-    id          BIGSERIAL PRIMARY KEY,
-    session_id  TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
-    name        TEXT NOT NULL,
-    collection  TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    extra       JSONB,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id              BIGSERIAL PRIMARY KEY,
+    session_id      TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    collection      TEXT NOT NULL,
+    source_type     TEXT NOT NULL,
+    embedding_model TEXT NOT NULL DEFAULT 'text-embedding-3-small',
+    vector_dim      INTEGER NOT NULL DEFAULT 1536,
+    extra           JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (session_id, collection)
+);
+
+-- 5b. User Settings Table
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id                   UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    active_embedding_provider TEXT NOT NULL DEFAULT 'azure',
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- 6. Session Summaries Table

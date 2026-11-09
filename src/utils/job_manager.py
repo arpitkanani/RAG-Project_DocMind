@@ -1,10 +1,14 @@
+import queue
 import threading
 import uuid
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
+
+from src.logger import logging
 
 
 class JobStatus(str, Enum):
+    QUEUED = "queued"
     PROCESSING = "processing"
     READY = "ready"
     FAILED = "failed"
@@ -12,18 +16,56 @@ class JobStatus(str, Enum):
 
 class UploadJobManager:
     """
-    In-memory tracker for background upload jobs.
-
-    NOTE ON SCOPE: this is per-process state, same caveat as the rate
-    limiter. Restarting the app loses in-flight job history (acceptable --
-    jobs are short-lived and the frontend only polls while the server is
-    up). For a multi-worker deployment, this would need to move to
-    Postgres so every worker sees the same job state.
+    In-memory tracker and sequential queue for background ingestion jobs.
+    Ensures multiple concurrent uploads are queued and processed one by one
+    to prevent memory spikes, CPU exhaustion, and embedding rate limits.
     """
 
     def __init__(self):
         self._jobs: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self._queue = queue.Queue()
+        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="IngestionQueueWorker")
+        self._worker_thread.start()
+
+    def _worker_loop(self):
+        while True:
+            try:
+                task_fn, job_id = self._queue.get()
+                try:
+                    with self._lock:
+                        if job_id in self._jobs and self._jobs[job_id]["status"] == JobStatus.QUEUED:
+                            self._jobs[job_id]["status"] = JobStatus.PROCESSING
+                            self._jobs[job_id]["message"] = "Processing document..."
+
+                    logging.info("Starting queued ingestion job: %s", job_id)
+                    task_fn()
+                except Exception as e:
+                    logging.exception("Error executing queued ingestion job %s: %s", job_id, e)
+                    self.mark_failed(job_id, "Could not process this file. Please try uploading it again.")
+                finally:
+                    self._queue.task_done()
+            except Exception as e:
+                logging.exception("Unexpected error in ingestion queue worker loop: %s", e)
+
+    def submit_job(self, task_builder: Callable[[str], None], initial_message: str = "Processing...") -> str:
+        """
+        Creates a job and enqueues it for sequential execution.
+        """
+        job_id = uuid.uuid4().hex
+        with self._lock:
+            q_size = self._queue.qsize()
+            # If a task is currently executing or other tasks are in queue, mark as queued
+            status = JobStatus.QUEUED if q_size > 0 else JobStatus.PROCESSING
+            msg = "Waiting in queue..." if q_size > 0 else initial_message
+            self._jobs[job_id] = {
+                "status": status,
+                "message": msg,
+                "result": None,
+                "error": None,
+            }
+        self._queue.put((lambda: task_builder(job_id), job_id))
+        return job_id
 
     def create_job(self) -> str:
         job_id = uuid.uuid4().hex

@@ -6,6 +6,12 @@ from dotenv import load_dotenv
 import yaml
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
+import psycopg2.extras
+
+try:
+    psycopg2.extras.register_default_jsonb(globally=True)
+except Exception:
+    pass
 
 from src.exception import CustomException
 from src.logger import logging
@@ -170,17 +176,29 @@ def init_db(sql_path: str = "database/init.sql") -> None:
 
         _safe_exec("""
             CREATE TABLE IF NOT EXISTS attachments (
-                id          BIGSERIAL PRIMARY KEY,
-                session_id  TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
-                name        TEXT NOT NULL,
-                collection  TEXT NOT NULL,
-                source_type TEXT NOT NULL,
-                extra       JSONB,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                id              BIGSERIAL PRIMARY KEY,
+                session_id      TEXT REFERENCES sessions(session_id) ON DELETE CASCADE,
+                name            TEXT NOT NULL,
+                collection      TEXT NOT NULL,
+                source_type     TEXT NOT NULL,
+                embedding_model TEXT NOT NULL DEFAULT 'text-embedding-3-small',
+                vector_dim      INTEGER NOT NULL DEFAULT 1536,
+                extra           JSONB,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE (session_id, collection)
             );
         """)
+        _safe_exec("ALTER TABLE attachments ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT 'text-embedding-3-small';")
+        _safe_exec("ALTER TABLE attachments ADD COLUMN IF NOT EXISTS vector_dim INTEGER NOT NULL DEFAULT 1536;")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_attachments_session_id ON attachments(session_id);")
+
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id                   UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                active_embedding_provider TEXT NOT NULL DEFAULT 'azure',
+                updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
 
         _safe_exec("""
             CREATE TABLE IF NOT EXISTS session_summaries (
@@ -223,16 +241,8 @@ class get_db_cursor:
         try:
             p = get_pool()
             self.conn = p.getconn()
-            # If the connection was closed by server while idle in pool:
+            # If the connection was closed while idle in pool:
             if getattr(self.conn, "closed", 0) != 0:
-                p.putconn(self.conn, close=True)
-                self.conn = p.getconn()
-            try:
-                # Fast connection liveness verification
-                with self.conn.cursor() as test_cur:
-                    test_cur.execute("SELECT 1;")
-                self.conn.rollback()
-            except Exception:
                 p.putconn(self.conn, close=True)
                 self.conn = p.getconn()
             self.cur = self.conn.cursor(cursor_factory=RealDictCursor)
