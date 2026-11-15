@@ -15,6 +15,7 @@ except Exception:
 
 from src.exception import CustomException
 from src.logger import logging
+from src.utils.perf import perf_step, perf_count
 
 load_dotenv()
 
@@ -56,7 +57,7 @@ def get_pool() -> pool.ThreadedConnectionPool:
         try:
             logging.info("Initializing Supabase Postgres connection pool (dsn configured)")
             _pool = pool.ThreadedConnectionPool(
-                minconn=1,
+                minconn=2,
                 maxconn=10,
                 dsn=db_url,
             )
@@ -88,6 +89,21 @@ def test_connection() -> bool:
     except Exception as e:
         logging.error("❌ Supabase app DB connection (port 6543) FAILED: %s", e)
         return False
+
+
+def prewarm_pool(count: int = 2) -> None:
+    """Eagerly acquires and returns pool connections to ensure warm TLS sockets at startup."""
+    try:
+        p = get_pool()
+        conns = []
+        for _ in range(count):
+            c = p.getconn()
+            conns.append(c)
+        for c in conns:
+            p.putconn(c)
+        logging.info("✅ Pre-warmed %d Supabase database connection(s)", count)
+    except Exception as e:
+        logging.warning("DB pool pre-warm note: %s", e)
 
 
 def init_db(sql_path: str = "database/init.sql") -> None:
@@ -137,6 +153,8 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key_hash TEXT;")
+        _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;")
+        _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT true;")
         _safe_exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;")
@@ -160,6 +178,7 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         """)
         _safe_exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT DEFAULT 'New Chat';")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_sessions_user_updated ON sessions(user_id, updated_at DESC);")
 
         _safe_exec("""
             CREATE TABLE IF NOT EXISTS messages (
@@ -173,6 +192,8 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         """)
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at ASC);")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_messages_session_role_created ON messages(session_id, role, created_at ASC);")
 
         _safe_exec("""
             CREATE TABLE IF NOT EXISTS attachments (
@@ -191,6 +212,7 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         _safe_exec("ALTER TABLE attachments ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT 'text-embedding-3-small';")
         _safe_exec("ALTER TABLE attachments ADD COLUMN IF NOT EXISTS vector_dim INTEGER NOT NULL DEFAULT 1536;")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_attachments_session_id ON attachments(session_id);")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_attachments_session_created ON attachments(session_id, created_at ASC);")
 
         _safe_exec("""
             CREATE TABLE IF NOT EXISTS user_settings (
@@ -209,6 +231,65 @@ def init_db(sql_path: str = "database/init.sql") -> None:
             );
         """)
 
+        # Custom Business Bot tables
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS deployed_bots (
+                bot_id              TEXT PRIMARY KEY,
+                admin_id            UUID REFERENCES users(id) ON DELETE CASCADE,
+                business_name       TEXT NOT NULL,
+                persona_name        TEXT NOT NULL,
+                business_summary    TEXT NOT NULL DEFAULT '',
+                website_url         TEXT,
+                website_data        JSONB DEFAULT '{}'::jsonb,
+                pdf_attachments     JSONB DEFAULT '[]'::jsonb,
+                finalized_blueprint JSONB DEFAULT '{}'::jsonb,
+                dynamic_prompt      TEXT NOT NULL DEFAULT '',
+                initial_greeting    TEXT NOT NULL DEFAULT '',
+                booking_contact     TEXT DEFAULT '',
+                status              TEXT NOT NULL DEFAULT 'active',
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_deployed_bots_admin ON deployed_bots(admin_id);")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_deployed_bots_status ON deployed_bots(status);")
+
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS bot_chat_sessions (
+                session_id          TEXT PRIMARY KEY,
+                bot_id              TEXT REFERENCES deployed_bots(bot_id) ON DELETE CASCADE,
+                customer_id         UUID REFERENCES users(id) ON DELETE SET NULL,
+                customer_name       TEXT NOT NULL DEFAULT 'Customer',
+                turn_count          INTEGER NOT NULL DEFAULT 0,
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_bot_chat_sessions_bot ON bot_chat_sessions(bot_id);")
+
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS bot_messages (
+                id                  BIGSERIAL PRIMARY KEY,
+                session_id          TEXT REFERENCES bot_chat_sessions(session_id) ON DELETE CASCADE,
+                role                TEXT NOT NULL,
+                content             TEXT NOT NULL,
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_bot_messages_session ON bot_messages(session_id);")
+
+        _safe_exec("""
+            CREATE TABLE IF NOT EXISTS bot_leads (
+                id                  BIGSERIAL PRIMARY KEY,
+                bot_id              TEXT REFERENCES deployed_bots(bot_id) ON DELETE CASCADE,
+                customer_username   TEXT NOT NULL,
+                inquiry_type        TEXT NOT NULL DEFAULT 'appointment',
+                message_excerpt     TEXT,
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_bot_leads_bot ON bot_leads(bot_id);")
+
         _safe_exec("""
             INSERT INTO users (id, username, email, name, is_verified, is_active)
             VALUES ('00000000-0000-0000-0000-000000000001', 'guest', 'guest@docuvortex.local', 'Guest User', true, true)
@@ -220,6 +301,63 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         logging.error("Failed to initialize or migrate database schema: %s", e)
 
 
+class _PerfCursorWrapper:
+    """Transparent proxy around DB cursor that measures query timings, counts, and retries once on disconnect."""
+    def __init__(self, cur, db_cursor_ctx=None):
+        self._cur = cur
+        self._db_cursor_ctx = db_cursor_ctx
+        self._executed = False
+
+    def execute(self, *args, **kwargs):
+        perf_count("db_queries", 1)
+        with perf_step("db_query"):
+            try:
+                res = self._cur.execute(*args, **kwargs)
+                self._executed = True
+                return res
+            except Exception as e:
+                import psycopg2
+                if not self._executed and isinstance(e, (psycopg2.OperationalError, psycopg2.InterfaceError)) and self._db_cursor_ctx:
+                    logging.warning("Pooled socket closed by server, retrying query with fresh connection: %s", e)
+                    new_wrapper = self._db_cursor_ctx.reconnect()
+                    self._cur = new_wrapper._cur
+                    self._executed = True
+                    return self._cur.execute(*args, **kwargs)
+                raise
+
+    def executemany(self, *args, **kwargs):
+        perf_count("db_queries", 1)
+        with perf_step("db_query"):
+            self._executed = True
+            return self._cur.executemany(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+    def __iter__(self):
+        return iter(self._cur)
+
+
+def _get_healthy_conn(p: pool.ThreadedConnectionPool, max_retries: int = 3):
+    """
+    Acquires a connection from the pool without blocking network roundtrips.
+    Performs fast local socket state check (conn.closed == 0),
+    evicting dead handles and returning active sockets in ~0.01ms.
+    """
+    for attempt in range(max_retries):
+        perf_count("db_checkouts", 1)
+        with perf_step("db_checkout"):
+            conn = p.getconn()
+        if getattr(conn, "closed", 0) != 0:
+            p.putconn(conn, close=True)
+            continue
+        return conn
+
+    perf_count("db_checkouts", 1)
+    with perf_step("db_checkout"):
+        return p.getconn()
+
+
 class get_db_cursor:
     """
     Context manager for a pooled Postgres connection + cursor.
@@ -229,41 +367,67 @@ class get_db_cursor:
             cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
             row = cur.fetchone()
     Commits automatically on clean exit, rolls back on exception,
-    always returns the connection to the pool.
+    always returns the connection to the pool (closing dead sockets).
+    Supports transparent single-retry on severed socket.
     """
 
     def __init__(self, commit: bool = True):
         self.commit = commit
         self.conn = None
+        self.raw_cur = None
         self.cur = None
+
+    def reconnect(self):
+        """Evicts broken connection and acquires a fresh one."""
+        p = get_pool()
+        if self.conn:
+            try:
+                p.putconn(self.conn, close=True)
+            except Exception:
+                pass
+        self.conn = _get_healthy_conn(p)
+        self.raw_cur = self.conn.cursor(cursor_factory=RealDictCursor)
+        self.cur = _PerfCursorWrapper(self.raw_cur, db_cursor_ctx=self)
+        return self.cur
 
     def __enter__(self):
         try:
             p = get_pool()
-            self.conn = p.getconn()
-            # If the connection was closed while idle in pool:
-            if getattr(self.conn, "closed", 0) != 0:
-                p.putconn(self.conn, close=True)
-                self.conn = p.getconn()
-            self.cur = self.conn.cursor(cursor_factory=RealDictCursor)
+            self.conn = _get_healthy_conn(p)
+            self.raw_cur = self.conn.cursor(cursor_factory=RealDictCursor)
+            self.cur = _PerfCursorWrapper(self.raw_cur, db_cursor_ctx=self)
             return self.cur
         except Exception as e:
             raise CustomException(e, sys)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        import psycopg2
+        is_conn_error = False
         try:
             if exc_type is not None:
+                if issubclass(exc_type, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+                    is_conn_error = True
                 if self.conn and getattr(self.conn, "closed", 0) == 0:
-                    self.conn.rollback()
+                    try:
+                        with perf_step("db_query"):
+                            self.conn.rollback()
+                    except Exception:
+                        is_conn_error = True
             elif self.commit:
                 if self.conn and getattr(self.conn, "closed", 0) == 0:
-                    self.conn.commit()
+                    with perf_step("db_query"):
+                        self.conn.commit()
+        except Exception:
+            is_conn_error = True
         finally:
-            if self.cur:
+            if self.raw_cur:
                 try:
-                    self.cur.close()
+                    self.raw_cur.close()
                 except Exception:
                     pass
             if self.conn:
-                get_pool().putconn(self.conn)
+                try:
+                    get_pool().putconn(self.conn, close=is_conn_error)
+                except Exception:
+                    pass
         return False  # never swallow exceptions

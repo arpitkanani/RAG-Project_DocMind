@@ -57,6 +57,7 @@ class Embedder:
     _bge_model = None
     _azure_lock = threading.Lock()
     _bge_lock = threading.Lock()
+    _provider_cache: dict[str, tuple[float, str]] = {}
 
     def __init__(self, provider: Optional[str] = None, user_id: Optional[str] = None):
         try:
@@ -71,22 +72,33 @@ class Embedder:
 
     @classmethod
     def get_active_provider(cls, user_id: Optional[str] = None) -> str:
-        """Determines the active embedding provider, checking user_settings in DB first, then config/env."""
+        """Determines the active embedding provider with in-memory TTL caching."""
+        import time
+        now = time.monotonic()
         if user_id:
+            cached = cls._provider_cache.get(user_id)
+            if cached and (now - cached[0]) < 60.0:
+                return cached[1]
+
             try:
                 from src.database.db import get_db_cursor
                 with get_db_cursor(commit=False) as cur:
                     cur.execute("SELECT active_embedding_provider FROM user_settings WHERE user_id = %s LIMIT 1;", (user_id,))
                     row = cur.fetchone()
                     if row and row.get("active_embedding_provider"):
-                        return row["active_embedding_provider"].strip().lower()
+                        provider = row["active_embedding_provider"].strip().lower()
+                        cls._provider_cache[user_id] = (now, provider)
+                        return provider
             except Exception as e:
                 logging.debug("Could not read user_settings provider: %s", e)
 
-        return os.getenv(
+        default_provider = os.getenv(
             "EMBEDDING_PROVIDER",
             config.get("embedding", {}).get("provider", "azure")
         ).strip().lower()
+        if user_id:
+            cls._provider_cache[user_id] = (now, default_provider)
+        return default_provider
 
     @classmethod
     def get_model_specs(cls, provider: Optional[str] = None) -> dict:

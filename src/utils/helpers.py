@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from src.components.memory_manager import MemoryManager
 from src.components.vector_store import VectorStore
-from src.exception import KnowledgeBaseEmptyError
+from src.exception import KnowledgeBaseEmptyError, VectorStoreUnavailableError
 from src.logger import logging
 from src.schemas import QueryRequest
 
@@ -212,6 +212,8 @@ def get_available_collections() -> Optional[List[str]]:
         _collections_cache["data"] = colls
         _collections_cache["expires"] = now + _CACHE_TTL
         return colls
+    except VectorStoreUnavailableError:
+        raise
     except Exception:
         logging.exception("Failed to list available collections")
         return _collections_cache["data"]
@@ -226,6 +228,8 @@ async def aget_available_collections() -> Optional[List[str]]:
         _collections_cache["data"] = colls
         _collections_cache["expires"] = now + _CACHE_TTL
         return colls
+    except VectorStoreUnavailableError:
+        raise
     except Exception:
         logging.exception("Failed to list available collections")
         return _collections_cache["data"]

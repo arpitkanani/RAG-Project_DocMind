@@ -39,8 +39,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from src.components.embedder import Embedder
-from src.database.db import get_db_cursor, init_db, test_connection
+from src.database.db import get_db_cursor, init_db, test_connection, prewarm_pool
 from src.logger import logging
+from src.utils.perf import init_perf_context, finish_perf_context, is_perf_enabled
 from src.routers.auth import router as auth_router
 from src.routers.collections import router as collections_router
 from src.routers.health import router as health_router
@@ -51,6 +52,7 @@ from src.routers.settings import router as settings_router
 from src.routers.upload import router as upload_router
 from src.routers.websocket import router as websocket_router
 from src.routers.youtube import router as youtube_router
+from business_assistant.router import router as business_assistant_router
 
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -144,10 +146,18 @@ async def lifespan(app: FastAPI):
     try:
         init_db()
         test_connection()
+        prewarm_pool(2)
     except Exception as e:
         logging.error("Could not auto-initialize DB tables: %s", e)
 
-    Embedder()
+    # Warm up Embedder and VectorStore client singletons
+    try:
+        from src.components.embedder import Embedder
+        from src.components.vector_store import VectorStore
+        Embedder()
+        VectorStore()
+    except Exception as e:
+        logging.warning("Model and vector store warmup note: %s", e)
 
     # LangSmith observability confirmation
     if os.getenv("LANGCHAIN_TRACING_V2") == "true" or os.getenv("LANGSMITH_TRACING") == "true":
@@ -195,6 +205,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         cleanup_task.cancel()
+        try:
+            from src.components.vector_store import close_async_client
+            await close_async_client()
+        except Exception as e:
+            logging.debug("VectorStore async client shutdown note: %s", e)
         logging.info("DocuVortex API shut down.")
 
 
@@ -221,13 +236,44 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def perf_timing_middleware(request: Request, call_next):
+    """Measures request execution breakdown when PERF_DEBUG=1 and adds Server-Timing header."""
+    if not is_perf_enabled():
+        return await call_next(request)
+    init_perf_context(request.method, request.url.path)
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        _, server_timing = finish_perf_context()
+        if server_timing and response is not None:
+            response.headers["Server-Timing"] = server_timing
+
+
+@app.middleware("http")
 async def no_cache_static_middleware(request: Request, call_next):
     """Ensures static assets and HTML templates are never cached with 304 in development."""
-    response = await call_next(request)
-    if request.url.path.startswith("/static/") or request.url.path in ("/", "/app", "/home", "/landing"):
+    try:
+        response = await call_next(request)
+    except asyncio.CancelledError:
+        # Gracefully handle client disconnect or server shutdown cancellation
+        raise
+    except Exception:
+        raise
+
+    if request.url.path in ("/", "/app", "/home", "/landing", "/admin-dashboard", "/builder"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    elif request.url.path.startswith("/static/"):
+        is_dev = os.getenv("ENV", "dev").lower() in ("dev", "development")
+        if is_dev:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        else:
+            response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=60"
     return response
 
 
@@ -266,3 +312,4 @@ app.include_router(collections_router)
 app.include_router(sessions_router)
 app.include_router(settings_router)
 app.include_router(websocket_router)
+app.include_router(business_assistant_router)

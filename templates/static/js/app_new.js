@@ -1,5 +1,31 @@
 "use strict";
 
+// ══════════════════════ PERFORMANCE TELEMETRY (Component 0) ══════════════════════
+const _appUrlParams = new URLSearchParams(window.location.search);
+const isPerf = _appUrlParams.get("perf") === "1" || sessionStorage.getItem("dv_perf") === "1";
+if (_appUrlParams.get("perf") === "1") {
+  sessionStorage.setItem("dv_perf", "1");
+}
+
+if (isPerf) {
+  const _origAppFetch = window.fetch;
+  window.fetch = async function (...args) {
+    const t0 = performance.now();
+    const url = typeof args[0] === "string" ? args[0] : (args[0]?.url || "unknown");
+    const method = (args[1]?.method || "GET").toUpperCase();
+    try {
+      const res = await _origAppFetch.apply(this, args);
+      const dt = (performance.now() - t0).toFixed(1);
+      console.log(`[perf-fetch] ${method} ${url} ${dt}ms (status ${res.status})`);
+      return res;
+    } catch (err) {
+      const dt = (performance.now() - t0).toFixed(1);
+      console.warn(`[perf-fetch] ${method} ${url} FAILED in ${dt}ms:`, err);
+      throw err;
+    }
+  };
+}
+
 // Emit initial load telemetry
 if (window.__reportTelemetry) {
   window.__reportTelemetry({ type: "info", message: "app_new.js (v47) top-level execution started" });
@@ -99,8 +125,8 @@ const API_KEY_STORAGE = "docuvortex.apiKey";
 const FALLBACK_ANSWER_TEXT = "I couldn't find information about that in the uploaded document(s).";
 
 // Server-provided last active session ID (recovered during auth check)
-// Server-provided last active session ID (recovered during auth check)
 let _serverLastSessionId = null;
+let _checkedSessionStatus = false;
 
 // Persistent WebSocket and background active stream manager
 let _chatWs = null;
@@ -133,38 +159,20 @@ async function initApp() {
     showToast("UI initialization warning: " + (err.message || err), "error");
   }
 
-  // Phase 2: Authenticate with API key
+  // Phase 2: Session Bootstrap & Workspace Restoration
   try {
-    const key = await ensureApiKey();
-    console.log("[DocuVortex] ✅ API key resolved. Authenticated:", Boolean(key));
-    if (key) {
+    const success = await ensureSessionAndBoot();
+    if (success) {
       connectWebSocket();
     }
+    console.log("[DocuVortex] ✅ Workspace boot complete. Authenticated session active.");
     if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "info", message: "ensureApiKey() completed. Valid key: " + Boolean(key) });
-    }
-    if (!key) {
-      console.warn("[DocuVortex] No API key available — some features may be limited.");
+      window.__reportTelemetry({ type: "info", message: "ensureSessionAndBoot() completed successfully" });
     }
   } catch (err) {
-    console.error("[DocuVortex] ❌ ensureApiKey error:", err);
+    console.error("[DocuVortex] ❌ Workspace boot error:", err);
     if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "error", message: "ensureApiKey error: " + (err.message || err), stack: err.stack });
-    }
-    showToast("Authentication warning: " + (err.message || err), "error");
-  }
-
-  // Phase 3: Load sessions and restore workspace
-  try {
-    await bootApp();
-    console.log("[DocuVortex] ✅ bootApp completed.");
-    if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "info", message: "bootApp() completed successfully" });
-    }
-  } catch (err) {
-    console.error("[DocuVortex] ❌ bootApp error:", err);
-    if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "error", message: "bootApp error: " + (err.message || err), stack: err.stack });
+      window.__reportTelemetry({ type: "error", message: "Workspace boot error: " + (err.message || err), stack: err.stack });
     }
     showToast("Workspace load warning: " + (err.message || err), "error");
   }
@@ -172,6 +180,21 @@ async function initApp() {
   console.log("[DocuVortex] 🚀 Application initialization complete.");
   if (window.__reportTelemetry) {
     window.__reportTelemetry({ type: "info", message: "🚀 Application initialization complete." });
+  }
+
+  if (isPerf) {
+    const clickTs = sessionStorage.getItem("dv_perf_click_ts");
+    if (clickTs) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const elapsed = Date.now() - parseInt(clickTs, 10);
+          const action = sessionStorage.getItem("dv_perf_action") || "login";
+          console.log(`[perf-ui] ${action} | next page ready=${elapsed}ms since click`);
+          sessionStorage.removeItem("dv_perf_click_ts");
+          sessionStorage.removeItem("dv_perf_action");
+        });
+      });
+    }
   }
 }
 
@@ -183,239 +206,83 @@ if (document.readyState === "loading") {
 }
 
 /**
- * Ensures user has an active key or prompts directly with popup on fresh load.
- * Remembers key across browser refresh, restarts, and tabs.
+ * Ensures session is loaded directly from HTTP-only session cookie.
+ * No API key prompt is ever presented to the user.
  */
-async function ensureApiKey() {
-  // 1. Check if a newly generated key was passed via query parameter or sessionStorage from landing page
-  let stagedKey = "";
-  let stagedSessionId = "";
+async function ensureSessionAndBoot() {
+  // Check if returning from landing page or direct URL with preferred session
   try {
     const urlParams = new URLSearchParams(window.location.search);
-    stagedKey = (urlParams.get("api_key") || sessionStorage.getItem("staged_api_key") || "").trim();
-    stagedSessionId = (urlParams.get("session_id") || "").trim();
+    const stagedSessionId = (urlParams.get("session_id") || "").trim();
+    if (stagedSessionId) {
+      _serverLastSessionId = stagedSessionId;
+      localStorage.setItem(SESSION_KEY, stagedSessionId);
+      if (window.location.search) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
   } catch (e) {}
 
-  if (stagedKey && stagedKey.startsWith("dk_live_")) {
-    try {
-      const verifyRes = await fetch("/api/auth/verify-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: stagedKey }),
-      });
-      const verifyData = await verifyRes.json();
-      if (verifyData?.valid) {
-        const prevKey = localStorage.getItem(API_KEY_STORAGE);
-        if (prevKey && prevKey !== stagedKey) {
-          localStorage.removeItem(SESSION_KEY);
-        }
-        localStorage.setItem(API_KEY_STORAGE, stagedKey);
-        try {
-          sessionStorage.removeItem("staged_api_key");
-          sessionStorage.removeItem("dv_redirected_create_key");
-          if (window.location.search) {
-            window.history.replaceState({}, document.title, window.location.pathname);
-          }
-        } catch (e) {}
-        const activeSessionToSet = stagedSessionId || verifyData.last_session_id;
-        if (activeSessionToSet) {
-          _serverLastSessionId = activeSessionToSet;
-          localStorage.setItem(SESSION_KEY, activeSessionToSet);
-        }
-        showToast("API key authenticated! Welcome to your workspace.", "success");
-        return stagedKey;
-      }
-    } catch (err) {
-      console.debug("Staged API key verification note:", err);
-    }
-  }
-
-  // 2. Existing key in localStorage
-  const existing = (localStorage.getItem(API_KEY_STORAGE) || "").trim();
-  if (existing && existing !== "guest" && existing.startsWith("dk_live_")) {
-    try {
-      const statusRes = await fetch("/api/auth/session-status", {
-        headers: { "X-API-Key": existing },
-        credentials: "include",
-      });
-      if (statusRes.ok) {
-        const authData = await statusRes.json();
-        if (authData && authData.authenticated) {
-          _serverLastSessionId = authData.last_session_id || null;
-          return existing;
-        }
-      }
-      // If server explicitly returned not authenticated, remove stale key
-      localStorage.removeItem(API_KEY_STORAGE);
-    } catch (err) {
-      console.debug("API key check note:", err);
-      return existing; // Network blip; preserve key
-    }
-  }
-
-  // 3. Unauthenticated visit: redirect to landing page create_key modal
-  localStorage.removeItem(API_KEY_STORAGE);
-  sessionStorage.removeItem("staged_api_key");
-  window.location.replace("/?action=create_key");
-  return "";
+  return await bootApp();
 }
-
-/**
- * Opens the styled API key modal so users can input/update their seed_user.py key.
- */
-function openApiKeyModal({ forceRequired = false, prefillKey = "" } = {}) {
-  return new Promise((resolve) => {
-    const backdrop = el("apiKeyModalBackdrop");
-    const input = el("apiKeyInput");
-    const errorEl = el("apiKeyError");
-    const saveBtn = el("apiKeySave");
-    const closeBtn = el("apiKeyModalClose");
-
-    if (!backdrop || !input || !saveBtn) {
-      return resolve("");
-    }
-
-    if (errorEl) errorEl.style.display = "none";
-    const currentKey = prefillKey || localStorage.getItem(API_KEY_STORAGE) || "";
-    input.value = currentKey && currentKey !== "guest" ? currentKey : "";
-    backdrop.classList.add("open");
-    setTimeout(() => input.focus(), 60);
-
-    function cleanup() {
-      backdrop.classList.remove("open");
-      saveBtn.removeEventListener("click", trySave);
-      input.removeEventListener("keydown", onKeydown);
-      if (closeBtn) closeBtn.removeEventListener("click", onClose);
-      backdrop.removeEventListener("click", onBackdrop);
-    }
-
-    function onClose() {
-      cleanup();
-      resolve(localStorage.getItem(API_KEY_STORAGE) || "");
-    }
-
-    function onBackdrop(e) {
-      if (e.target === backdrop && !forceRequired) {
-        cleanup();
-        resolve(localStorage.getItem(API_KEY_STORAGE) || "");
-      }
-    }
-
-    async function trySave() {
-      const key = input.value.trim();
-      if (!key) {
-        if (errorEl) {
-          errorEl.textContent = "Please enter your API key.";
-          errorEl.style.display = "block";
-        }
-        return;
-      }
-
-      saveBtn.disabled = true;
-      saveBtn.textContent = "Verifying...";
-      if (errorEl) errorEl.style.display = "none";
-
-      try {
-        const verifyRes = await fetch("/api/auth/verify-key", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ api_key: key }),
-        });
-        const verifyData = await verifyRes.json();
-
-        if (!verifyData?.valid) {
-          if (errorEl) {
-            errorEl.textContent =
-              verifyData?.message ||
-              "Invalid API key. Please check the key generated with seed_user.py or landing page.";
-            errorEl.style.display = "block";
-          }
-          saveBtn.disabled = false;
-          saveBtn.textContent = "Save Key";
-          return;
-        }
-
-        // Cache and set last session ID returned from PostgreSQL
-        if (verifyData.last_session_id) {
-          _serverLastSessionId = verifyData.last_session_id;
-          localStorage.setItem(SESSION_KEY, verifyData.last_session_id);
-        } else {
-          localStorage.removeItem(SESSION_KEY);
-        }
-
-        localStorage.setItem(API_KEY_STORAGE, key);
-        cleanup();
-        showToast("API key authenticated! Loading your workspace...", "success");
-        await bootApp();
-        resolve(key);
-      } catch (err) {
-        if (errorEl) {
-          errorEl.textContent = "Network error verifying key. Please try again.";
-          errorEl.style.display = "block";
-        }
-        saveBtn.disabled = false;
-        saveBtn.textContent = "Save Key";
-      }
-    }
-
-    function onKeydown(e) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        trySave();
-      }
-      if (e.key === "Escape" && !forceRequired) {
-        cleanup();
-        resolve(localStorage.getItem(API_KEY_STORAGE) || "");
-      }
-    }
-
-    saveBtn.addEventListener("click", trySave);
-    input.addEventListener("keydown", onKeydown);
-    if (closeBtn) closeBtn.addEventListener("click", onClose);
-    backdrop.addEventListener("click", onBackdrop);
-  });
-}
-
-window.openApiKeyModal = openApiKeyModal;
 
 async function bootApp() {
   const apiKey = localStorage.getItem(API_KEY_STORAGE);
-  if (window.__reportTelemetry) {
-    window.__reportTelemetry({ type: "info", message: "bootApp() started. Has key: " + Boolean(apiKey) });
-  }
+  const preferredSessionId = localStorage.getItem(SESSION_KEY) || _serverLastSessionId || "";
 
-  // Fetch latest active session from PostgreSQL if not cached
-  if (!_serverLastSessionId && apiKey && apiKey !== "guest") {
-    try {
-      const statusRes = await fetch("/api/auth/session-status", {
-        headers: { "X-API-Key": apiKey },
+  // 1-Step Consolidated Fast Bootstrap: user info, sidebar sessions, active session in 1 request
+  try {
+    const bootstrapUrl = preferredSessionId
+      ? `/api/sessions/bootstrap?preferred_session_id=${encodeURIComponent(preferredSessionId)}`
+      : "/api/sessions/bootstrap";
+
+    const headers = {};
+    if (apiKey) headers["X-API-Key"] = apiKey;
+
+    let res = await fetch(bootstrapUrl, {
+      headers,
+      credentials: "include",
+    });
+
+    // If initial fetch returned 401 and an explicit API key was sent, retry with cookie credentials alone
+    if (res.status === 401 && apiKey) {
+      localStorage.removeItem(API_KEY_STORAGE);
+      res = await fetch(bootstrapUrl, {
         credentials: "include",
       });
-      if (statusRes.ok) {
-        const authData = await statusRes.json();
-        if (authData?.authenticated && authData.last_session_id) {
-          _serverLastSessionId = authData.last_session_id;
+    }
+
+    if (res.status === 401) {
+      window.location.replace("/");
+      return;
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.authenticated) {
+        sidebarState.chats = data.sessions || [];
+        renderSidebar();
+
+
+
+        if (data.active_session && data.active_session.session_id) {
+          const activeId = data.active_session.session_id;
+          _sessionCache.set(activeId, data.active_session);
+          _applySessionData(activeId, data.active_session);
+          return;
+        } else {
+          await createNewSession();
+          renderWelcomeOnly();
+          return;
         }
       }
-    } catch (e) {
-      if (window.__reportTelemetry) {
-        window.__reportTelemetry({ type: "warn", message: "session-status fetch error: " + e.message });
-      }
     }
+  } catch (err) {
+    console.warn("[DocuVortex] Bootstrap fetch failed, falling back to legacy load:", err);
   }
 
+  // Fallback: Legacy load if bootstrap failed
   const sessions = await loadSessions();
-  if (window.__reportTelemetry) {
-    window.__reportTelemetry({
-      type: "info",
-      message: "loadSessions() returned " + (Array.isArray(sessions) ? sessions.length : 0) + " history chats"
-    });
-  }
-
-  // Resume where user left off:
-  // 1. Prioritize _serverLastSessionId (from verify-key, session-status, or URL param)
-  // 2. Next, check storedId from localStorage IF it exists in this user's sessions list
-  // 3. Next, fall back to sessions[0] (user's most recent chat from PostgreSQL)
   let candidateSessionId = null;
   const userSessionIds = Array.isArray(sessions) ? new Set(sessions.map((s) => s.session_id)) : new Set();
   const storedId = localStorage.getItem(SESSION_KEY);
@@ -431,12 +298,7 @@ async function bootApp() {
   // Restore the candidate session
   if (candidateSessionId) {
     const ok = await restoreSession(candidateSessionId);
-    if (ok) {
-      if (window.__reportTelemetry) {
-        window.__reportTelemetry({ type: "info", message: "Successfully resumed session: " + candidateSessionId });
-      }
-      return;
-    }
+    if (ok) return;
     localStorage.removeItem(SESSION_KEY);
   }
 
@@ -444,18 +306,10 @@ async function bootApp() {
   if (sessions && sessions.length > 0) {
     const latest = sessions[0];
     const ok = await restoreSession(latest.session_id);
-    if (ok) {
-      if (window.__reportTelemetry) {
-        window.__reportTelemetry({ type: "info", message: "Successfully restored latest session: " + latest.session_id });
-      }
-      return;
-    }
+    if (ok) return;
   }
 
   // No prior sessions found in PostgreSQL — start fresh
-  if (window.__reportTelemetry) {
-    window.__reportTelemetry({ type: "info", message: "No prior sessions found. Creating fresh session." });
-  }
   await createNewSession();
   renderWelcomeOnly();
 }
@@ -476,17 +330,81 @@ function safeOn(idOrEl, event, handler) {
 function bindUI() {
   // 1. Sidebar core & footer
   try {
-    safeOn("newChatBtn", "click", handleNewChat);
-    safeOn("searchInput", "input", (e) => {
-      sidebarState.searchQuery = e.target.value.toLowerCase();
-      renderSidebar();
+    safeOn("newChatBtn", "click", () => {
+      closeSidebarSearch();
+      handleNewChat();
     });
+
+    const searchToggleBtn = el("sidebarSearchToggleBtn");
+    const searchExpandable = el("sidebarSearchExpandable");
+    const searchInput = el("searchInput");
+    const searchCloseBtn = el("searchCloseBtn");
+    const sidebar = el("sidebar");
+
+    function openSidebarSearch() {
+      if (!searchExpandable) return;
+      searchExpandable.style.display = "block";
+      if (searchToggleBtn) searchToggleBtn.classList.add("active");
+      if (sidebar) sidebar.classList.add("search-active");
+      if (searchInput) {
+        searchInput.focus();
+        if (searchInput.value) {
+          sidebarState.searchQuery = searchInput.value.toLowerCase().trim();
+          renderSidebar();
+        }
+      }
+    }
+
+    function closeSidebarSearch() {
+      if (!searchExpandable) return;
+      searchExpandable.style.display = "none";
+      if (searchToggleBtn) searchToggleBtn.classList.remove("active");
+      if (sidebar) sidebar.classList.remove("search-active");
+      if (searchInput) searchInput.value = "";
+      if (sidebarState.searchQuery) {
+        sidebarState.searchQuery = "";
+        renderSidebar();
+      }
+    }
+
+    if (searchToggleBtn) {
+      searchToggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (searchExpandable && searchExpandable.style.display !== "none") {
+          closeSidebarSearch();
+        } else {
+          openSidebarSearch();
+        }
+      });
+    }
+
+    if (searchCloseBtn) {
+      searchCloseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeSidebarSearch();
+      });
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("input", (e) => {
+        sidebarState.searchQuery = e.target.value.toLowerCase().trim();
+        renderSidebar();
+      });
+      searchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeSidebarSearch();
+        }
+      });
+    }
+
     safeOn("clearAllBtn", "click", handleClearAll);
-    safeOn("apiKeyBtn", "click", openApiKeyModal);
+
     safeOn("settingsBtn", "click", () => openSettingsModal("embedding"));
     safeOn("settingsModalClose", "click", closeSettingsModal);
     safeOn("settingsModalCancel", "click", closeSettingsModal);
     safeOn("settingsModalSave", "click", saveSettingsModal);
+
   } catch (err) {
     console.warn("Sidebar core binding note:", err);
   }
@@ -1397,12 +1315,13 @@ function connectWebSocket() {
     return;
   }
   const apiKey = getActiveApiKey();
-  if (!apiKey) return;
 
   try {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const wsUrl = `${proto}//${host}/ws/chat?api_key=${encodeURIComponent(apiKey)}`;
+    const wsUrl = apiKey
+      ? `${proto}//${host}/ws/chat?api_key=${encodeURIComponent(apiKey)}`
+      : `${proto}//${host}/ws/chat`;
 
     _chatWs = new WebSocket(wsUrl);
 
@@ -1664,6 +1583,17 @@ function handleActiveStreamErrorUI(sessionId, errData) {
   }
   if (errData?.error_code === "embedding_unavailable") {
     showToast("The embedding model is unavailable. You can switch the embedding model in Settings.", "error");
+    return;
+  }
+  if (
+    errData?.error_code === "vectorstore_unavailable" ||
+    (errData?.message && errData.message.toLowerCase().includes("vector database"))
+  ) {
+    showToast(
+      errData.message || "Vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your connection or try again.",
+      "error",
+      6000
+    );
     return;
   }
   if (
@@ -2318,7 +2248,7 @@ function renderSidebar() {
     : sidebarState.chats;
 
   if (!chats.length) {
-    container.innerHTML = `<div class="empty-sidebar">No chats yet. Start a new conversation.</div>`;
+    container.innerHTML = `<div class="empty-sidebar">${q ? "No matching chats found." : "No chats yet. Start a new conversation."}</div>`;
     return;
   }
 
@@ -2707,8 +2637,10 @@ async function apiFetch(url, options = {}) {
 
     if (res.status === 401) {
       localStorage.removeItem(API_KEY_STORAGE);
-      showToast("Authentication required. Please enter your API key.", "error");
-      openApiKeyModal({ forceRequired: false });
+      showToast("Session expired or authentication required. Redirecting to sign in...", "warn");
+      setTimeout(() => {
+        window.location.replace("/?action=login");
+      }, 400);
       return null;
     }
 
@@ -2878,55 +2810,10 @@ async function streamQueryAnswer(
 //  SETTINGS MODAL (Embedding Model Selector & API Key Management)
 // ═══════════════════════════════════════════════════════════════════
 
-function switchSettingsTab(tab) {
-  const tabBtnEmbedding = el("tabBtnEmbedding");
-  const tabBtnApiKey = el("tabBtnApiKey");
-  const panelEmbedding = el("settingsTabEmbedding");
-  const panelApiKey = el("settingsTabApiKey");
-
-  if (tab === "api-key") {
-    tabBtnEmbedding?.classList.remove("active");
-    tabBtnApiKey?.classList.add("active");
-    if (panelEmbedding) panelEmbedding.style.display = "none";
-    if (panelApiKey) panelApiKey.style.display = "block";
-  } else {
-    tabBtnApiKey?.classList.remove("active");
-    tabBtnEmbedding?.classList.add("active");
-    if (panelEmbedding) panelEmbedding.style.display = "block";
-    if (panelApiKey) panelApiKey.style.display = "none";
-  }
-}
-
-async function openSettingsModal(defaultTab = "embedding") {
+async function openSettingsModal() {
   const backdrop = el("settingsModalBackdrop");
   if (!backdrop) return;
   backdrop.classList.add("open");
-
-  // Wire tab switching
-  const tabBtnEmbeddingEl = el("tabBtnEmbedding");
-  if (tabBtnEmbeddingEl) tabBtnEmbeddingEl.onclick = () => switchSettingsTab("embedding");
-  const tabBtnApiKeyEl = el("tabBtnApiKey");
-  if (tabBtnApiKeyEl) tabBtnApiKeyEl.onclick = () => switchSettingsTab("api-key");
-  switchSettingsTab(defaultTab);
-
-  // Sync API Key status inside Settings modal
-  const keyInput = el("settingsApiKeyInput");
-  const keyStatus = el("settingsKeyStatus");
-  const currentKey = localStorage.getItem(API_KEY_STORAGE) || "";
-
-  if (keyInput) {
-    keyInput.value = currentKey && currentKey !== "guest" ? currentKey : "";
-  }
-  if (keyStatus) {
-    if (currentKey && currentKey.startsWith("dk_live_")) {
-      const masked = currentKey.slice(0, 10) + "..." + currentKey.slice(-4);
-      keyStatus.textContent = `Active Key: ${masked}`;
-      keyStatus.style.color = "var(--success, #27ae60)";
-    } else {
-      keyStatus.textContent = "No valid key configured";
-      keyStatus.style.color = "var(--text-muted, #777)";
-    }
-  }
 
   try {
     const data = await apiFetch(API.settingsEmbedding);
@@ -2964,37 +2851,6 @@ async function saveSettingsModal() {
   const radioAzure = el("radioAzure");
   const radioBge = el("radioBge");
   const selectedProvider = radioBge && radioBge.checked ? "bge" : "azure";
-
-  // Check if API key was updated in the modal
-  const keyInput = el("settingsApiKeyInput");
-  const errEl = el("settingsApiKeyError");
-  if (errEl) errEl.style.display = "none";
-
-  const newKey = keyInput ? keyInput.value.trim() : "";
-  const currentKey = localStorage.getItem(API_KEY_STORAGE) || "";
-
-  if (newKey && newKey !== currentKey && newKey !== "guest") {
-    try {
-      const verifyRes = await fetch("/api/auth/verify-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: newKey }),
-      });
-      const verifyData = await verifyRes.json();
-      if (!verifyData?.valid) {
-        if (errEl) {
-          errEl.textContent = verifyData?.message || "Invalid API key.";
-          errEl.style.display = "block";
-        }
-        switchSettingsTab("api-key");
-        return;
-      }
-      localStorage.setItem(API_KEY_STORAGE, newKey);
-      await bootApp();
-    } catch (keyErr) {
-      console.error("Error verifying API key:", keyErr);
-    }
-  }
 
   try {
     const res = await apiFetch(API.settingsEmbedding, {

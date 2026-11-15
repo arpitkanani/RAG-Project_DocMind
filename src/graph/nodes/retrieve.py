@@ -16,6 +16,7 @@ from src.exception import (
     CollectionNotFoundError,
     CustomException,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.graph.state import RAGState
 from src.logger import logging
@@ -67,7 +68,7 @@ async def retrieve_qa_node(state: RAGState, config: RunnableConfig = None) -> Di
         return {
             "docs": docs,
         }
-    except CollectionEmbeddingMismatchError:
+    except (CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
         raise
     except (CollectionNotFoundError, KnowledgeBaseEmptyError) as e:
         logging.warning("Knowledge base empty or collection missing in retrieve_qa_node: %s", e)
@@ -104,7 +105,7 @@ async def retrieve_summary_node(state: RAGState, run_config: RunnableConfig = No
         return {
             "docs": docs,
         }
-    except CollectionEmbeddingMismatchError:
+    except (CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
         raise
     except (CollectionNotFoundError, KnowledgeBaseEmptyError) as e:
         logging.warning("Knowledge base empty or collection missing in retrieve_summary_node: %s", e)

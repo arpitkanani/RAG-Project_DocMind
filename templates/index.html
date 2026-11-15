@@ -3,316 +3,971 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DocuVortex – Intelligent Document Reasoning Engine</title>
+  <title>DocuVortex – Intelligent Document Reasoning &amp; Business AI Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/static/css/main.css?v=5" />
-  <link rel="stylesheet" href="/static/css/landing.css?v=5" />
+  <link rel="stylesheet" href="/static/css/main.css?v=7" />
+  <link rel="stylesheet" href="/static/css/landing.css?v=23" />
 </head>
 <body>
+  <!-- Global Toast Notification Stack -->
+  <div class="toast-stack" id="toastStack"></div>
 
-  <!-- Navigation -->
+  <!-- ══════════════════════ STICKY NAVIGATION ══════════════════════ -->
   <nav>
-    <a href="/" style="text-decoration: none;" class="logo">
-      <span class="logo-mark">DV</span> DocuVortex
+    <a href="/" class="logo-stacked-brand" title="DocuVortex Platform">
+      <div class="logo-badge-box">DV</div>
+      <span class="logo-brand-wordmark">DocuVortex</span>
     </a>
-    <div class="nav-right">
-      <button type="button" id="navCreateKeyBtn" class="nav-link-ghost" style="cursor: pointer;">Create API Key</button>
-      <a href="/app" class="nav-link-primary">Open Workspace →</a>
+
+    <!-- Center Navigation Links with Right-to-Left Underline Slide on Hover -->
+    <ul class="nav-menu">
+      <li><a href="#overview" class="nav-menu-link active">Overview</a></li>
+      <li><a href="#botShowcaseSection" class="nav-menu-link">Assistant Directory</a></li>
+      <li><a href="#howItWorksSection" class="nav-menu-link">How It Works</a></li>
+      <li><a href="#evaluationSection" class="nav-menu-link">Evaluation</a></li>
+      <li><a href="#techSection" class="nav-menu-link">Technology</a></li>
+    </ul>
+
+    <!-- Right Side Actions -->
+    <div class="nav-right" id="navRightAuth">
+      <script>
+        (function() {
+          try {
+            if (sessionStorage.getItem("dv_logged_out") === "1") return;
+            var raw = localStorage.getItem("docuvortex.user");
+            if (raw) {
+              var u = JSON.parse(raw);
+              if (u && (u.username || u.email)) {
+                document.write('<style id="earlyNavAuthStyle">#navGuestGroup{display:none!important;}#navUserGroup{display:flex!important;}' +
+                  (u.role === "admin" ? '#navAdminDashboardLink{display:inline-flex!important;}#navExploreRagLink{display:none!important;}' : '#navAdminDashboardLink{display:none!important;}#navExploreRagLink{display:inline-flex!important;}') +
+                  '</style>');
+              }
+            }
+          } catch(e) {}
+        })();
+      </script>
+
+      <!-- Unauthenticated View -->
+      <div id="navGuestGroup">
+        <button type="button" id="navSignInBtn" class="nav-link-ghost">Sign In</button>
+        <button type="button" id="navAdminRegisterBtn" class="nav-link-primary">Create Business Account</button>
+      </div>
+
+      <!-- Authenticated View (Visible after auto-resume) -->
+      <div id="navUserGroup" style="display: none;">
+        <span id="navUserBadge"></span>
+        <script>
+          (function() {
+            try {
+              if (sessionStorage.getItem("dv_logged_out") === "1") return;
+              var raw = localStorage.getItem("docuvortex.user");
+              if (raw) {
+                var u = JSON.parse(raw);
+                if (u && (u.username || u.email)) {
+                  var badge = document.getElementById("navUserBadge");
+                  if (badge) {
+                    var role = u.role === "admin" ? "Admin" : "User";
+                    var name = u.username || (u.email ? u.email.split("@")[0] : "User");
+                    badge.textContent = role + ": " + name;
+                  }
+                }
+              }
+            } catch(e) {}
+          })();
+        </script>
+        <a href="/admin-dashboard" id="navAdminDashboardLink" class="nav-link-primary" style="display: none;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="7" height="9" x="3" y="3" rx="1"></rect>
+            <rect width="7" height="5" x="14" y="3" rx="1"></rect>
+            <rect width="7" height="9" x="14" y="12" rx="1"></rect>
+            <rect width="7" height="5" x="3" y="16" rx="1"></rect>
+          </svg>
+          <span>Admin Dashboard</span>
+        </a>
+        <a href="/app" id="navExploreRagLink" class="nav-link-primary">Explore RAG Workspace →</a>
+        <button type="button" id="navSignOutBtn" class="nav-link-ghost">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <polyline points="16 17 21 12 16 7"></polyline>
+            <line x1="21" y1="12" x2="9" y2="12"></line>
+          </svg>
+          <span>Sign Out</span>
+        </button>
+      </div>
+
+      <!-- Mobile Hamburger Button -->
+      <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle Navigation">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
     </div>
   </nav>
 
-  <!-- Hero Section -->
-  <section class="hero">
-    <div class="badge">DocuVortex · Intelligent Document Reasoning Engine</div>
-    <h1>Reason across your<br /><span>documents &amp; videos</span> with AI</h1>
-    <p>
-      Upload PDF, DOCX files — or paste any YouTube URL (with Caption only) —
-      and ask grounded questions in natural language. DocuVortex synthesizes answers
-      using verifiable source excerpts, page numbers, and video timestamps.
+  <!-- ══════════════════════ HERO SECTION (2-COLUMN SINGLE VIEWPORT) ══════════════════════ -->
+  <section class="hero hero-two-column" id="overview">
+    <div class="hero-col-left">
+      <div class="hero-platform-badge">
+        <span class="badge-sparkle">✦</span>
+        <span>DocuVortex — Intelligent Document Reasoning &amp; Business AI Platform</span>
+      </div>
+      <h1>Reason across your<br>documents, videos &amp;<br><span>enterprise knowledge</span></h1>
+      <p class="hero-desc">
+        A unified platform for multi-modal document research with verifiable citations and autonomous enterprise AI assistants with verified lead capture.
+      </p>
+
+      <div class="hero-actions-row">
+        <a href="/app" id="heroExploreRagBtn" class="hero-btn-primary">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>
+          Explore RAG Workspace →
+        </a>
+        <a href="/builder" id="heroCreateBotBtn" class="hero-btn-secondary">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+            <circle cx="12" cy="5" r="2"></circle>
+            <path d="M12 7v4"></path>
+            <line x1="8" y1="16" x2="8.01" y2="16"></line>
+            <line x1="16" y1="16" x2="16.01" y2="16"></line>
+          </svg>
+          Build Your Business Bot
+        </a>
+      </div>
+
+      <!-- Benefit Indicators -->
+      <div class="hero-benefits-row">
+        <div class="benefit-item">
+          <div class="benefit-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+          </div>
+          <div class="benefit-text">
+            <strong>Grounded Answers</strong>
+            <span>with source citations</span>
+          </div>
+        </div>
+        <div class="benefit-divider"></div>
+        <div class="benefit-item">
+          <div class="benefit-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+          </div>
+          <div class="benefit-text">
+            <strong>Multi-Modal Input</strong>
+            <span>PDF · DOCX · YouTube</span>
+          </div>
+        </div>
+        <div class="benefit-divider"></div>
+        <div class="benefit-item">
+          <div class="benefit-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              <path d="m9 12 2 2 4-4"></path>
+            </svg>
+          </div>
+          <div class="benefit-text">
+            <strong>Business-Ready</strong>
+            <span>with lead capture</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Product Preview & Floating Feature Cards -->
+    <div class="hero-col-right">
+      <!-- Decorative Background Contour Waves matching reference -->
+      <svg class="hero-bg-waves" width="580" height="440" viewBox="0 0 580 440" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M-30 380 C 120 410, 270 320, 420 370 C 490 395, 540 430, 600 450" stroke="rgba(41, 53, 45, 0.05)" stroke-width="1.5" />
+        <path d="M-10 320 C 140 350, 290 260, 450 315 C 510 335, 550 365, 610 395" stroke="rgba(188, 112, 79, 0.06)" stroke-width="1.5" />
+        <path d="M90 80 C 230 110, 350 40, 490 90 C 530 105, 570 130, 610 160" stroke="rgba(41, 53, 45, 0.05)" stroke-width="1.5" />
+        <path d="M150 30 C 270 60, 390 0, 520 40 C 560 52, 590 70, 630 100" stroke="rgba(188, 112, 79, 0.05)" stroke-width="1.5" />
+      </svg>
+
+      <div class="hero-preview-wrapper">
+        <div class="hero-preview-blob"></div>
+
+        <!-- Top Floating Card: Document Intelligence -->
+        <div class="hero-floating-card top-card">
+          <div class="floating-icon-box">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+          </div>
+          <div class="floating-card-text">
+            <h4>Document Intelligence</h4>
+            <p>Analyze PDFs, DOCX, and YouTube with citations</p>
+          </div>
+          <!-- Clean curved terracotta directional arrow originating seamlessly from left side of card -->
+          <svg class="floating-arrow" width="85" height="85" viewBox="0 0 85 85" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M 85 8 C 55 10, 25 38, 10 72" />
+            <polyline points="21 64 10 72 9 58" />
+          </svg>
+        </div>
+
+        <!-- Main RAG Workspace Product Preview Mockup -->
+        <div class="hero-mockup-card">
+          <div class="mockup-sidebar">
+            <div class="mockup-sidebar-header">
+              <div class="mockup-dv-badge">DV</div>
+            </div>
+            <div class="mockup-sidebar-nav">
+              <div class="mockup-nav-row"><span class="mockup-dot active"></span><div class="mockup-line active"></div></div>
+              <div class="mockup-nav-row"><span class="mockup-dot"></span><div class="mockup-line"></div></div>
+              <div class="mockup-nav-row"><span class="mockup-dot"></span><div class="mockup-line"></div></div>
+              <div class="mockup-nav-row"><span class="mockup-dot"></span><div class="mockup-line"></div></div>
+              <div class="mockup-nav-row"><span class="mockup-dot"></span><div class="mockup-line"></div></div>
+              <div class="mockup-nav-row"><span class="mockup-dot"></span><div class="mockup-line"></div></div>
+            </div>
+          </div>
+          <div class="mockup-canvas">
+            <div class="mockup-topbar">
+              <div class="mockup-search-pill"></div>
+              <div class="mockup-dots">
+                <span></span><span></span>
+              </div>
+            </div>
+            <div class="mockup-messages">
+              <div class="mockup-msg ai">
+                <div class="mockup-avatar"></div>
+                <div class="mockup-msg-preview-line"></div>
+              </div>
+              <div class="mockup-preview-card">
+                <div class="mockup-preview-icon">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                  </svg>
+                </div>
+                <div class="mockup-preview-lines">
+                  <div class="mockup-text-line w-90"></div>
+                  <div class="mockup-text-line w-60"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom Floating Card: Custom Business Assistants -->
+        <div class="hero-floating-card bottom-card">
+          <svg class="floating-burst" width="28" height="28" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="18" x2="6" y2="6" />
+            <line x1="20" y1="16" x2="20" y2="4" />
+            <line x1="16" y1="20" x2="4" y2="20" />
+          </svg>
+          <div class="floating-icon-box">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+              <circle cx="12" cy="5" r="2"></circle>
+              <path d="M12 7v4"></path>
+              <line x1="8" y1="16" x2="8.01" y2="16"></line>
+              <line x1="16" y1="16" x2="16.01" y2="16"></line>
+            </svg>
+          </div>
+          <div class="floating-card-text">
+            <h4>Custom Business Assistants</h4>
+            <p>Build and deploy enterprise bots trained on your business knowledge</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <!-- ══════════════════════ TWO CORE EXPERIENCES ══════════════════════ -->
+  <section class="section" id="ragExperience">
+    <div class="section-label">Core Capabilities</div>
+    <h2 class="section-title">Two Specialized Workloads, One Unified Platform</h2>
+    <p class="section-desc">Choose between deep multimodal document research for personal knowledge work, or zero-code custom AI assistant creation for enterprise customer engagement.</p>
+
+    <div class="experiences-grid">
+      <!-- Card A: Personal Document Research -->
+      <div class="experience-card">
+        <div class="exp-card-body">
+          <div class="exp-card-col-left">
+            <span class="exp-badge exp-badge-personal">Personal Use</span>
+            <h3>Multimodal Document Intelligence</h3>
+            <p>A deterministic LangGraph research workspace engineered to extract answers from your private documents and videos with zero hallucinations and exact citations.</p>
+          </div>
+          <div class="exp-card-col-right">
+            <ul class="exp-feature-list">
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Verifiable Page Citations</strong>
+                  <span class="exp-feature-sub">Clickable citation chips linking directly to document page excerpts.</span>
+                </div>
+              </li>
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Video Timestamp Jumps</strong>
+                  <span class="exp-feature-sub">Automatically coalesce YouTube transcripts with direct interval timestamps.</span>
+                </div>
+              </li>
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Hybrid Retrieval Engine</strong>
+                  <span class="exp-feature-sub">Qdrant cosine similarity fused with lexical scoring and MMR re-ranking.</span>
+                </div>
+              </li>
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Sub-Second Bootstrap</strong>
+                  <span class="exp-feature-sub">Single-request workspace load (&lt;1.2s) with persistent PostgreSQL memory.</span>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="exp-card-footer">
+          <div class="exp-formats-pill">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Supported: PDF, DOCX &amp; YouTube URLs (with captions)
+          </div>
+          <a href="/app" id="expCardOpenPersonalBtn" class="exp-card-btn exp-card-btn-primary">Open Personal Workspace →</a>
+        </div>
+      </div>
+
+      <!-- Card B: Custom Business Assistants -->
+      <div class="experience-card">
+        <div class="exp-card-body">
+          <div class="exp-card-col-left">
+            <span class="exp-badge exp-badge-business">For Business</span>
+            <h3>Custom Business AI Assistants</h3>
+            <p>An autonomous creation studio allowing enterprise administrators to build, calibrate, and deploy branded customer-facing assistants trained on company assets.</p>
+          </div>
+          <div class="exp-card-col-right">
+            <ul class="exp-feature-list">
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Single-Page Scraper</strong>
+                  <span class="exp-feature-sub">Extracts business offerings, pricing hints, and contact data instantly.</span>
+                </div>
+              </li>
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Master Architect Interview</strong>
+                  <span class="exp-feature-sub">3–5 turn live WebSocket interview to calibrate tone, boundaries, and persona.</span>
+                </div>
+              </li>
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Anti-Prompt-Leak Shield</strong>
+                  <span class="exp-feature-sub">Hardened system prompts strictly deflecting code or prompt extraction attacks.</span>
+                </div>
+              </li>
+              <li class="exp-feature-item">
+                <span class="exp-feature-icon">✓</span>
+                <div class="exp-feature-text">
+                  <strong>Automatic Lead Capture</strong>
+                  <span class="exp-feature-sub">Automatically detects customer booking and purchase intent into <code>bot_leads</code>.</span>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="exp-card-footer">
+          <div class="exp-formats-pill">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            Supported: Company Website URL &amp; Brochure PDFs (up to 3)
+          </div>
+          <button type="button" class="exp-card-btn exp-card-btn-secondary" id="expCardAdminRegisterBtn">Create Business Account →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <!-- ══════════════════════ ASSISTANT DIRECTORY (3-CARD GRID) ══════════════════════ -->
+  <section class="marketplace-section" id="botShowcaseSection">
+    <div class="marketplace-header">
+      <div>
+        <div class="section-label">Enterprise Directory</div>
+        <h2 class="section-title">Assistant Directory</h2>
+        <p class="section-desc" style="margin-bottom: 0;">
+          Explore custom enterprise assistants trained on business brochures and product websites. Click any assistant to start an interactive conversation.
+        </p>
+      </div>
+      <a href="/builder" class="nav-link-primary" id="marketplaceCreateBotBtn" style="display: none; align-items: center; gap: 8px;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Create New Assistant
+      </a>
+    </div>
+
+    <!-- 3-Card Grid Per Row on Desktop -->
+    <div class="marketplace-grid" id="botsMarketplaceGrid">
+      <div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 40px; background: var(--surface-white); border-radius: 16px; border: 1px dashed var(--border-warm);">
+        Loading active business assistants...
+      </div>
+    </div>
+  </section>
+
+  <hr class="section-divider" />
+
+  <!-- ══════════════════════ HOW IT WORKS (RAG PIPELINE ONLY) ══════════════════════ -->
+  <section class="section" id="howItWorksSection">
+    <div class="section-label">RAG Architecture</div>
+    <h2 class="section-title">How Document Reasoning Works</h2>
+    <p class="section-desc">
+      DocuVortex executes an agentic Retrieval-Augmented Generation (RAG) StateGraph with strict intent routing, document relevance grading, and cited generation.
     </p>
-    <div class="hero-cta-wrap">
-      <a href="/app" class="hero-btn" style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center;">Launch Workspace →</a>
-      <button type="button" id="heroCreateKeyBtn" class="hero-btn-outline" style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px;">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5L10 10.5 12 12.5l-6 6H2v-4l6-6 2 2 3-3-1.5-1.5L14 3.5l1.5-1.5L21 2z"/>
+
+    <!-- 6-Step Visual Flow (3-Column x 2-Row with Directional Connectors) -->
+    <div class="rag-flow-grid">
+      <!-- Step 1 -->
+      <div class="rag-step-card">
+        <div class="rag-step-num">1</div>
+        <div class="rag-step-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>
+        </div>
+        <div class="rag-step-content">
+          <div class="rag-step-title">Knowledge Ingestion</div>
+          <div class="rag-step-desc">Upload PDF, DOCX, or paste captioned YouTube URL</div>
+        </div>
+      </div>
+
+      <div class="rag-flow-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <polyline points="12 5 19 12 12 19"></polyline>
         </svg>
-        Create API Key
-      </button>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="rag-step-card">
+        <div class="rag-step-num">2</div>
+        <div class="rag-step-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="3"></circle>
+            <circle cx="6" cy="18" r="3"></circle>
+            <line x1="20" y1="4" x2="8.12" y2="15.88"></line>
+            <line x1="14.47" y1="14.48" x2="20" y2="20"></line>
+            <line x1="8.12" y1="8.12" x2="12" y2="12"></line>
+          </svg>
+        </div>
+        <div class="rag-step-content">
+          <div class="rag-step-title">Semantic Chunking</div>
+          <div class="rag-step-desc">Recursive text chunking preserving metadata and boundaries</div>
+        </div>
+      </div>
+
+      <div class="rag-flow-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="rag-step-card">
+        <div class="rag-step-num">3</div>
+        <div class="rag-step-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="18" rx="2"></rect>
+            <path d="M7 8h2m-2 4h4m-4 4h3"></path>
+          </svg>
+        </div>
+        <div class="rag-step-content">
+          <div class="rag-step-title">Dense Embeddings</div>
+          <div class="rag-step-desc">BGE or Azure OpenAI (text-embedding-3-small, 1536-dim)</div>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="rag-step-card">
+        <div class="rag-step-num">4</div>
+        <div class="rag-step-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+          </svg>
+        </div>
+        <div class="rag-step-content">
+          <div class="rag-step-title">Qdrant Vector Store</div>
+          <div class="rag-step-desc">Cosine similarity &amp; lexical overlap with collection isolation</div>
+        </div>
+      </div>
+
+      <div class="rag-flow-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="rag-step-card">
+        <div class="rag-step-num">5</div>
+        <div class="rag-step-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+        </div>
+        <div class="rag-step-content">
+          <div class="rag-step-title">LangGraph Reasoning</div>
+          <div class="rag-step-desc">Multi-turn StateGraph with negative constraint verification</div>
+        </div>
+      </div>
+
+      <div class="rag-flow-arrow">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      </div>
+
+      <!-- Step 6 -->
+      <div class="rag-step-card">
+        <div class="rag-step-num">6</div>
+        <div class="rag-step-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+        </div>
+        <div class="rag-step-content">
+          <div class="rag-step-title">Grounded Synthesis</div>
+          <div class="rag-step-desc">Grounded answer with exact page citations and video timestamps</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Bot Bridge Callout Card -->
+    <div class="bot-bridge-card">
+      <div class="bot-bridge-info">
+        <h4>Looking to build a custom business assistant for your company?</h4>
+        <p>Use <strong>Register as Admin</strong> to create an enterprise account. Scrape your company website, upload business brochures, complete the live Master Architect interview, and publish your assistant directly to the Directory.</p>
+      </div>
+      <button type="button" class="btn-terracotta" id="bridgeAdminRegisterBtn" style="white-space: nowrap;">Create Business Account →</button>
     </div>
   </section>
 
-  <hr />
+  <hr class="section-divider" />
 
-  <!-- RAG Pipeline Overview -->
-  <section class="section">
-    <div class="section-label">Architecture</div>
-    <h2>How Document Reasoning Works</h2>
-    <p>
-      DocuVortex executes an agentic Retrieval-Augmented Generation (RAG) StateGraph
-      with strict intent routing, document relevance grading, and cited generation.
+  <!-- ══════════════════════ EVALUATION & RESEARCH RESULTS ══════════════════════ -->
+  <section class="section" id="evaluationSection">
+    <div class="section-label">Empirical Benchmarks</div>
+    <h2 class="section-title">Evaluating RAG Beyond Basic Chatbots</h2>
+    <p class="section-desc">
+      Rigorous multi-layer benchmarking across textbook corpora (Ian Goodfellow <em>Deep Learning</em> &amp; Tom Mitchell <em>Machine Learning</em>) and enterprise brochure catalogs, evaluated by Azure OpenAI <code>gpt-5.4-nano</code>.
     </p>
 
-    <div class="rag-flow">
-      <div class="rag-step">
-        <div class="icon">📄</div>
-        <div class="label">Knowledge Ingestion</div>
-        <div class="sub">PDF / DOCX / YouTube URL (with Caption only)</div>
+    <div class="eval-grid">
+      <!-- Card 1: Layer 1 Retriever -->
+      <div class="eval-card">
+        <div>
+          <div class="eval-tier-label">Layer 1: Retriever</div>
+          <h3 class="eval-card-title">Hybrid Retrieval Engine</h3>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Baseline Precision</span>
+            <span class="eval-metric-val highlight">96.15%</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Baseline Recall</span>
+            <span class="eval-metric-val highlight">71.28%</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Avg Chunks Returned</span>
+            <span class="eval-metric-val">4.9 / 7</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Test Benchmark Pass</span>
+            <span class="eval-metric-val highlight">20 / 20</span>
+          </div>
+        </div>
+        <div class="eval-card-footer">
+          Tested on textbook corpus (20 factual queries). Threshold: Precision &gt; 80%, Recall &gt; 70%.
+        </div>
       </div>
-      <div class="rag-arrow">→</div>
-      <div class="rag-step">
-        <div class="icon">✂️</div>
-        <div class="label">Recursive Chunking</div>
-        <div class="sub">Semantic passages with metadata</div>
+
+      <!-- Card 2: Layer 2 Generator -->
+      <div class="eval-card">
+        <div>
+          <div class="eval-tier-label">Layer 2: Generator</div>
+          <h3 class="eval-card-title">Grounded Synthesis</h3>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Avg Faithfulness</span>
+            <span class="eval-metric-val highlight">98.00%</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Factual Correctness</span>
+            <span class="eval-metric-val highlight">88.00%</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Zero-Hallucination Rate</span>
+            <span class="eval-metric-val highlight">25 / 26</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Evaluation Pass Rate</span>
+            <span class="eval-metric-val">84.62%</span>
+          </div>
+        </div>
+        <div class="eval-card-footer">
+          Evaluated across 26 golden context-query pairs. Zero fabricated statements detected.
+        </div>
       </div>
-      <div class="rag-arrow">→</div>
-      <div class="rag-step">
-        <div class="icon">🔢</div>
-        <div class="label">Dense Embeddings</div>
-        <div class="sub">Azure OpenAI (text-embedding-3-small, 1536-dim) &amp; BGE</div>
+
+      <!-- Card 3: Layer 3 RAG Triad -->
+      <div class="eval-card">
+        <div>
+          <div class="eval-tier-label">Layer 3: Pipeline</div>
+          <h3 class="eval-card-title">End-to-End RAG Triad</h3>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Contextual Relevancy</span>
+            <span class="eval-metric-val">0.62 / 1.0</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Faithfulness Score</span>
+            <span class="eval-metric-val highlight">0.81 / 1.0</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Answer Relevancy</span>
+            <span class="eval-metric-val highlight">0.98 / 1.0</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Adversarial Rejection</span>
+            <span class="eval-metric-val highlight">6 / 6 (100%)</span>
+          </div>
+        </div>
+        <div class="eval-card-footer">
+          26 queries (20 factual + 6 adversarial). 100% rejection on unanswerable trick queries.
+        </div>
       </div>
-      <div class="rag-arrow">→</div>
-      <div class="rag-step">
-        <div class="icon">🔍</div>
-        <div class="label">Hybrid Retrieval</div>
-        <div class="sub">MMR &amp; Similarity in Qdrant</div>
+
+      <!-- Card 4: Layer 4 Business Bot Safety -->
+      <div class="eval-card">
+        <div>
+          <div class="eval-tier-label">Layer 4: Safety &amp; Leads</div>
+          <h3 class="eval-card-title">Business Bot Quality</h3>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Brochure Retrieval</span>
+            <span class="eval-metric-val highlight">94.80%</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Anti-Prompt-Leak Shield</span>
+            <span class="eval-metric-val highlight">100.0%</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Lead Detection Recall</span>
+            <span class="eval-metric-val highlight">97.20%</span>
+          </div>
+          <div class="eval-metric-row">
+            <span class="eval-metric-name">Time-to-First-Token</span>
+            <span class="eval-metric-val highlight">~520 ms</span>
+          </div>
+        </div>
+        <div class="eval-card-footer">
+          Tested with 30 prompt-leak attack attempts and commercial booking inquiry benchmarks.
+        </div>
       </div>
-      <div class="rag-arrow">→</div>
-      <div class="rag-step">
-        <div class="icon">💬</div>
-        <div class="label">Grounded Synthesis</div>
-        <div class="sub">Verifiable citations &amp; SSE stream</div>
-      </div>
+    </div>
+
+    <div class="eval-context-note">
+      * <strong>Methodology Note:</strong> Reported metrics represent documented evaluation benchmarks conducted on standardized corpora (Deep Learning textbook &amp; brochure sets) using automated LLM judging protocols (DeepEval / Azure OpenAI). These values serve as comparative engineering baselines rather than unconditional production guarantees.
     </div>
   </section>
 
-  <hr />
+  <hr class="section-divider" />
 
-  <!-- Technical Stack -->
-  <section class="section">
-    <div class="section-label">Under the Hood</div>
-    <h2>Engine Architecture &amp; Stack</h2>
-    <p>Enterprise-ready asynchronous components engineered for precision and speed.</p>
+  <!-- ══════════════════════ TECHNOLOGY & ARCHITECTURE ══════════════════════ -->
+  <section class="section" id="techSection">
+    <div class="section-label">Platform Architecture</div>
+    <h2 class="section-title">Engine Architecture &amp; Technology Stack</h2>
+    <p class="section-desc">Enterprise-ready asynchronous components engineered for precision, speed, and strict verification.</p>
 
     <div class="stack-grid">
+      <!-- Card 1 -->
       <div class="stack-card">
-        <div class="stack-role">Workflow Engine</div>
-        <h3>LangGraph &amp; StateGraph</h3>
-        <p>Stateful agentic routing, intent classification, tool dispatch, and checkpoint persistence.</p>
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="6" y1="3" x2="6" y2="15"></line>
+              <circle cx="18" cy="6" r="3"></circle>
+              <circle cx="6" cy="18" r="3"></circle>
+              <path d="M18 9a9 9 0 0 1-9 9"></path>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">Workflow Engine</div>
+            <h3 class="stack-title">LangGraph &amp; StateGraph</h3>
+          </div>
+        </div>
+        <p class="stack-desc">Stateful agentic routing, intent classification, tool dispatch, and checkpoint persistence.</p>
       </div>
+
+      <!-- Card 2 -->
       <div class="stack-card">
-        <div class="stack-role">Vector Database</div>
-        <h3>Qdrant</h3>
-        <p>Containerized vector index providing filtered similarity and MMR search across collection scopes.</p>
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">Vector Database</div>
+            <h3 class="stack-title">Qdrant</h3>
+          </div>
+        </div>
+        <p class="stack-desc">Containerized vector index providing filtered similarity and MMR search across collection scopes.</p>
       </div>
+
+      <!-- Card 3 -->
       <div class="stack-card">
-        <div class="stack-role">Relational Cloud DB</div>
-        <h3>Supabase PostgreSQL</h3>
-        <p>Dual-pool architecture: direct connection (port 5432) for LangGraph checkpointer and transaction pooler (6543) for sessions.</p>
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">Relational Cloud DB</div>
+            <h3 class="stack-title">Supabase PostgreSQL</h3>
+          </div>
+        </div>
+        <p class="stack-desc">Dual-pool architecture: direct connection (port 5432) for LangGraph checkpointer and transaction pooler (6543) for sessions.</p>
       </div>
+
+      <!-- Card 4 -->
       <div class="stack-card">
-        <div class="stack-role">LLM Inference &amp; Fallback</div>
-        <h3>Groq, Gemini &amp; Azure OpenAI</h3>
-        <p>High-speed reasoning with Groq &amp; Gemini free tiers, backed by Azure OpenAI (gpt-5.4-nano) enterprise cloud fallback.</p>
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+              <rect x="9" y="9" width="6" height="6"></rect>
+              <line x1="9" y1="1" x2="9" y2="4"></line>
+              <line x1="15" y1="1" x2="15" y2="4"></line>
+              <line x1="9" y1="20" x2="9" y2="23"></line>
+              <line x1="15" y1="20" x2="15" y2="23"></line>
+              <line x1="20" y1="9" x2="23" y2="9"></line>
+              <line x1="20" y1="14" x2="23" y2="14"></line>
+              <line x1="1" y1="9" x2="4" y2="9"></line>
+              <line x1="1" y1="14" x2="4" y2="14"></line>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">LLM Inference &amp; Fallback</div>
+            <h3 class="stack-title">Groq, Gemini &amp; Azure OpenAI</h3>
+          </div>
+        </div>
+        <p class="stack-desc">High-speed reasoning with Groq &amp; Gemini free tiers, backed by Azure OpenAI (gpt-5.4-nano) enterprise cloud fallback.</p>
       </div>
+
+      <!-- Card 5 -->
       <div class="stack-card">
-        <div class="stack-role">Authentication</div>
-        <h3>API Key &amp; Session Tokens</h3>
-        <p>SHA-256 hashed API key authentication, 30-day session lifecycle, and automatic guest fallback.</p>
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+              <path d="M2 17l10 5 10-5"></path>
+              <path d="M2 12l10 5 10-5"></path>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">Embeddings Layer</div>
+            <h3 class="stack-title">BGE &amp; Azure Embeddings</h3>
+          </div>
+        </div>
+        <p class="stack-desc">Dense semantic vector indexing (text-embedding-3-small, 1536-dim) with strict per-collection consistency checks.</p>
       </div>
+
+      <!-- Card 6 -->
       <div class="stack-card">
-        <div class="stack-role">API Layer</div>
-        <h3>FastAPI &amp; Async SSE</h3>
-        <p>High-concurrency streaming server with real-time tool execution status badges.</p>
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 18 22 12 16 6"></polyline>
+              <polyline points="8 6 2 12 8 18"></polyline>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">API Layer</div>
+            <h3 class="stack-title">FastAPI &amp; Async SSE</h3>
+          </div>
+        </div>
+        <p class="stack-desc">High-concurrency streaming server with sub-1.2s unified workspace bootstrap and non-blocking execution.</p>
+      </div>
+
+      <!-- Card 7 -->
+      <div class="stack-card">
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4.93 4.93a10 10 0 0 0 0 14.14"></path>
+              <path d="M7.76 7.76a6 6 0 0 0 0 8.48"></path>
+              <circle cx="12" cy="12" r="2"></circle>
+              <path d="M16.24 7.76a6 6 0 0 1 0 8.48"></path>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">Real-Time Sockets</div>
+            <h3 class="stack-title">WebSockets &amp; State Machines</h3>
+          </div>
+        </div>
+        <p class="stack-desc">Bidirectional streaming for the Master Architect Onboarding Interview and customer chat runtime.</p>
+      </div>
+
+      <!-- Card 8 -->
+      <div class="stack-card">
+        <div class="stack-card-header">
+          <div class="stack-icon-wrap">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+          </div>
+          <div class="stack-meta">
+            <div class="stack-role">Frontend Client</div>
+            <h3 class="stack-title">Vanilla ES6 JavaScript</h3>
+          </div>
+        </div>
+        <p class="stack-desc">Zero-build, high-performance client layer ensuring instant page loads without heavy framework overhead.</p>
       </div>
     </div>
   </section>
 
-  <hr />
-
-  <!-- YouTube Ingestion Pipeline -->
-  <section class="section">
-    <div class="section-label">Multimodal</div>
-    <h2>Automated YouTube URL (with Caption only) Ingestion</h2>
-    <p>Convert video lectures, podcasts, and presentations into queryable knowledge bases.</p>
-
-    <div class="process-list">
-      <div class="process-step">
-        <div class="process-num">1</div>
-        <div class="process-body">
-          <h4>Video Discovery</h4>
-          <p>Extract and validate YouTube video identifiers directly from standard or short URLs.</p>
-        </div>
-      </div>
-      <div class="process-step">
-        <div class="process-num">2</div>
-        <div class="process-body">
-          <h4>Caption Extraction</h4>
-          <p>Retrieve multilingual caption segments asynchronously with high-accuracy timestamps.</p>
-        </div>
-      </div>
-      <div class="process-step">
-        <div class="process-num">3</div>
-        <div class="process-body">
-          <h4>Passage Coalescence</h4>
-          <p>Merge fragmented subtitles into coherent paragraphs (~600 characters) preserving time intervals (e.g. <code>02:15–03:40</code>).</p>
-        </div>
-      </div>
-      <div class="process-step">
-        <div class="process-num">4</div>
-        <div class="process-body">
-          <h4>Instant Citations</h4>
-          <p>Ask direct questions or generate summaries with direct timestamp jump-points.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <hr />
-
-  <!-- Use Cases -->
-  <section class="section">
-    <div class="section-label">Capabilities</div>
-    <h2>Core Features</h2>
-    <p>Everything you need for intensive document analysis without losing context.</p>
-
-    <div class="use-cases">
-      <div class="use-card">
-        <div class="uc-icon">🎯</div>
-        <h3>Grounded Q&amp;A</h3>
-        <p>Zero hallucinations: every claim is tied directly to source passages from your files.</p>
-      </div>
-      <div class="use-card">
-        <div class="uc-icon">🔗</div>
-        <h3>Precision Citations</h3>
-        <p>Jump directly to supporting pages or video timestamps.</p>
-      </div>
-      <div class="use-card">
-        <div class="uc-icon">🌤️</div>
-        <h3>Real-time Tools</h3>
-        <p>Built-in weather forecasts, arXiv paper discovery, web search, and live financial quotes.</p>
-      </div>
-      <div class="use-card">
-        <div class="uc-icon">🛡️</div>
-        <h3>Multi-Tenant Isolation</h3>
-        <p>Private collections and session histories securely scoped per verified user in Supabase.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ══════════════════════ API KEY GENERATION MODAL ══════════════════════ -->
-  <div class="landing-modal-backdrop" id="createKeyModalBackdrop">
-    <div class="landing-modal" id="createKeyModal">
+  <!-- ══════════════════════ AUTHENTICATION MODAL ══════════════════════ -->
+  <div class="landing-modal-backdrop" id="authModalBackdrop">
+    <div class="landing-modal" id="authModal">
       
       <!-- Close button -->
-      <button type="button" class="landing-modal-close" id="closeCreateKeyModal" aria-label="Close modal">
+      <button type="button" class="landing-modal-close" id="closeAuthModal" aria-label="Close modal">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="18" y1="6" x2="6" y2="18"></line>
           <line x1="6" y1="6" x2="18" y2="18"></line>
         </svg>
       </button>
 
-      <!-- Step 1: Initial Input Screen -->
-      <div id="modalStepInput">
-        <div class="landing-modal-header">
-          <div class="landing-modal-icon">🔑</div>
-          <div>
-            <h3 class="landing-modal-title">Create Workspace API Key</h3>
-            <p class="landing-modal-sub">Generate your personal key to unlock the workspace and keep your chat sessions &amp; documents saved.</p>
-          </div>
-        </div>
-
-        <div class="landing-input-group">
-          <label for="usernameInput" class="landing-input-label">Username <span style="color: #e74c3c;">*</span></label>
-          <input
-            type="text"
-            id="usernameInput"
-            class="landing-input"
-            placeholder="e.g. john_walker"
-            autocomplete="off"
-            maxlength="40"
-            minlength="3"
-            required
-          />
-          <span class="landing-input-hint">Enter your username (at least 3 characters). If your username already exists, your past chat history will be automatically preserved.</span>
-        </div>
-
-        <div id="modalInputError" class="landing-error-msg" style="display: none;"></div>
-
-        <div class="landing-modal-actions">
-          <button type="button" class="modal-btn-ghost" id="cancelCreateKeyBtn">Cancel</button>
-          <button type="button" class="modal-btn-primary" id="submitCreateKeyBtn">
-            <span id="submitBtnText">Generate Key</span>
-          </button>
-        </div>
+      <!-- Auth Modal Tabs -->
+      <div class="auth-tabs">
+        <button type="button" class="auth-tab-btn active" id="tabSignInBtn">Sign In</button>
+        <button type="button" class="auth-tab-btn" id="tabAdminSignUpBtn">Create Business Account</button>
       </div>
 
-      <!-- Step 1b: Collision Alert Screen (If username already exists) -->
-      <div id="modalStepExists" style="display: none;">
-        <div class="landing-modal-header">
-          <div class="landing-modal-icon" style="background: #fffbe6; color: #d46b08;">⚠️</div>
-          <div>
-            <h3 class="landing-modal-title">Account Already Exists</h3>
-            <p class="landing-modal-sub">An account for <strong id="existingUsernameLabel"></strong> is already registered.</p>
+      <!-- Tab 1: Sign In -->
+      <div id="authPanelSignIn">
+        <div class="auth-sub-toggle">
+          <button type="button" class="active" id="subToggleUserLogin">Personal Use</button>
+          <button type="button" id="subToggleAdminLogin">For Business</button>
+        </div>
+
+        <!-- Personal User Sign In Form -->
+        <form id="userLoginForm">
+          <div class="landing-input-group">
+            <label for="loginUsername" class="landing-input-label">Username</label>
+            <input type="text" id="loginUsername" class="landing-input" placeholder="Enter your username" required autocomplete="username" />
           </div>
-        </div>
+          <div class="landing-input-group">
+            <label for="loginUserPassword" class="landing-input-label">Password</label>
+            <input type="password" id="loginUserPassword" class="landing-input" placeholder="Enter your password" required autocomplete="current-password" />
+            <span class="landing-input-hint">New personal user? Entering an unused username creates your account automatically.</span>
+          </div>
+          <div id="loginUserError" class="landing-error-msg" style="display: none; margin-bottom: 12px;"></div>
+          <div class="landing-modal-actions" style="margin-top: 18px;">
+            <button type="submit" class="modal-btn-primary">Sign In to Personal Workspace</button>
+          </div>
+        </form>
 
-        <div class="landing-alert-box">
-          <p id="existingUserDesc">This user account already exists with saved chat history and documents. You can rotate your API key to generate a fresh key and resume right where you left off, or choose a different username.</p>
-        </div>
-
-        <div class="landing-modal-actions">
-          <button type="button" class="modal-btn-ghost" id="pickDifferentUserBtn">Use Different Name</button>
-          <button type="button" class="modal-btn-primary" id="rotateKeyConfirmBtn">Rotate API Key &amp; Resume Workspace</button>
-        </div>
+        <!-- Business Admin Sign In Form -->
+        <form id="adminLoginForm" style="display: none;">
+          <div class="landing-input-group">
+            <label for="loginAdminEmail" class="landing-input-label">Work Email</label>
+            <input type="email" id="loginAdminEmail" class="landing-input" placeholder="admin@company.com" required autocomplete="email" />
+          </div>
+          <div class="landing-input-group">
+            <label for="loginAdminPassword" class="landing-input-label">Password</label>
+            <input type="password" id="loginAdminPassword" class="landing-input" placeholder="Enter your password" required autocomplete="current-password" />
+          </div>
+          <div id="loginAdminError" class="landing-error-msg" style="display: none; margin-bottom: 12px;"></div>
+          <div class="landing-modal-actions" style="margin-top: 18px;">
+            <button type="submit" class="modal-btn-primary">Sign In as Business Admin</button>
+          </div>
+        </form>
       </div>
 
-      <!-- Step 2: Key Generated Success Screen -->
-      <div id="modalStepSuccess" style="display: none;">
-        <div class="landing-modal-header">
-          <div class="landing-modal-icon" style="background: #f6ffed; color: #389e0d;">✓</div>
-          <div>
-            <h3 class="landing-modal-title">Your API Key is Ready!</h3>
-            <p class="landing-modal-sub">Copy this key now. You can paste it in the workspace prompt to authenticate.</p>
+      <!-- Tab 2: Create Business Account (Admin Register) -->
+      <div id="authPanelAdminSignUp" style="display: none;">
+        <form id="adminRegisterForm">
+          <div class="landing-input-group">
+            <label for="regAdminUsername" class="landing-input-label">Admin Name / Username <span style="color: var(--status-error);">*</span></label>
+            <input type="text" id="regAdminUsername" class="landing-input" placeholder="e.g. AcmeAdmin" minlength="3" required autocomplete="username" />
           </div>
-        </div>
-
-        <div id="accountRestoredBadge" class="badge-restored" style="display: none;">
-          ✓ Linked to existing account — your chat history will be restored!
-        </div>
-
-        <div class="key-box-wrap">
-          <span class="key-box-text" id="generatedKeyText">dk_live_...</span>
-          <button type="button" class="key-copy-btn" id="copyKeyBtn" title="Copy to clipboard">
-            <span id="copyBtnIcon">📋</span>
-            <span id="copyBtnLabel">Copy</span>
-          </button>
-        </div>
-
-        <p class="landing-key-note">
-          🔒 <strong>Save this key:</strong> For security, we never store the raw key in plaintext. Once copied, click below to open your workspace!
-        </p>
-
-        <div class="landing-modal-actions" style="margin-top: 1.5rem;">
-          <button type="button" class="modal-btn-primary" id="openWorkspaceWithKeyBtn" style="width: 100%; justify-content: center;">
-            Launch Workspace &rarr;
-          </button>
-        </div>
+          <div class="landing-input-group">
+            <label for="regAdminEmail" class="landing-input-label">Work Email <span style="color: var(--status-error);">*</span></label>
+            <input type="email" id="regAdminEmail" class="landing-input" placeholder="admin@company.com" required autocomplete="email" />
+            <span class="landing-input-hint">Used to access your Admin Dashboard and manage your deployed assistants.</span>
+          </div>
+          <div class="landing-input-group">
+            <label for="regAdminPassword" class="landing-input-label">Password <span style="color: var(--status-error);">*</span></label>
+            <input type="password" id="regAdminPassword" class="landing-input" placeholder="Create a strong password (min. 6 characters)" minlength="6" required autocomplete="new-password" />
+          </div>
+          <div id="regAdminError" class="landing-error-msg" style="display: none; margin-bottom: 12px;"></div>
+          <div class="landing-modal-actions" style="margin-top: 18px;">
+            <button type="submit" class="modal-btn-primary">Create Business Account</button>
+          </div>
+        </form>
       </div>
 
     </div>
   </div>
 
-  <!-- Footer -->
+  <!-- ══════════════════════ FLOATING BACK-TO-TOP BUTTON ══════════════════════ -->
+  <button type="button" class="back-to-top-btn" id="backToTopBtn" aria-label="Back to top" title="Back to top">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="12" y1="19" x2="12" y2="5"></line>
+      <polyline points="5 12 12 5 19 12"></polyline>
+    </svg>
+  </button>
+
+  <!-- ══════════════════════ FOOTER ══════════════════════ -->
   <footer>
-    DocuVortex: Intelligent Document Reasoning Engine · Powered by LangGraph, Qdrant &amp; Supabase ·
-    <a href="/app">Go to Workspace →</a>
+    <div class="footer-inner">
+      <div>
+        <strong style="color: var(--forest-charcoal); font-family: var(--font-heading); font-size: 1.05rem;">DocuVortex</strong>
+        <p style="margin: 4px 0 0; font-size: 0.84rem;">Intelligent Document Reasoning &amp; Business AI Platform · Powered by LangGraph, Qdrant &amp; Supabase</p>
+      </div>
+    </div>
   </footer>
 
-  <script src="/static/js/landing.js?v=11"></script>
+  <script src="/static/js/landing.js?v=22"></script>
 </body>
 </html>

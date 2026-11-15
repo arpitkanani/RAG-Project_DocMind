@@ -45,6 +45,14 @@ class EmbeddingUnavailableError(Exception):
         self.message = message
 
 
+class VectorStoreUnavailableError(Exception):
+    """Raised when the vector database service (Qdrant) is unreachable or offline."""
+
+    def __init__(self, message: str = "The vector database service (Qdrant) is temporarily unavailable. Please verify your connection or try again."):
+        super().__init__(message)
+        self.message = message
+
+
 class CollectionEmbeddingMismatchError(Exception):
     """Raised when a collection's embedding model or dimension does not match active model."""
 

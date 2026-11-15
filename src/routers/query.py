@@ -19,6 +19,7 @@ from src.exception import (
     CustomException,
     EmbeddingUnavailableError,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.graph.builder import rag_graph
 from src.logger import logging
@@ -62,8 +63,17 @@ async def query(
                 normalize_collection_scope(request),
                 user_id,
             )
-        except (KnowledgeBaseEmptyError, CollectionNotFoundError, Exception):
-            # If no collections exist, invalid collection, or vectorstore offline, allow conversational chitchat through graph
+        except (KnowledgeBaseEmptyError, CollectionNotFoundError):
+            # If no collections exist or invalid collection, allow conversational chitchat through graph
+            collection_scope = []
+        except VectorStoreUnavailableError as exc:
+            logging.warning("Vector store unavailable for query: %s", exc)
+            return build_error_response(
+                status_code=503,
+                error_code="vectorstore_unavailable",
+                message=str(exc) or "The vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your Qdrant connection or try again.",
+            )
+        except Exception:
             collection_scope = []
 
         # Validate that no requested collections have an embedding model / dimension mismatch
@@ -163,6 +173,13 @@ async def query(
             status_code=503,
             error_code="embedding_unavailable",
             message=exc.message,
+        )
+    except VectorStoreUnavailableError as exc:
+        logging.warning("Vector database unavailable during query: %s", exc)
+        return build_error_response(
+            status_code=503,
+            error_code="vectorstore_unavailable",
+            message=str(exc) or "The vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your Qdrant connection or try again.",
         )
     except CollectionEmbeddingMismatchError as exc:
         logging.warning("Collection embedding mismatch: %s", exc)

@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocuVortex – Assistant Administration &amp; Leads</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/css/main.css?v=7" />
+  <link rel="stylesheet" href="/static/css/landing.css?v=23" />
+  <style>
+    :root {
+      --bg-ivory: #F5F2EA;
+      --surface-white: #FFFFFF;
+      --forest-charcoal: #29352D;
+      --forest-charcoal-dark: #1E2721;
+      --forest-charcoal-light: #3D4D42;
+      --forest-charcoal-muted: #677369;
+      --terracotta: #BC704F;
+      --terracotta-hover: #A55D3E;
+      --border-warm: #E5E1D8;
+      --border-focus: #BC704F;
+      --status-green: #398263;
+      --status-red: #C6534E;
+    }
+
+    body {
+      background-color: var(--bg-ivory);
+      color: var(--forest-charcoal);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      margin: 0;
+      padding: 0;
+    }
+
+    /* Admin Nav Header */
+    .dash-nav {
+      background: #35443A;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: 0 4px 20px rgba(41, 53, 45, 0.15);
+    }
+    .dash-nav a.brand-logo {
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #FFFFFF;
+      font-weight: 700;
+      font-size: 1.05rem;
+    }
+    .dash-nav a.brand-logo span.logo-mark {
+      background: var(--terracotta);
+      color: #FFFFFF;
+      font-family: 'Lora', serif;
+      font-weight: 700;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      letter-spacing: -0.5px;
+    }
+    .nav-rag-btn {
+      color: #E5E1D8;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 8px;
+      padding: 7px 14px;
+      font-size: 0.82rem;
+      text-decoration: none;
+      font-weight: 600;
+      transition: all 0.25s ease;
+      display: inline-flex;
+      align-items: center;
+    }
+    .nav-rag-btn:hover {
+      background: var(--terracotta);
+      border-color: var(--terracotta);
+      color: #FFFFFF;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(188, 112, 79, 0.3);
+    }
+    .nav-return-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #E5E1D8;
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s ease;
+    }
+    .nav-return-pill:hover {
+      background: rgba(188, 112, 79, 0.2);
+      border-color: var(--terracotta);
+      color: #FFFFFF;
+      transform: translateX(-2px);
+    }
+
+    .dash-container {
+      max-width: 1200px;
+      margin: 1.5rem auto;
+      padding: 0 1.5rem;
+      width: 100%;
+      flex: 1;
+      box-sizing: border-box;
+    }
+
+    .dash-breadcrumbs {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.82rem;
+      margin-bottom: 1rem;
+      color: var(--forest-charcoal-muted);
+    }
+    .dash-breadcrumbs a {
+      color: var(--forest-charcoal-muted);
+      text-decoration: none;
+      font-weight: 600;
+      transition: color 0.15s;
+    }
+    .dash-breadcrumbs a:hover {
+      color: var(--terracotta);
+    }
+    .dash-breadcrumbs .sep {
+      color: #C2BBB0;
+    }
+    .dash-breadcrumbs .current {
+      color: var(--forest-charcoal);
+      font-weight: 700;
+    }
+
+    .dash-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.25rem;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .dash-title {
+      font-family: 'Lora', serif;
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--forest-charcoal);
+      margin: 0 0 6px;
+      letter-spacing: -0.3px;
+    }
+    .dash-sub {
+      font-size: 0.92rem;
+      color: var(--forest-charcoal-muted);
+      margin: 0;
+    }
+
+    /* Tabs */
+    .dash-tabs {
+      display: flex;
+      gap: 16px;
+      border-bottom: 2px solid var(--border-warm);
+      margin-bottom: 1.25rem;
+    }
+    .dash-tab-btn {
+      background: none;
+      border: none;
+      padding: 10px 18px;
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--forest-charcoal-muted);
+      cursor: pointer;
+      position: relative;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
+      transition: all 0.2s ease;
+    }
+    .dash-tab-btn:hover {
+      color: var(--forest-charcoal);
+    }
+    .dash-tab-btn.active {
+      color: var(--terracotta);
+      border-bottom-color: var(--terracotta);
+    }
+
+    /* Cards Grid - 3 Columns on Desktop so <= 3 cards fit in 1 row */
+    .dash-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 20px;
+    }
+    @media (max-width: 1024px) {
+      .dash-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 640px) {
+      .dash-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .dash-card {
+      background: var(--surface-white);
+      border: 1px solid var(--border-warm);
+      border-radius: 16px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: 0 4px 18px rgba(41, 53, 45, 0.05);
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .dash-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 26px rgba(41, 53, 45, 0.09);
+      border-color: #D5CEBF;
+    }
+    .dash-card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .dash-bot-avatar {
+      width: 46px;
+      height: 46px;
+      border-radius: 12px;
+      background: var(--forest-charcoal);
+      color: #FFFFFF;
+      display: grid;
+      place-items: center;
+      font-family: 'Lora', serif;
+      font-weight: 700;
+      font-size: 1.15rem;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 2px 8px rgba(41, 53, 45, 0.15);
+    }
+    .dash-card-title {
+      margin: 0 0 4px;
+      font-family: 'Lora', serif;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--forest-charcoal);
+    }
+    .dash-card-biz {
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--terracotta);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .dash-card-summary {
+      font-size: 0.88rem;
+      color: var(--forest-charcoal-muted);
+      line-height: 1.5;
+      margin: 0 0 18px;
+    }
+    .dash-card-actions {
+      display: flex;
+      gap: 10px;
+      border-top: 1px solid var(--border-warm);
+      padding-top: 16px;
+      align-items: center;
+    }
+
+    /* Leads Table */
+    .table-container {
+      background: var(--surface-white);
+      border: 1px solid var(--border-warm);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 18px rgba(41, 53, 45, 0.05);
+    }
+    .dash-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    .dash-table th {
+      text-align: left;
+      padding: 14px 18px;
+      color: var(--forest-charcoal);
+      background: #EFECE3;
+      border-bottom: 1px solid var(--border-warm);
+      font-weight: 700;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .dash-table td {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-warm);
+      color: var(--forest-charcoal);
+    }
+    .dash-table tr:last-child td {
+      border-bottom: none;
+    }
+    .dash-table tr:hover td {
+      background-color: #FAF8F3;
+    }
+
+    /* Modal */
+    .edit-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(41, 53, 45, 0.65);
+      backdrop-filter: blur(8px);
+      display: none;
+      place-items: center;
+      z-index: 100;
+      padding: 20px;
+    }
+    .edit-modal-backdrop.open {
+      display: grid;
+    }
+    .edit-modal {
+      background: var(--surface-white);
+      border: 1px solid var(--border-warm);
+      border-radius: 20px;
+      max-width: 620px;
+      width: 100%;
+      padding: 28px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 24px 60px rgba(41, 53, 45, 0.25);
+      box-sizing: border-box;
+    }
+    .edit-modal-title {
+      margin: 0;
+      font-family: 'Lora', serif;
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--forest-charcoal);
+    }
+    .form-group {
+      margin-bottom: 1.1rem;
+    }
+    .form-group label {
+      display: block;
+      font-size: 0.84rem;
+      font-weight: 700;
+      color: var(--forest-charcoal);
+      margin-bottom: 6px;
+    }
+    .form-input {
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid #D5CEBF;
+      background: #FAF8F3;
+      color: var(--forest-charcoal);
+      font-family: inherit;
+      font-size: 0.92rem;
+      box-sizing: border-box;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+    }
+    .form-input:focus {
+      outline: none;
+      border-color: var(--terracotta);
+      background: #FFFFFF;
+      box-shadow: 0 0 0 3px rgba(188, 112, 79, 0.15);
+    }
+    .prompt-preview-textarea {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid #D5CEBF;
+      background: #FAF8F3;
+      color: var(--forest-charcoal);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.84rem;
+      line-height: 1.5;
+      box-sizing: border-box;
+      resize: vertical;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+    }
+    .prompt-preview-textarea:focus {
+      outline: none;
+      border-color: var(--terracotta);
+      background: #FFFFFF;
+      box-shadow: 0 0 0 3px rgba(188, 112, 79, 0.15);
+    }
+
+    /* Buttons */
+    .btn-terracotta {
+      position: relative;
+      overflow: hidden;
+      z-index: 1;
+      background-color: var(--terracotta);
+      color: #FFFFFF;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 18px;
+      font-size: 0.88rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: color 0.3s ease, border-color 0.3s ease, box-shadow 0.25s ease, transform 0.2s ease;
+      box-shadow: 0 2px 8px rgba(188, 112, 79, 0.25);
+    }
+    .btn-terracotta > * {
+      position: relative;
+      z-index: 1;
+    }
+    .btn-terracotta::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 0%;
+      height: 100%;
+      background-color: var(--forest-charcoal, #29352D);
+      z-index: -1;
+      transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      border-radius: inherit;
+    }
+    .btn-terracotta:hover::before {
+      width: 100%;
+    }
+    .btn-terracotta:hover {
+      color: #FFFFFF !important;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(41, 53, 45, 0.32);
+    }
+    .btn-forest-ghost {
+      background: transparent;
+      color: var(--forest-charcoal);
+      border: 1px solid var(--forest-charcoal);
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+    .btn-forest-ghost:hover {
+      background: var(--forest-charcoal);
+      color: #FFFFFF;
+    }
+    .btn-lead-pill {
+      background: rgba(57, 130, 99, 0.1);
+      color: var(--status-green);
+      border: 1px solid rgba(57, 130, 99, 0.3);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-lead-pill:hover {
+      background: var(--status-green);
+      color: #FFFFFF;
+    }
+    .btn-signout {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      background: rgba(198, 83, 78, 0.12);
+      color: #FF9B97;
+      border: 1px solid rgba(198, 83, 78, 0.3);
+      border-radius: 8px;
+      padding: 6px 14px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-signout svg {
+      flex-shrink: 0;
+      transition: stroke 0.2s ease;
+    }
+    .btn-signout:hover {
+      background: var(--status-red);
+      color: #FFFFFF;
+    }
+    .btn-signout:hover svg {
+      stroke: #FFFFFF;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navigation -->
+  <header class="dash-nav">
+    <div style="display: flex; align-items: center; gap: 16px;">
+      <a href="/" class="brand-logo" title="DocuVortex Home">
+        <span class="logo-mark">DV</span> DocuVortex
+      </a>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <a href="/app" class="nav-rag-btn">Explore RAG Workspace</a>
+      <button type="button" id="adminSignOutBtn" class="btn-signout">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+          <polyline points="16 17 21 12 16 7"></polyline>
+          <line x1="21" y1="12" x2="9" y2="12"></line>
+        </svg>
+        <span>Sign Out</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="dash-container">
+    <div class="dash-breadcrumbs">
+      <a href="/" title="Return to Overview">&larr; DocuVortex Platform</a>
+      <span class="sep">/</span>
+      <span class="current">Assistant Administration &amp; Leads</span>
+    </div>
+    <div class="dash-header-row">
+      <div>
+        <h1 class="dash-title">Assistant Administration &amp; Leads</h1>
+        <p class="dash-sub">Manage your deployed custom business assistants, inspect qualified customer inquiries, and update business knowledge.</p>
+      </div>
+      <a href="/builder" class="btn-terracotta" style="padding: 10px 20px;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        New Business Assistant
+      </a>
+    </div>
+
+    <!-- Tabs -->
+    <div class="dash-tabs">
+      <button type="button" class="dash-tab-btn active" id="tabMyBots">Deployed Assistants</button>
+      <button type="button" class="dash-tab-btn" id="tabLeads">Customer Inquiries &amp; Leads</button>
+    </div>
+
+    <!-- Tab 1: My Deployed Bots -->
+    <section id="panelMyBots">
+      <div class="dash-grid" id="myBotsGrid">
+        <div style="grid-column: 1 / -1; text-align: center; color: var(--forest-charcoal-muted); padding: 50px;">
+          Loading your deployed assistants...
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Leads & Inquiries -->
+    <section id="panelLeads" style="display: none;">
+      <div class="table-container">
+        <table class="dash-table">
+          <thead>
+            <tr>
+              <th>Date &amp; Time</th>
+              <th>Assistant Persona</th>
+              <th>Customer Name</th>
+              <th>Contact Info</th>
+              <th>Inquiry / Intent</th>
+            </tr>
+          </thead>
+          <tbody id="leadsTableBody">
+            <tr>
+              <td colspan="5" style="text-align: center; color: var(--forest-charcoal-muted); padding: 36px;">
+                No customer inquiries logged yet.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- ══════════════════════ EDIT ASSISTANT MODAL ══════════════════════ -->
+  <div class="edit-modal-backdrop" id="editBotModalBackdrop">
+    <div class="edit-modal">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border-warm); padding-bottom: 12px;">
+        <h3 class="edit-modal-title">Edit Assistant Configuration</h3>
+        <button type="button" id="closeEditModalBtn" style="background: none; border: none; color: var(--forest-charcoal-muted); font-size: 1.3rem; cursor: pointer; padding: 4px;">✕</button>
+      </div>
+
+      <form id="editBotForm">
+        <input type="hidden" id="editBotId" />
+        <div class="form-group">
+          <label for="editPersonaName">Persona Name</label>
+          <input type="text" id="editPersonaName" class="form-input" placeholder="e.g. Maya - Senior Solutions Advisor" required />
+        </div>
+        <div class="form-group">
+          <label for="editBizName">Business Name</label>
+          <input type="text" id="editBizName" class="form-input" placeholder="e.g. Acme Cloud Corp" required />
+        </div>
+        <div class="form-group">
+          <label for="editWebsiteUrl">Website URL</label>
+          <input type="url" id="editWebsiteUrl" class="form-input" placeholder="https://example.com" />
+        </div>
+        <div class="form-group">
+          <label for="editSummary">Directory Summary</label>
+          <input type="text" id="editSummary" class="form-input" placeholder="Concise one-line summary for the public Assistant Directory" />
+        </div>
+        <div class="form-group">
+          <label for="editSystemPrompt">Dynamic Master Prompt</label>
+          <textarea id="editSystemPrompt" class="prompt-preview-textarea" style="height: 180px;" placeholder="System prompt instructions governing assistant behavior and boundaries"></textarea>
+        </div>
+
+        <div id="editBotError" style="display: none; color: var(--status-red); font-size: 0.88rem; margin-bottom: 14px; padding: 10px; background: rgba(198, 83, 78, 0.08); border-radius: 8px; border: 1px solid rgba(198, 83, 78, 0.2);"></div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 1.5rem; border-top: 1px solid var(--border-warm); padding-top: 16px;">
+          <button type="button" id="cancelEditModalBtn" class="btn-forest-ghost" style="padding: 9px 18px;">Cancel</button>
+          <button type="submit" class="btn-terracotta" style="padding: 9px 22px;">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/admin_dashboard.js?v=8"></script>
+</body>
+</html>

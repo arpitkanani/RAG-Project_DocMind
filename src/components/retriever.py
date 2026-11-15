@@ -18,6 +18,7 @@ from src.exception import (
     CollectionNotFoundError,
     CustomException,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.logger import logging
 
@@ -163,7 +164,7 @@ class Retriever:
                 len(target_collections),
             )
             return docs
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError):
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
             raise
         except Exception as e:
             raise CustomException(e, sys)
@@ -560,7 +561,7 @@ class Retriever:
                 total_chars += doc_len
 
             return selected
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError):
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
             raise
         except Exception as e:
             raise CustomException(e, sys)

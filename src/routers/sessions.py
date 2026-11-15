@@ -2,11 +2,13 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import anyio
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.auth import get_current_user
 from src.components.memory_manager import MemoryManager
+from src.database.db import get_db_cursor
 from src.logger import logging
 from src.utils.helpers import (
     adelete_collections,
@@ -22,7 +24,7 @@ router = APIRouter(tags=["Sessions & Memory"])
 
 # In-memory session details cache for sub-5ms chat switching (zero infrastructure cost)
 _SESSION_DETAILS_CACHE: Dict[Tuple[str, str], Tuple[float, Any]] = {}
-_SESSION_CACHE_TTL_SECONDS = 30.0
+_SESSION_CACHE_TTL_SECONDS = 60.0
 
 
 def invalidate_session_cache(session_id: Optional[str] = None, user_id: Optional[str] = None):
@@ -81,17 +83,150 @@ async def new_session():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.get("/sessions/bootstrap")
+@router.get("/api/sessions/bootstrap")
+async def bootstrap_workspace(
+    preferred_session_id: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Consolidated single-roundtrip workspace bootstrapper:
+    1. Fetches user identity.
+    2. Fetches all sessions for sidebar (ordered by updated_at DESC).
+    3. Fetches active/latest session messages and attachments in ONE single database transaction.
+    Replaces 3-stage HTTP waterfall (session-status + sessions + default) for instant sub-second boot.
+    """
+    def _do_bootstrap():
+        with get_db_cursor(commit=False) as cur:
+            # 1. Fetch user info
+            cur.execute("SELECT id, username, email, role FROM users WHERE id = %s LIMIT 1", (user_id,))
+            user_row = cur.fetchone() or {}
+
+            # 2. Fetch session list (limit 100)
+            cur.execute(
+                """
+                SELECT session_id, COALESCE(NULLIF(TRIM(title), ''), 'New Chat') AS title, updated_at, created_at
+                FROM sessions
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 100;
+                """,
+                (user_id,),
+            )
+            session_rows = cur.fetchall()
+            sessions = []
+            for row in session_rows:
+                last_active = row["updated_at"] or row["created_at"]
+                sessions.append({
+                    "session_id": row["session_id"],
+                    "title": row["title"],
+                    "message_count": 1,
+                    "attachment_count": 0,
+                    "last_active": last_active.isoformat() if hasattr(last_active, "isoformat") else str(last_active),
+                    "last_active_label": last_active.strftime("%b %d, %H:%M") if hasattr(last_active, "strftime") else str(last_active),
+                })
+
+            # 3. Active session candidate: preferred session if valid, else first session in list, else 'default'
+            active_session_id = None
+            if preferred_session_id and any(s["session_id"] == preferred_session_id for s in sessions):
+                active_session_id = preferred_session_id
+            elif sessions:
+                active_session_id = sessions[0]["session_id"]
+            else:
+                active_session_id = "default"
+
+            # Fetch active session record
+            cur.execute(
+                "SELECT title, created_at, updated_at FROM sessions WHERE session_id = %s AND user_id = %s LIMIT 1;",
+                (active_session_id, user_id),
+            )
+            s_row = cur.fetchone() or {}
+
+            # Fetch active session messages
+            cur.execute(
+                """
+                SELECT role, content, attachments, created_at
+                FROM messages
+                WHERE session_id = %s
+                ORDER BY created_at ASC
+                LIMIT 100;
+                """,
+                (active_session_id,),
+            )
+            msg_rows = cur.fetchall()
+            messages = []
+            for r in msg_rows:
+                messages.append({
+                    "role": r["role"],
+                    "content": r["content"],
+                    "attachments": r.get("attachments") or [],
+                    "timestamp": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"]),
+                })
+
+            # Fetch active session attachments
+            cur.execute(
+                """
+                SELECT name, collection, source_type AS type,
+                       COALESCE(embedding_model, 'text-embedding-3-small') AS embedding_model,
+                       COALESCE(vector_dim, 1536) AS vector_dim,
+                       extra, created_at
+                FROM attachments
+                WHERE session_id = %s
+                ORDER BY created_at ASC;
+                """,
+                (active_session_id,),
+            )
+            att_rows = cur.fetchall()
+            attachments = []
+            for r in att_rows:
+                attachments.append({
+                    "name": r["name"],
+                    "collection": r["collection"],
+                    "type": r.get("type", "file"),
+                    "embedding_model": r.get("embedding_model"),
+                    "vector_dim": r.get("vector_dim"),
+                    "extra": r.get("extra") or {},
+                })
+
+            active_session = {
+                "session_id": active_session_id,
+                "title": s_row.get("title") or (sessions[0]["title"] if sessions else "New Chat"),
+                "messages": messages,
+                "attachments": attachments,
+            }
+
+            return {
+                "authenticated": True,
+                "user": {
+                    "id": str(user_row.get("id", user_id)),
+                    "username": user_row.get("username", "User"),
+                    "email": user_row.get("email", ""),
+                    "role": user_row.get("role", "user"),
+                },
+                "sessions": sessions,
+                "active_session": active_session,
+            }
+
+    try:
+        data = await anyio.to_thread.run_sync(_do_bootstrap)
+        return data
+    except Exception as exc:
+        logging.exception("Failed to bootstrap workspace")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/sessions")
+@router.get("/api/sessions")
 async def list_sessions(user_id: str = Depends(get_current_user)):
     try:
-        # 1. Automatically prune any sessions older than 7 days, deleting their Qdrant collections & DB records
-        expired_sessions = await MemoryManager.aprune_expired_sessions(user_id=user_id)
+        # 1. Offload 7-day expiration cleanup to background task (zero latency on HTTP request)
+        asyncio.create_task(MemoryManager.aprune_expired_sessions(user_id=user_id))
 
-        # 2. List remaining active sessions in a single fast query
+        # 2. List remaining active sessions in a single fast indexed query
         sessions = await MemoryManager.alist_sessions(user_id=user_id)
         return {
             "sessions": sessions,
-            "expired_sessions": expired_sessions,
+            "expired_sessions": [],
         }
     except Exception as exc:
         logging.exception("Failed to list sessions")

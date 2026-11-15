@@ -24,6 +24,7 @@ from src.exception import (
     CustomException,
     EmbeddingUnavailableError,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.graph.builder import rag_graph
 from src.logger import logging
@@ -467,6 +468,13 @@ class QueryManager:
                 "error_code": "collection_needs_reindex",
                 "message": exc.message,
             })
+        except VectorStoreUnavailableError as exc:
+            logging.warning("Vector store unavailable: %s", exc)
+            active_query.broadcast({
+                "type": "error",
+                "error_code": "vectorstore_unavailable",
+                "message": exc.message if hasattr(exc, "message") else "The vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your Qdrant connection or try again.",
+            })
         except Exception as exc:
             logging.exception("Exception in background query workflow for session %s", session_id)
             err_str = str(exc).lower()
@@ -476,6 +484,9 @@ class QueryManager:
             elif "vector dimension" in err_str or "dimension error" in err_str or "mismatch" in err_str:
                 msg = "This document was indexed with a different embedding model. Please switch your embedding model in Settings or re-upload the document."
                 code = "collection_needs_reindex"
+            elif "qdrant" in err_str or "vector database" in err_str or "client has been closed" in err_str:
+                msg = "The vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your Qdrant connection or try again."
+                code = "vectorstore_unavailable"
             else:
                 msg = "I encountered an error generating the response. Please try again."
                 code = "generation_failed"
