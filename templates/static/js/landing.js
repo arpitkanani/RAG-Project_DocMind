@@ -67,6 +67,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const navAdminDashboardLink = document.getElementById("navAdminDashboardLink");
   const navExploreRagLink = document.getElementById("navExploreRagLink");
 
+  // Mobile nav buttons & groups
+  const mobileNavSignInBtn = document.getElementById("mobileNavSignInBtn");
+  const mobileNavAdminRegisterBtn = document.getElementById("mobileNavAdminRegisterBtn");
+  const mobileNavSignOutBtn = document.getElementById("mobileNavSignOutBtn");
+  const mobileNavGuestGroup = document.getElementById("mobileNavGuestGroup");
+  const mobileNavUserGroup = document.getElementById("mobileNavUserGroup");
+  const mobileNavUserBadge = document.getElementById("mobileNavUserBadge");
+  const mobileNavAdminDashboardLink = document.getElementById("mobileNavAdminDashboardLink");
+  const mobileNavExploreRagLink = document.getElementById("mobileNavExploreRagLink");
+
   // Tab buttons & Panels
   const tabSignInBtn = document.getElementById("tabSignInBtn");
   const tabAdminSignUpBtn = document.getElementById("tabAdminSignUpBtn");
@@ -230,23 +240,22 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (err) {}
         showToast("Please sign in or create a business account to build an assistant.", "info");
         openAuthModal("admin-signup");
+        return;
       }
-    });
-  }
 
-  const marketplaceCreateBotBtn = document.getElementById("marketplaceCreateBotBtn");
-  if (marketplaceCreateBotBtn) {
-    marketplaceCreateBotBtn.addEventListener("click", (e) => {
-      if (!currentUser || currentUser.role !== "admin") {
+      if (currentUser.role !== "admin") {
         e.preventDefault();
         try {
           sessionStorage.setItem("pending_redirect", "/builder");
         } catch (err) {}
-        showToast("Please sign in as a Business Admin to build assistants.", "info");
-        openAuthModal("signin");
+        showToast("Building custom assistants requires an Enterprise Business account. Please register your business account.", "info", 4000);
+        openAuthModal("admin-signup");
+        return;
       }
     });
   }
+
+
 
   if (closeAuthModalBtn) closeAuthModalBtn.addEventListener("click", closeAuthModal);
   if (authBackdrop) {
@@ -266,19 +275,64 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Mobile navigation drawer toggle
   const mobileNavToggle = document.getElementById("mobileNavToggle");
-  const navMenu = document.querySelector(".nav-menu");
+  const navMenu = document.getElementById("navMenu") || document.querySelector(".nav-menu");
+
+  function closeMobileNav() {
+    if (navMenu) navMenu.classList.remove("open");
+    if (mobileNavToggle) {
+      mobileNavToggle.classList.remove("open");
+      mobileNavToggle.setAttribute("aria-expanded", "false");
+    }
+  }
+
   if (mobileNavToggle && navMenu) {
     mobileNavToggle.addEventListener("click", () => {
-      navMenu.style.display = navMenu.style.display === "flex" ? "none" : "flex";
-      navMenu.style.flexDirection = "column";
-      navMenu.style.position = "absolute";
-      navMenu.style.top = "100%";
-      navMenu.style.left = "0";
-      navMenu.style.right = "0";
-      navMenu.style.background = "var(--bg-ivory)";
-      navMenu.style.padding = "1rem 2rem";
-      navMenu.style.borderBottom = "1px solid var(--border-warm)";
-      navMenu.style.boxShadow = "var(--shadow-elevated)";
+      const isOpen = navMenu.classList.toggle("open");
+      mobileNavToggle.classList.toggle("open", isOpen);
+      mobileNavToggle.setAttribute("aria-expanded", String(isOpen));
+    });
+
+    // Auto-close on link click
+    navMenu.querySelectorAll(".nav-menu-link").forEach((link) => {
+      link.addEventListener("click", () => closeMobileNav());
+    });
+
+    // Auto-close on click outside
+    document.addEventListener("click", (e) => {
+      if (
+        navMenu.classList.contains("open") &&
+        !navMenu.contains(e.target) &&
+        !mobileNavToggle.contains(e.target)
+      ) {
+        closeMobileNav();
+      }
+    });
+
+    // Auto-close on Escape key
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && navMenu.classList.contains("open")) {
+        closeMobileNav();
+      }
+    });
+  }
+
+  // Mobile Auth Actions wiring
+  if (mobileNavSignInBtn) {
+    mobileNavSignInBtn.addEventListener("click", () => {
+      closeMobileNav();
+      openAuthModal("signin");
+    });
+  }
+  if (mobileNavAdminRegisterBtn) {
+    mobileNavAdminRegisterBtn.addEventListener("click", () => {
+      closeMobileNav();
+      openAuthModal("admin-signup");
+    });
+  }
+  if (mobileNavSignOutBtn) {
+    mobileNavSignOutBtn.addEventListener("click", () => {
+      closeMobileNav();
+      signOut();
     });
   }
 
@@ -377,6 +431,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Check URL params for direct actions (deferred so checkAuthAndResume runs first)
   const urlParams = new URLSearchParams(window.location.search);
   const actionParam = urlParams.get("action");
+  const roleParam = urlParams.get("role");
   if (actionParam) {
     setTimeout(() => {
       if (!currentUser) {
@@ -388,6 +443,11 @@ document.addEventListener("DOMContentLoaded", () => {
           openAuthModal("user-signup");
         }
       } else {
+        // If logged in as normal user and redirected from an admin-guarded route
+        if (currentUser.role !== "admin" && (actionParam === "register_admin" || roleParam === "admin")) {
+          showToast("Building custom assistants requires an Enterprise Business account. Please register your business account.", "info", 4000);
+          openAuthModal("admin-signup");
+        }
         if (window.location.search) {
           window.history.replaceState({}, document.title, window.location.pathname);
         }
@@ -656,7 +716,11 @@ document.addEventListener("DOMContentLoaded", () => {
         navUserGroup.classList.remove("auth-hidden");
         navUserGroup.classList.add("auth-visible");
         navUserGroup.style.removeProperty("display");
-        navUserGroup.style.setProperty("display", "flex", "important");
+        if (window.innerWidth > 960) {
+          navUserGroup.style.setProperty("display", "flex");
+        } else {
+          navUserGroup.style.setProperty("display", "none", "important");
+        }
       }
 
       if (navUserBadge) {
@@ -664,6 +728,11 @@ document.addEventListener("DOMContentLoaded", () => {
         const displayName = user.username || (user.email ? user.email.split("@")[0] : "User");
         navUserBadge.textContent = `${roleLabel}: ${displayName}`;
       }
+
+      const expCreateBtn = document.getElementById("expCardCreateAssistantBtn");
+      const expRegBtn = document.getElementById("expCardAdminRegisterBtn");
+      const bridgeCreateBtn = document.getElementById("bridgeCreateAssistantBtn");
+      const bridgeRegBtn = document.getElementById("bridgeAdminRegisterBtn");
 
       if (user.role === "admin") {
         if (navAdminDashboardLink) {
@@ -675,6 +744,22 @@ document.addEventListener("DOMContentLoaded", () => {
           navExploreRagLink.style.removeProperty("display");
           navExploreRagLink.style.setProperty("display", "none", "important");
         }
+        if (expCreateBtn) {
+          expCreateBtn.style.removeProperty("display");
+          expCreateBtn.style.setProperty("display", "inline-flex", "important");
+        }
+        if (expRegBtn) {
+          expRegBtn.style.removeProperty("display");
+          expRegBtn.style.setProperty("display", "none", "important");
+        }
+        if (bridgeCreateBtn) {
+          bridgeCreateBtn.style.removeProperty("display");
+          bridgeCreateBtn.style.setProperty("display", "inline-flex", "important");
+        }
+        if (bridgeRegBtn) {
+          bridgeRegBtn.style.removeProperty("display");
+          bridgeRegBtn.style.setProperty("display", "none", "important");
+        }
       } else {
         if (navAdminDashboardLink) {
           navAdminDashboardLink.style.removeProperty("display");
@@ -685,9 +770,63 @@ document.addEventListener("DOMContentLoaded", () => {
           navExploreRagLink.style.setProperty("display", "inline-flex", "important");
           navExploreRagLink.className = "nav-link-primary";
         }
+        if (expCreateBtn) {
+          expCreateBtn.style.removeProperty("display");
+          expCreateBtn.style.setProperty("display", "none", "important");
+        }
+        if (expRegBtn) {
+          expRegBtn.style.removeProperty("display");
+          expRegBtn.style.setProperty("display", "inline-flex", "important");
+        }
+        if (bridgeCreateBtn) {
+          bridgeCreateBtn.style.removeProperty("display");
+          bridgeCreateBtn.style.setProperty("display", "none", "important");
+        }
+        if (bridgeRegBtn) {
+          bridgeRegBtn.style.removeProperty("display");
+          bridgeRegBtn.style.setProperty("display", "inline-flex", "important");
+        }
+      }
+
+      // Sync mobile navigation auth elements
+      if (mobileNavGuestGroup) mobileNavGuestGroup.style.display = "none";
+      if (mobileNavUserGroup) mobileNavUserGroup.style.display = "flex";
+      if (mobileNavUserBadge) {
+        const roleLabel = user.role === "admin" ? "Admin" : "User";
+        const displayName = user.username || (user.email ? user.email.split("@")[0] : "User");
+        mobileNavUserBadge.textContent = `${roleLabel}: ${displayName}`;
+      }
+      if (user.role === "admin") {
+        if (mobileNavAdminDashboardLink) mobileNavAdminDashboardLink.style.display = "inline-flex";
+        if (mobileNavExploreRagLink) mobileNavExploreRagLink.style.display = "none";
+      } else {
+        if (mobileNavAdminDashboardLink) mobileNavAdminDashboardLink.style.display = "none";
+        if (mobileNavExploreRagLink) mobileNavExploreRagLink.style.display = "inline-flex";
       }
     } else {
       currentUser = null;
+
+      // Experience Card B & How It Works: Guest mode shows "Create Business Account →"
+      const expCreateBtn = document.getElementById("expCardCreateAssistantBtn");
+      const expRegBtn = document.getElementById("expCardAdminRegisterBtn");
+      if (expCreateBtn) {
+        expCreateBtn.style.removeProperty("display");
+        expCreateBtn.style.setProperty("display", "none", "important");
+      }
+      if (expRegBtn) {
+        expRegBtn.style.removeProperty("display");
+        expRegBtn.style.setProperty("display", "inline-flex", "important");
+      }
+      const bridgeCreateBtn = document.getElementById("bridgeCreateAssistantBtn");
+      const bridgeRegBtn = document.getElementById("bridgeAdminRegisterBtn");
+      if (bridgeCreateBtn) {
+        bridgeCreateBtn.style.removeProperty("display");
+        bridgeCreateBtn.style.setProperty("display", "none", "important");
+      }
+      if (bridgeRegBtn) {
+        bridgeRegBtn.style.removeProperty("display");
+        bridgeRegBtn.style.setProperty("display", "inline-flex", "important");
+      }
 
       // 1. Remove early static style injected by document.write if present
       const earlyStyle = document.getElementById("earlyNavAuthStyle");
@@ -711,7 +850,11 @@ document.addEventListener("DOMContentLoaded", () => {
         navGuestGroup.classList.remove("auth-hidden");
         navGuestGroup.classList.add("auth-visible");
         navGuestGroup.style.removeProperty("display");
-        navGuestGroup.style.setProperty("display", "flex", "important");
+        if (window.innerWidth > 960) {
+          navGuestGroup.style.setProperty("display", "flex");
+        } else {
+          navGuestGroup.style.setProperty("display", "none", "important");
+        }
       }
 
       // 4. Hide auth-dependent navigation links
@@ -724,13 +867,15 @@ document.addEventListener("DOMContentLoaded", () => {
         navExploreRagLink.style.setProperty("display", "none", "important");
       }
 
-      // 5. Instantly remove all bot edit buttons and all admin-only UI
+      // Sync mobile navigation auth elements for guest mode
+      if (mobileNavUserBadge) mobileNavUserBadge.textContent = "";
+      if (mobileNavUserGroup) mobileNavUserGroup.style.display = "none";
+      if (mobileNavGuestGroup) mobileNavGuestGroup.style.display = "flex";
+      if (mobileNavAdminDashboardLink) mobileNavAdminDashboardLink.style.display = "none";
+      if (mobileNavExploreRagLink) mobileNavExploreRagLink.style.display = "inline-flex";
+
+      // 5. Instantly remove all bot edit buttons
       document.querySelectorAll(".bot-edit-btn").forEach((el) => el.remove());
-      const _mcbBtn = document.getElementById("marketplaceCreateBotBtn");
-      if (_mcbBtn) {
-        _mcbBtn.style.removeProperty("display");
-        _mcbBtn.style.setProperty("display", "none", "important");
-      }
     }
   }
 
@@ -759,6 +904,7 @@ document.addEventListener("DOMContentLoaded", () => {
       sessionStorage.removeItem("docuvortex.user");
       sessionStorage.removeItem("docuvortex.activeSessionId");
       sessionStorage.removeItem("pending_redirect");
+      sessionStorage.removeItem("docuvortex.public_bots");
     } catch (e) {}
 
     // 3. Immediate synchronous UI purge: guest navbar, remove all .bot-edit-btn, hide admin links
@@ -780,11 +926,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 6. Defensive post-render sweep: ensure zero .bot-edit-btn elements remain anywhere in DOM
     document.querySelectorAll(".bot-edit-btn").forEach((el) => el.remove());
-    const _mcbBtn = document.getElementById("marketplaceCreateBotBtn");
-    if (_mcbBtn) {
-      _mcbBtn.style.removeProperty("display");
-      _mcbBtn.style.setProperty("display", "none", "important");
-    }
 
     // 7. Toast confirmation
     showToast("Signed out successfully.", "info");
@@ -877,6 +1018,72 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // ══════════════════════ BOT MARKETPLACE SHOWCASE ══════════════════════
+  function renderMarketplaceBots(bots) {
+    if (!botsMarketplaceGrid) return;
+
+    if (!bots || bots.length === 0) {
+      botsMarketplaceGrid.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 40px; background: var(--surface-white); border-radius: 16px; border: 1px dashed var(--border-warm);">
+          <div style="font-size: 2rem; margin-bottom: 8px;">🤖</div>
+          <h4 style="margin: 0 0 6px; color: var(--forest-charcoal); font-family: var(--font-heading); font-size: 1.2rem;">No Deployed Assistants Yet</h4>
+          <p style="margin: 0 0 16px; font-size: 0.88rem;">Register as a Business Admin to build and deploy your first custom AI assistant.</p>
+          <a href="/builder" class="nav-link-primary" style="display: inline-block;">Build Your Business Bot →</a>
+        </div>`;
+      return;
+    }
+
+    let userOwnsAnyBot = false;
+    let html = "";
+    bots.forEach((bot) => {
+      const botId = String(bot.bot_id || bot.id);
+      const initial = (bot.persona_name || bot.business_name || "B").slice(0, 1).toUpperCase();
+      // Strict ownership: edit button appears ONLY for the creator of this specific bot
+      const isAdminOwner = Boolean(currentUser && currentUser.id && String(currentUser.id) === String(bot.admin_id));
+      if (isAdminOwner) userOwnsAnyBot = true;
+
+      html += `
+        <div class="bot-card" data-bot-id="${escapeHtml(botId)}">
+          <div>
+            <div class="bot-card-top">
+              <div class="bot-avatar">${initial}</div>
+              <div class="bot-meta">
+                <h3 class="bot-persona">${escapeHtml(bot.persona_name || "Business Assistant")}</h3>
+                <div class="bot-biz-name">${escapeHtml(bot.business_name || "Company Bot")}</div>
+              </div>
+            </div>
+            <p class="bot-summary">${escapeHtml(bot.summary || bot.business_summary || "Ready to assist customers with product details, pricing, and scheduling.")}</p>
+          </div>
+          <div class="bot-card-footer">
+            <a href="/bot/${escapeHtml(botId)}" class="bot-chat-btn" data-bot-id="${escapeHtml(botId)}" target="_blank">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              Start Conversation →
+            </a>
+            ${
+              isAdminOwner
+                ? `<a href="/admin-dashboard?edit=${escapeHtml(botId)}" class="bot-edit-btn" data-bot-id="${escapeHtml(botId)}" title="Edit your business bot">
+                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                       <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                     </svg>
+                     Edit
+                   </a>`
+                : ""
+            }
+          </div>
+        </div>`;
+    });
+
+    botsMarketplaceGrid.innerHTML = html;
+
+    // If user owns any bots or is role admin, enable the Admin Dashboard link
+    const showAdminActions = Boolean(currentUser && (currentUser.role === "admin" || userOwnsAnyBot));
+    if (navAdminDashboardLink) {
+      navAdminDashboardLink.style.removeProperty("display");
+      navAdminDashboardLink.style.setProperty("display", showAdminActions ? "inline-flex" : "none", "important");
+    }
+  }
+
   async function loadMarketplaceBots() {
     if (!botsMarketplaceGrid) return;
 
@@ -884,79 +1091,19 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/business-bot/public/list");
       if (!res.ok) throw new Error("Could not load bots");
       const bots = await res.json();
-
-      if (!bots || bots.length === 0) {
-        botsMarketplaceGrid.innerHTML = `
-          <div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 40px; background: var(--surface-white); border-radius: 16px; border: 1px dashed var(--border-warm);">
-            <div style="font-size: 2rem; margin-bottom: 8px;">🤖</div>
-            <h4 style="margin: 0 0 6px; color: var(--forest-charcoal); font-family: var(--font-heading); font-size: 1.2rem;">No Deployed Assistants Yet</h4>
-            <p style="margin: 0 0 16px; font-size: 0.88rem;">Register as a Business Admin to build and deploy your first custom AI assistant.</p>
-            <a href="/builder" class="nav-link-primary" style="display: inline-block;">Build Your Business Bot →</a>
-          </div>`;
-        return;
-      }
-
-      let userOwnsAnyBot = false;
-      let html = "";
-      bots.forEach((bot) => {
-        const botId = String(bot.bot_id || bot.id);
-        const initial = (bot.persona_name || bot.business_name || "B").slice(0, 1).toUpperCase();
-        // Strict ownership: edit button appears ONLY for the creator of this specific bot
-        const isAdminOwner = Boolean(currentUser && currentUser.id && String(currentUser.id) === String(bot.admin_id));
-        if (isAdminOwner) userOwnsAnyBot = true;
-
-        html += `
-          <div class="bot-card" data-bot-id="${escapeHtml(botId)}">
-            <div>
-              <div class="bot-card-top">
-                <div class="bot-avatar">${initial}</div>
-                <div class="bot-meta">
-                  <h3 class="bot-persona">${escapeHtml(bot.persona_name || "Business Assistant")}</h3>
-                  <div class="bot-biz-name">${escapeHtml(bot.business_name || "Company Bot")}</div>
-                </div>
-              </div>
-              <p class="bot-summary">${escapeHtml(bot.summary || bot.business_summary || "Ready to assist customers with product details, pricing, and scheduling.")}</p>
-            </div>
-            <div class="bot-card-footer">
-              <a href="/bot/${escapeHtml(botId)}" class="bot-chat-btn" data-bot-id="${escapeHtml(botId)}" target="_blank">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-                Start Conversation →
-              </a>
-              ${
-                isAdminOwner
-                  ? `<a href="/admin-dashboard?edit=${escapeHtml(botId)}" class="bot-edit-btn" data-bot-id="${escapeHtml(botId)}" title="Edit your business bot">
-                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                         <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                       </svg>
-                       Edit
-                     </a>`
-                  : ""
-              }
-            </div>
-          </div>`;
-      });
-
-      botsMarketplaceGrid.innerHTML = html;
-
-      // If user owns any bots or is role admin, enable the Admin Dashboard link and Create Bot button
-      const showAdminActions = Boolean(currentUser && (currentUser.role === "admin" || userOwnsAnyBot));
-      if (navAdminDashboardLink) {
-        navAdminDashboardLink.style.removeProperty("display");
-        navAdminDashboardLink.style.setProperty("display", showAdminActions ? "inline-flex" : "none", "important");
-      }
-      const marketplaceCreateBotBtn = document.getElementById("marketplaceCreateBotBtn");
-      if (marketplaceCreateBotBtn) {
-        marketplaceCreateBotBtn.style.removeProperty("display");
-        marketplaceCreateBotBtn.style.setProperty("display", showAdminActions ? "inline-flex" : "none", "important");
-      }
+      try {
+        sessionStorage.setItem("docuvortex.public_bots", JSON.stringify(bots));
+      } catch (e) {}
+      renderMarketplaceBots(bots);
     } catch (e) {
       console.error("Marketplace fetch error:", e);
-      botsMarketplaceGrid.innerHTML = `
-        <div style="grid-column: 1 / -1; text-align: center; color: var(--muted, #5e657c); padding: 30px;">
-          Failed to load business bots. Please refresh the page.
-        </div>`;
+      // Only display error placeholder if grid has no cached cards
+      if (!botsMarketplaceGrid.hasChildNodes() || botsMarketplaceGrid.children.length === 0) {
+        botsMarketplaceGrid.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align: center; color: var(--muted, #5e657c); padding: 30px;">
+            Failed to load business bots. Please refresh the page.
+          </div>`;
+      }
     }
   }
 
@@ -1007,6 +1154,16 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Initialize
+  // Initialize: Pre-hydrate public bots marketplace from session cache for instant 0ms perception
+  try {
+    const cachedPublicBotsRaw = sessionStorage.getItem("docuvortex.public_bots");
+    if (cachedPublicBotsRaw) {
+      const cachedPublicBots = JSON.parse(cachedPublicBotsRaw);
+      if (Array.isArray(cachedPublicBots) && cachedPublicBots.length > 0) {
+        renderMarketplaceBots(cachedPublicBots);
+      }
+    }
+  } catch (e) {}
+
   checkAuthAndResume();
 });

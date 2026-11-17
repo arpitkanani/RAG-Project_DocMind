@@ -872,7 +872,7 @@ button {
 .sources-toggle-btn[hidden] {
   display: none !important;
 }
-@media (max-width: 640px) {
+@media (max-width: 1024px) {
   .sources-toggle-btn {
     display: none !important;
   }
@@ -885,39 +885,103 @@ button {
   display: none;
   position: absolute;
   bottom: calc(100% + 10px);
-  right: 0;
-  z-index: 30;
-  width: 190px;
+  left: 0;
+  z-index: 35;
+  width: 205px;
   padding: 8px;
-  border: 1px solid rgba(227, 231, 242, 0.95);
+  border: 1px solid var(--border-warm, #E5E1D8);
   border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 18px 40px rgba(20, 20, 40, 0.16);
+  background: #FFFFFF;
+  box-shadow: 0 16px 36px rgba(41, 53, 45, 0.14);
 }
 .mobile-attach-menu.open {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .mobile-attach-menu-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 10px;
+  padding: 9px 12px;
   border-radius: 10px;
-  color: var(--text);
+  border: none;
+  background: transparent;
+  color: var(--forest-charcoal, #29352D);
+  font-family: inherit;
   font-size: 0.86rem;
   font-weight: 600;
+  cursor: pointer;
   text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 .mobile-attach-menu-item:hover {
-  background: var(--accent-soft);
+  background: #F5F2EA;
+  color: var(--terracotta, #BC704F);
 }
 .mobile-attach-menu-item svg {
   flex-shrink: 0;
-  color: var(--accent-strong);
+  color: var(--terracotta, #BC704F);
 }
-@media (min-width: 641px) {
+.mobile-sources-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(188, 112, 79, 0.12);
+  color: var(--terracotta, #BC704F);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+.mobile-active-sources-bar {
+  display: flex;
+  align-items: center;
+  padding: 2px 8px 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (min-width: 1025px) {
+  .mobile-active-sources-bar {
+    display: none !important;
+  }
+}
+.mobile-sources-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border-radius: 14px;
+  background: #FAF8F3;
+  border: 1px solid var(--border-warm, #E5E1D8);
+  font-size: 0.76rem;
+  color: var(--forest-charcoal, #29352D);
+}
+.mobile-sources-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #398263;
+  flex-shrink: 0;
+}
+.mobile-sources-pill-dot.inactive {
+  background: #C6534E;
+}
+.mobile-sources-pill-text {
+  font-weight: 600;
+}
+.mobile-sources-pill-btn {
+  background: transparent;
+  border: none;
+  color: var(--terracotta, #BC704F);
+  font-weight: 700;
+  font-size: 0.76rem;
+  cursor: pointer;
+  padding: 0 0 0 3px;
+  text-decoration: underline;
+}
+@media (min-width: 1025px) {
   .mobile-attach-menu {
     display: none !important;
   }
@@ -936,6 +1000,17 @@ button {
   border-radius: 16px;
   background: #fff;
   box-shadow: 0 18px 40px rgba(20, 20, 40, 0.16);
+}
+@media (max-width: 768px) {
+  .sources-popover {
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    width: calc(100vw - 32px) !important;
+    max-width: 340px !important;
+    bottom: calc(100% + 12px) !important;
+    border-radius: 18px !important;
+    box-shadow: 0 20px 48px rgba(20, 20, 40, 0.22) !important;
+  }
 }
 .sources-popover.open {
   display: block;
@@ -1130,6 +1205,19 @@ button {
   line-height: 1.5;
   font-family: var(--font-body, "Plus Jakarta Sans", sans-serif);
   vertical-align: middle;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+#queryInput::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+#queryInput::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 #queryInput::placeholder {
   color: var(--muted, #7A867C);
@@ -1717,6 +1805,46 @@ body.sidebar-collapsed .sidebar-toggle-btn,
   }
   .suggest-card {
     font-size: 0.8rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .main {
+    padding: 50px 8px 10px !important;
+  }
+  .messages {
+    padding: 0 4px 6px;
+  }
+  .prompt-box {
+    padding: 6px 8px;
+    border-radius: 22px;
+  }
+  .attach-btn,
+  .send-btn {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+  }
+  .attach-btn svg,
+  .send-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+  #queryInput {
+    font-size: 0.84rem;
+  }
+  .welcome {
+    padding: 20px 12px;
+  }
+  .welcome h2 {
+    font-size: 1.15rem;
+  }
+  .welcome p {
+    font-size: 0.8rem;
+  }
+  .suggest-card {
+    padding: 10px 12px;
+    font-size: 0.76rem;
   }
 }
 

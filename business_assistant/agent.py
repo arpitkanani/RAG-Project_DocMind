@@ -8,41 +8,163 @@ from src.chains.qa_chain import _build_llm
 from src.database.db import get_db_cursor
 from src.logger import logging
 
+EMAIL_REGEX = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
+PHONE_REGEX = re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,9}")
+NAME_REGEX = re.compile(r"(?:my name is|i am|i'm|this is|call me|name:)\s+([A-Za-z\s]{2,30})", re.IGNORECASE)
+
 APPOINTMENT_KEYWORDS = re.compile(
-    r"\b(book|appointment|schedule|consultation|visit|timing|callback|call me|sign up|buy|purchase|order)\b",
+    r"\b(book|appointment|schedule|consultation|visit|timing|callback|call me|sign up|buy|purchase|order|quote|price|pricing)\b",
     re.IGNORECASE,
 )
 
 
-def _check_and_log_lead(bot_id: str, customer_username: str, user_message: str) -> Optional[dict]:
-    """Detects purchase/appointment intent and records a lead entry in PostgreSQL."""
-    if APPOINTMENT_KEYWORDS.search(user_message):
-        try:
-            inquiry_type = "appointment" if re.search(r"\b(book|appointment|schedule|consultation|visit)\b", user_message, re.IGNORECASE) else "purchase_intent"
-            with get_db_cursor(commit=True) as cur:
+def _extract_and_log_lead(
+    bot_id: str,
+    session_id: str,
+    customer_username: str,
+    user_message: str,
+) -> Optional[dict]:
+    """
+    Detects customer contact details (Name, Email, Phone) or appointment/purchase intent
+    and records or updates a lead entry in PostgreSQL (bot_leads), correlated by session_id.
+    """
+    # 1. Extract Email
+    email_match = EMAIL_REGEX.search(user_message)
+    extracted_email = email_match.group(0).strip() if email_match else None
+
+    # 2. Extract Phone (must contain at least 7 digits to avoid matching small numbers or years)
+    extracted_phone = None
+    phone_candidates = PHONE_REGEX.findall(user_message)
+    for cand in phone_candidates:
+        cand_digits = re.sub(r"\D", "", cand)
+        if 7 <= len(cand_digits) <= 15:
+            extracted_phone = cand.strip()
+            break
+
+    # 3. Extract Name
+    extracted_name = None
+    name_match = NAME_REGEX.search(user_message)
+    if name_match:
+        cand_name = name_match.group(1).strip()
+        cand_name = re.sub(r"\b(and|or|my|email|phone|here|is)\b.*$", "", cand_name, flags=re.IGNORECASE).strip()
+        if 2 <= len(cand_name) <= 40:
+            extracted_name = cand_name
+    if not extracted_name and customer_username and customer_username.lower() not in ("customer", "guest"):
+        extracted_name = customer_username
+
+    has_intent = bool(APPOINTMENT_KEYWORDS.search(user_message))
+
+    # Only log a lead if user provided contact details OR expressed explicit booking/purchase intent
+    if not (extracted_email or extracted_phone or has_intent):
+        return None
+
+    # Determine inquiry type
+    if re.search(r"\b(book|appointment|schedule|consultation|visit)\b", user_message, re.IGNORECASE):
+        inquiry_type = "appointment"
+    elif re.search(r"\b(buy|purchase|order)\b", user_message, re.IGNORECASE):
+        inquiry_type = "purchase_intent"
+    elif re.search(r"\b(quote|price|pricing|cost)\b", user_message, re.IGNORECASE):
+        inquiry_type = "pricing_quote"
+    elif extracted_email or extracted_phone:
+        inquiry_type = "contact_lead"
+    else:
+        inquiry_type = "general_inquiry"
+
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check for existing lead record for this session
+            cur.execute(
+                """
+                SELECT id, customer_name, customer_email, customer_phone, message_excerpt 
+                FROM bot_leads 
+                WHERE bot_id = %s AND session_id = %s 
+                ORDER BY created_at DESC LIMIT 1;
+                """,
+                (bot_id, session_id),
+            )
+            existing = cur.fetchone()
+
+            clean_excerpt = user_message.strip()[:250]
+            # Redact email and phone from stored excerpt for database privacy
+            if extracted_email:
+                clean_excerpt = clean_excerpt.replace(extracted_email, "[email provided]")
+            if extracted_phone:
+                clean_excerpt = clean_excerpt.replace(extracted_phone, "[phone provided]")
+
+            if existing:
+                lead_id = existing["id"]
+                merged_name = extracted_name or existing.get("customer_name") or customer_username or "Customer"
+                merged_email = extracted_email or existing.get("customer_email")
+                merged_phone = extracted_phone or existing.get("customer_phone")
                 cur.execute(
                     """
-                    INSERT INTO bot_leads (bot_id, customer_username, inquiry_type, message_excerpt)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id, created_at;
+                    UPDATE bot_leads 
+                    SET customer_name = %s, customer_email = %s, customer_phone = %s,
+                        inquiry_type = %s, message_excerpt = %s
+                    WHERE id = %s;
                     """,
-                    (bot_id, customer_username or "Customer", inquiry_type, user_message.strip()[:200]),
+                    (merged_name, merged_email, merged_phone, inquiry_type, clean_excerpt, lead_id),
+                )
+            else:
+                final_name = extracted_name or customer_username or "Customer"
+                merged_name = final_name
+                merged_email = extracted_email
+                merged_phone = extracted_phone
+                cur.execute(
+                    """
+                    INSERT INTO bot_leads (
+                        bot_id, customer_username, customer_name, customer_email, 
+                        customer_phone, session_id, inquiry_type, message_excerpt
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id;
+                    """,
+                    (
+                        bot_id,
+                        customer_username or "Customer",
+                        final_name,
+                        extracted_email,
+                        extracted_phone,
+                        session_id,
+                        inquiry_type,
+                        clean_excerpt,
+                    ),
                 )
                 row = cur.fetchone()
-                logging.info(
-                    "[Lead Capture] Logged lead #%s for bot '%s' from user '%s' (%s)",
-                    row.get("id") if row else "N/A",
-                    bot_id,
-                    customer_username,
-                    inquiry_type,
-                )
-                return {
-                    "captured": True,
-                    "inquiry_type": inquiry_type,
-                }
-        except Exception as e:
-            logging.warning("[Lead Capture] Could not record lead: %s", e)
-    return None
+                lead_id = row.get("id") if row else "new"
+
+            contact_parts = []
+            if merged_email:
+                contact_parts.append(merged_email)
+            if merged_phone:
+                contact_parts.append(merged_phone)
+
+            logging.info(
+                "[Lead Capture] Recorded/Updated lead #%s for bot '%s' (Name: %s | Contact: %s | Type: %s)",
+                lead_id,
+                bot_id,
+                merged_name,
+                ", ".join(contact_parts) or "Pending",
+                inquiry_type,
+            )
+            return {
+                "captured": True,
+                "inquiry_type": inquiry_type,
+                "customer_name": merged_name,
+                "contact_info": ", ".join(contact_parts) if contact_parts else None,
+                "has_email": bool(merged_email),
+                "has_phone": bool(merged_phone),
+                "email": merged_email,
+                "phone": merged_phone,
+            }
+    except Exception as e:
+        logging.warning("[Lead Capture] Could not record lead: %s", e)
+        return None
+
+
+def _check_and_log_lead(bot_id: str, customer_username: str, user_message: str, session_id: str = "") -> Optional[dict]:
+    """Backward compatibility wrapper for _extract_and_log_lead."""
+    return _extract_and_log_lead(bot_id=bot_id, session_id=session_id, customer_username=customer_username, user_message=user_message)
 
 
 class BusinessBotChatSession:
@@ -188,13 +310,14 @@ class BusinessBotChatSession:
         4. Streams tokens from LLM fallback hierarchy.
         5. Saves messages to PostgreSQL.
         """
-        lead_info = _check_and_log_lead(self.bot_id, self.customer_username, user_message)
+        lead_info = _extract_and_log_lead(self.bot_id, self.session_id, self.customer_username, user_message)
         if lead_info:
             yield {
                 "type": "lead_alert",
                 "lead_captured": True,
-                "inquiry_type": lead_info["inquiry_type"],
-                "customer_name": self.customer_username,
+                "inquiry_type": lead_info.get("inquiry_type"),
+                "customer_name": lead_info.get("customer_name") or self.customer_username,
+                "contact_info": lead_info.get("contact_info"),
             }
 
         # Save user message to PostgreSQL
@@ -250,7 +373,9 @@ class BusinessBotChatSession:
             "2. ANTI-LOOP RULE: Never repeat the same question or menu of options you asked in previous turns. If the customer mentions an interest or selects a product, immediately provide specific facts, instructions, benefits, and pricing from the verified knowledge.\n"
             "3. DIRECT ANSWERS & CLEAN STRUCTURE: Answer questions clearly and definitively with well-structured Markdown. Use clean headings (###), bold key terms, and bullet points (-). NEVER output raw HTML tags like <br>, <br/>, or <p> - always use clean Markdown formatting with double newlines between paragraphs.\n"
             "4. NO TOOL CALLS: Answer directly using the verified knowledge provided. Do NOT output any XML or JSON tool call tags.\n"
-            "5. CLOSING RULE: Only provide a closing or goodbye message if the customer explicitly says goodbye or thank you."
+            "5. CLOSING RULE: Only provide a closing or goodbye message if the customer explicitly says goodbye or thank you.\n"
+            "6. PRIVACY SHIELD FOR CONTACT INFO: If the customer provides their phone number, email address, or contact details, acknowledge receipt politely (e.g. 'Thank you [Customer Name], our team has noted your contact details and will follow up shortly.'). STRICT MANDATORY RULE: NEVER repeat, echo, quote, or display their raw phone number or email address back in your response.\n"
+            "7. OUT-OF-KNOWLEDGE BOUNDARY: If the customer asks questions outside your verified brochure knowledge and business offerings, do NOT invent or guess details. Follow your configured out-of-scope policy: explain politely that this is outside your verified scope, and invite them to leave their contact details or consult official business channels."
         )
 
         messages = [
@@ -272,8 +397,14 @@ class BusinessBotChatSession:
             yield {"type": "error", "message": "The assistant is temporarily unavailable. Please try again in a few moments."}
             return
 
-        # Save AI reply to PostgreSQL
+        # Save AI reply to PostgreSQL (with defensive privacy redaction against echoing contact info)
         if full_reply.strip():
+            saved_reply = full_reply
+            if lead_info:
+                if lead_info.get("email") and lead_info["email"] in saved_reply:
+                    saved_reply = saved_reply.replace(lead_info["email"], "[contact info recorded]")
+                if lead_info.get("phone") and lead_info["phone"] in saved_reply:
+                    saved_reply = saved_reply.replace(lead_info["phone"], "[contact info recorded]")
             try:
                 with get_db_cursor(commit=True) as cur:
                     cur.execute(
@@ -281,7 +412,7 @@ class BusinessBotChatSession:
                         INSERT INTO bot_messages (session_id, role, content)
                         VALUES (%s, 'ai', %s);
                         """,
-                        (self.session_id, full_reply),
+                        (self.session_id, saved_reply),
                     )
             except Exception as e:
                 logging.warning("[Business Agent] Failed saving AI message: %s", e)

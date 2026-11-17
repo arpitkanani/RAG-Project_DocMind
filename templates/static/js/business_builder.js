@@ -60,6 +60,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const bizNameInput = document.getElementById("bizName");
   const personaNameInput = document.getElementById("personaName");
   const websiteUrlInput = document.getElementById("websiteUrl");
+  const websiteUrlsContainer = document.getElementById("websiteUrlsContainer");
+  const btnAddUrlRow = document.getElementById("btnAddUrlRow");
   const aboutBusinessInput = document.getElementById("aboutBusiness");
   const btnScrapeUrl = document.getElementById("btnScrapeUrl");
   const scrapePreviewBox = document.getElementById("scrapePreviewBox");
@@ -187,12 +189,64 @@ document.addEventListener("DOMContentLoaded", () => {
     renderStagedFiles();
   };
 
-  // Website Scraper
+  // Multi-URL Ingestion Helpers
+  function collectEnteredUrls() {
+    const inputs = document.querySelectorAll(".website-url-field");
+    const urls = [];
+    inputs.forEach((inp) => {
+      const val = inp.value.trim();
+      if (val) {
+        val.split(/[\n,]+/).forEach((u) => {
+          const clean = u.trim();
+          if (clean && !urls.includes(clean)) urls.push(clean);
+        });
+      }
+    });
+    return urls;
+  }
+
+  if (btnAddUrlRow && websiteUrlsContainer) {
+    btnAddUrlRow.addEventListener("click", () => {
+      const currentRows = websiteUrlsContainer.querySelectorAll(".website-url-field");
+      if (currentRows.length >= 5) {
+        showToast("Maximum of 5 website pages allowed.", "info");
+        return;
+      }
+      const row = document.createElement("div");
+      row.className = "scrape-input-row extra-url-row";
+      row.style.cssText = "display: flex; gap: 10px; align-items: center; margin-top: 4px;";
+      row.innerHTML = `
+        <input type="url" class="form-input website-url-field" placeholder="https://example.com/pricing" />
+        <button type="button" class="btn-remove-url" style="background: none; border: 1px solid var(--border-warm, #E5E1D8); border-radius: 8px; color: var(--forest-charcoal-muted, #677369); cursor: pointer; padding: 6px 12px; font-size: 0.85rem; font-weight: 600; transition: all 0.2s ease;" title="Remove this page URL">✕ Remove</button>
+      `;
+      websiteUrlsContainer.appendChild(row);
+      const removeBtn = row.querySelector(".btn-remove-url");
+      removeBtn.addEventListener("click", () => {
+        row.remove();
+        if (websiteUrlsContainer.querySelectorAll(".website-url-field").length < 5 && btnAddUrlRow) {
+          btnAddUrlRow.style.display = "inline-flex";
+        }
+      });
+      removeBtn.addEventListener("mouseenter", () => {
+        removeBtn.style.color = "var(--status-red, #C6534E)";
+        removeBtn.style.borderColor = "var(--status-red, #C6534E)";
+      });
+      removeBtn.addEventListener("mouseleave", () => {
+        removeBtn.style.color = "var(--forest-charcoal-muted, #677369)";
+        removeBtn.style.borderColor = "var(--border-warm, #E5E1D8)";
+      });
+      if (websiteUrlsContainer.querySelectorAll(".website-url-field").length >= 5 && btnAddUrlRow) {
+        btnAddUrlRow.style.display = "none";
+      }
+    });
+  }
+
+  // Website Scraper & Health Diagnostic Rendering
   if (btnScrapeUrl) {
     btnScrapeUrl.addEventListener("click", async () => {
-      const url = websiteUrlInput.value.trim();
-      if (!url) {
-        step1Error.textContent = "Please enter a valid website URL to scrape.";
+      const urls = collectEnteredUrls();
+      if (!urls.length) {
+        step1Error.textContent = "Please enter at least one valid website URL to scrape.";
         step1Error.style.display = "block";
         return;
       }
@@ -201,34 +255,149 @@ document.addEventListener("DOMContentLoaded", () => {
       btnScrapeUrl.disabled = true;
       btnScrapeUrl.textContent = "Scraping...";
       scrapePreviewBox.style.display = "block";
-      scrapePreviewBox.textContent = "Connecting to website & extracting single-page text...";
+      scrapePreviewBox.style.background = "var(--surface-soft, #FAF8F5)";
+      scrapePreviewBox.style.border = "1px solid var(--border-warm, #E5E1D8)";
+      scrapePreviewBox.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px; color: var(--forest-charcoal-muted, #677369);">
+          <span class="chat-spinner" style="width: 14px; height: 14px; border-width: 2px;"></span>
+          <span>Connecting to ${urls.length} page(s) and extracting content...</span>
+        </div>`;
 
       try {
         const res = await fetch("/api/business-bot/admin/scrape-url", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url }),
+          body: JSON.stringify({ urls }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Failed to scrape URL");
+        if (!res.ok) throw new Error(data.detail || "Failed to scrape URL(s)");
 
         scrapedData = data;
-        let info = `<strong>Title:</strong> ${escapeHtml(data.title || "N/A")}<br/>`;
-        if (data.pricing_hints && data.pricing_hints.length) {
-          info += `<strong>Pricing Hints:</strong> ${data.pricing_hints.join(", ")}<br/>`;
-        }
-        if (data.contact_hints && data.contact_hints.length) {
-          info += `<strong>Contacts:</strong> ${data.contact_hints.join(", ")}<br/>`;
-        }
-        info += `<span style="display:block; margin-top:4px; font-size:0.75rem;">Extracted ${data.char_count} characters of content.</span>`;
-        scrapePreviewBox.innerHTML = info;
+        renderScrapeDiagnosticBadge(data);
       } catch (err) {
-        scrapePreviewBox.innerHTML = `<span style="color: #f87171;">Scrape failed: ${escapeHtml(err.message)}</span>`;
+        renderScrapeErrorBadge(err.message);
       } finally {
         btnScrapeUrl.disabled = false;
         btnScrapeUrl.textContent = "Scrape & Preview";
       }
     });
+  }
+
+  function renderScrapeDiagnosticBadge(data) {
+    if (!scrapePreviewBox) return;
+    scrapePreviewBox.style.display = "block";
+
+    const status = data.overall_status || (data.char_count >= 500 ? "high_yield" : (data.char_count > 0 ? "low_content" : "error"));
+    const charCount = Number(data.char_count || 0);
+    const wordCount = Number(data.word_count || 0);
+    const pages = Array.isArray(data.pages) ? data.pages : [];
+
+    let badgeBg = "rgba(57, 130, 99, 0.08)";
+    let badgeBorder = "1px solid rgba(57, 130, 99, 0.35)";
+    let headerIcon = "✅";
+    let headerTitle = `Ingestion Successful: ${charCount.toLocaleString()} chars (${wordCount.toLocaleString()} words)`;
+    let headerColor = "var(--forest-charcoal, #29352D)";
+    let guidanceHtml = "";
+
+    if (status === "low_content") {
+      badgeBg = "rgba(185, 134, 56, 0.09)";
+      badgeBorder = "1px solid rgba(185, 134, 56, 0.4)";
+      headerIcon = "⚠️";
+      headerTitle = `Low Content Warning (${charCount.toLocaleString()} characters extracted)`;
+      headerColor = "#92611A";
+      guidanceHtml = `
+        <div style="margin-top: 8px; padding: 10px 12px; background: rgba(255,255,255,0.7); border-radius: 8px; border: 1px dashed rgba(185, 134, 56, 0.4); font-size: 0.78rem; line-height: 1.45; color: var(--forest-charcoal, #29352D);">
+          <strong>Why is this?</strong> This website appears to use client-side JavaScript rendering (Single Page Application / React / Vue) where text loads after execution.<br/>
+          <strong>Safety Net Actions:</strong>
+          <ul style="margin: 4px 0 0; padding-left: 18px;">
+            <li>Paste your product, service, and pricing descriptions directly into <strong>'About Business'</strong> below.</li>
+            <li>Or open the page in your browser, press <strong>Ctrl+P (Print &rarr; Save as PDF)</strong>, and drop the PDF into the Brochure Upload below.</li>
+          </ul>
+        </div>`;
+    } else if (status === "blocked") {
+      badgeBg = "rgba(198, 83, 78, 0.08)";
+      badgeBorder = "1px solid rgba(198, 83, 78, 0.35)";
+      headerIcon = "❌";
+      headerTitle = "Website Ingestion Blocked (HTTP 403 / Anti-Bot Firewall)";
+      headerColor = "var(--status-red, #C6534E)";
+      guidanceHtml = `
+        <div style="margin-top: 8px; padding: 10px 12px; background: rgba(255,255,255,0.7); border-radius: 8px; border: 1px dashed rgba(198, 83, 78, 0.35); font-size: 0.78rem; line-height: 1.45; color: var(--forest-charcoal, #29352D);">
+          <strong>Firewall Restriction:</strong> Automated crawlers were denied access by the server's anti-bot protection (e.g. Cloudflare / WAF).<br/>
+          <strong>No Problem!</strong> You don't need a live website scrape to create a high-precision bot. Simply copy and paste your service details or catalog text into <strong>'About Business'</strong> below, or upload your company brochures.
+        </div>`;
+    }
+
+    let pagesBreakdown = "";
+    if (pages.length > 0) {
+      pagesBreakdown = `
+        <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">
+          ${pages.map((p) => {
+            const pageIcon = p.status === "success" ? "✓" : (p.status === "low_content" ? "⚠" : "✕");
+            const pageColor = p.status === "success" ? "var(--forest-charcoal, #29352D)" : (p.status === "low_content" ? "#92611A" : "var(--status-red, #C6534E)");
+            return `
+              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.76rem; background: rgba(255,255,255,0.6); padding: 4px 8px; border-radius: 6px; color: ${pageColor};">
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 75%;" title="${escapeHtml(p.url)}">
+                  <strong>${pageIcon}</strong> ${escapeHtml(p.title || p.url)}
+                </span>
+                <span style="font-weight: 600; white-space: nowrap;">${p.char_count?.toLocaleString() || 0} chars</span>
+              </div>`;
+          }).join("")}
+        </div>`;
+    }
+
+    let hintsHtml = "";
+    if (data.pricing_hints && data.pricing_hints.length) {
+      hintsHtml += `
+        <div style="margin-top: 8px; font-size: 0.77rem;">
+          <strong style="color: var(--terracotta, #BC704F);">Detected Pricing:</strong>
+          <span style="color: var(--forest-charcoal, #29352D);">${escapeHtml(data.pricing_hints.slice(0, 5).join(" • "))}</span>
+        </div>`;
+    }
+    if (data.contact_hints && data.contact_hints.length) {
+      hintsHtml += `
+        <div style="margin-top: 4px; font-size: 0.77rem;">
+          <strong style="color: var(--terracotta, #BC704F);">Contacts:</strong>
+          <span style="color: var(--forest-charcoal, #29352D);">${escapeHtml(data.contact_hints.slice(0, 4).join(" • "))}</span>
+        </div>`;
+    }
+
+    let previewToggle = "";
+    if (data.text && charCount > 0) {
+      previewToggle = `
+        <details style="margin-top: 10px; font-size: 0.76rem; cursor: pointer;">
+          <summary style="font-weight: 600; color: var(--terracotta, #BC704F); outline: none;">Show Ingested Text Excerpt</summary>
+          <pre style="margin-top: 6px; padding: 8px; background: rgba(0,0,0,0.03); border-radius: 6px; white-space: pre-wrap; max-height: 140px; overflow-y: auto; font-family: monospace; font-size: 0.72rem; color: var(--forest-charcoal, #29352D);">${escapeHtml(data.text.slice(0, 400))}...</pre>
+        </details>`;
+    }
+
+    scrapePreviewBox.style.background = badgeBg;
+    scrapePreviewBox.style.border = badgeBorder;
+    scrapePreviewBox.innerHTML = `
+      <div style="font-weight: 700; color: ${headerColor}; display: flex; align-items: center; gap: 6px; font-size: 0.85rem;">
+        <span>${headerIcon}</span>
+        <span>${escapeHtml(headerTitle)}</span>
+      </div>
+      ${guidanceHtml}
+      ${pagesBreakdown}
+      ${hintsHtml}
+      ${previewToggle}
+    `;
+  }
+
+  function renderScrapeErrorBadge(errorMsg) {
+    if (!scrapePreviewBox) return;
+    scrapePreviewBox.style.display = "block";
+    scrapePreviewBox.style.background = "rgba(198, 83, 78, 0.08)";
+    scrapePreviewBox.style.border = "1px solid rgba(198, 83, 78, 0.35)";
+    scrapePreviewBox.innerHTML = `
+      <div style="font-weight: 700; color: var(--status-red, #C6534E); display: flex; align-items: center; gap: 6px; font-size: 0.84rem;">
+        <span>❌</span>
+        <span>Scrape Error: ${escapeHtml(errorMsg)}</span>
+      </div>
+      <div style="margin-top: 6px; font-size: 0.78rem; color: var(--forest-charcoal, #29352D); line-height: 1.4;">
+        Please double-check the URL format or use the <strong>'About Business'</strong> safety-net textarea below to provide product information directly.
+      </div>
+    `;
   }
 
   // Go to Step 2
@@ -254,6 +423,27 @@ document.addEventListener("DOMContentLoaded", () => {
       btnGoToStep2.textContent = "Ingesting Brochures into Qdrant...";
 
       try {
+        // If user entered URL(s) but didn't click "Scrape & Preview", auto-scrape them seamlessly before advancing
+        if (!scrapedData) {
+          const enteredUrls = collectEnteredUrls();
+          if (enteredUrls.length > 0) {
+            try {
+              btnGoToStep2.textContent = "Extracting Website Knowledge...";
+              const scrapeRes = await fetch("/api/business-bot/admin/scrape-url", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ urls: enteredUrls }),
+              });
+              if (scrapeRes.ok) {
+                scrapedData = await scrapeRes.json();
+              }
+            } catch (e) {
+              console.warn("Auto-scrape fallback error:", e);
+            }
+          }
+        }
+
+        btnGoToStep2.textContent = "Ingesting Brochures into Qdrant...";
         const formData = new FormData();
         formData.append("bot_id", tempBotId);
         stagedFiles.forEach((file) => formData.append("files", file));
@@ -309,8 +499,8 @@ document.addEventListener("DOMContentLoaded", () => {
     row.className = `interview-msg ${role}`;
     let formattedText = escapeHtml(text);
     if (role === "architect") {
-      // Parse markdown bold headers (e.g. **Question 1: Target Audience**)
-      formattedText = formattedText.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+      // Parse markdown bold headers (e.g. **Question 1: Target Audience** or **Insight & Strategy**)
+      formattedText = formattedText.replace(/\*\*(.*?)\*\*/g, "<strong class=\"architect-header\">$1</strong>");
       // Format newlines to line breaks
       formattedText = formattedText.replace(/\n/g, "<br/>");
     }
@@ -377,6 +567,16 @@ document.addEventListener("DOMContentLoaded", () => {
             }
           });
         }
+        if (data.vector_states && typeof data.vector_states === "object") {
+          Object.entries(data.vector_states).forEach(([vec, stateObj]) => {
+            const state = typeof stateObj === "string" ? stateObj : (stateObj.state || "");
+            const pill = document.getElementById(`vec_${vec}`);
+            if (pill && (state.includes("VERIFIED") || state === "done")) {
+              pill.classList.remove("active");
+              pill.classList.add("done");
+            }
+          });
+        }
 
         const nextVec = data.internal_analysis?.next_target_vector;
         if (nextVec) {
@@ -386,11 +586,14 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
 
-        const turn = data.turn || data.turn_count;
-        if (turn) {
-          currentTurn = turn;
-          if (interviewTurnBadge) {
-            interviewTurnBadge.textContent = `Turn ${currentTurn} / 5`;
+        const qCount = data.question_count || data.turn_count || data.turn;
+        const isClarif = data.is_clarification;
+        if (interviewTurnBadge && qCount) {
+          currentTurn = qCount;
+          if (isClarif) {
+            interviewTurnBadge.textContent = `Clarification (Q${currentTurn} of 10)`;
+          } else {
+            interviewTurnBadge.textContent = `Question ${currentTurn} of 10`;
           }
         }
 
@@ -402,6 +605,16 @@ document.addEventListener("DOMContentLoaded", () => {
           );
           if (btnGoToStep3) {
             btnGoToStep3.disabled = false;
+          }
+          const btnFinishEarly = document.getElementById("btnFinishInterviewEarly");
+          if (btnFinishEarly) {
+            btnFinishEarly.style.display = "none";
+          }
+          if (interviewTurnBadge) {
+            interviewTurnBadge.textContent = "Interview Completed";
+            interviewTurnBadge.style.color = "var(--status-success, #398263)";
+            interviewTurnBadge.style.background = "rgba(57, 130, 99, 0.12)";
+            interviewTurnBadge.style.borderColor = "rgba(57, 130, 99, 0.35)";
           }
         }
       } catch (err) {
@@ -428,6 +641,23 @@ document.addEventListener("DOMContentLoaded", () => {
     showArchitectThinking();
     interviewWs.send(JSON.stringify({ text }));
     interviewInput.value = "";
+  }
+
+  const btnFinishEarly = document.getElementById("btnFinishInterviewEarly");
+  if (btnFinishEarly) {
+    btnFinishEarly.addEventListener("click", () => {
+      if (!interviewWs || interviewWs.readyState !== WebSocket.OPEN) {
+        if (finalizedBlueprint && btnGoToStep3) {
+          btnGoToStep3.disabled = false;
+          goToStep(2);
+        }
+        return;
+      }
+      showArchitectThinking();
+      btnFinishEarly.disabled = true;
+      btnFinishEarly.textContent = "Finalizing Blueprint...";
+      interviewWs.send(JSON.stringify({ type: "finish" }));
+    });
   }
 
   if (btnSendInterviewAnswer) {
@@ -517,7 +747,7 @@ document.addEventListener("DOMContentLoaded", () => {
           dynamic_prompt: generatedPromptArea.value.trim(),
           system_prompt: generatedPromptArea.value.trim(),
           summary: botPublicSummary.value.trim() || `${personaNameInput.value.trim()} – Assistant for ${bizNameInput.value.trim()}`,
-          website_url: websiteUrlInput.value.trim() || null,
+          website_url: collectEnteredUrls().join(", ") || websiteUrlInput.value.trim() || null,
         };
 
         await fetch("/api/business-bot/admin/save-draft", {
@@ -664,7 +894,7 @@ document.addEventListener("DOMContentLoaded", () => {
           persona_name: personaNameInput.value.trim(),
           system_prompt: generatedPromptArea.value.trim(),
           summary: botPublicSummary.value.trim(),
-          website_url: websiteUrlInput.value.trim() || null,
+          website_url: collectEnteredUrls().join(", ") || websiteUrlInput.value.trim() || null,
         };
 
         const res = await fetch("/api/business-bot/admin/deploy", {

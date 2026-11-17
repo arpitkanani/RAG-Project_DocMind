@@ -568,17 +568,32 @@ async def api_get_current_user(request: Request, response: Response):
     username = user.get("username") or "User"
     email = user.get("email") or ""
 
-    # Refresh / set 30-day session cookie
-    session_id = str(uuid.uuid4())
-    token = create_access_token(user_id=user_id, session_id=session_id, email=email, username=username, role=role)
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        max_age=SESSION_MAX_DAYS * 86400,
-        httponly=True,
-        samesite="lax",
-        path="/",
-    )
+    # Token stability: only refresh cookie if missing or nearing expiration (< 2 days remaining)
+    existing_token = request.cookies.get("access_token")
+    need_refresh = True
+    if existing_token:
+        payload = decode_access_token(existing_token)
+        if payload and payload.get("exp"):
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            remaining_secs = payload["exp"] - now_ts
+            if remaining_secs > 2 * 86400:
+                need_refresh = False
+
+    if need_refresh:
+        from src.auth import _TOKEN_USER_CACHE, _TOKEN_USER_DICT_CACHE
+        session_id = str(uuid.uuid4())
+        token = create_access_token(user_id=user_id, session_id=session_id, email=email, username=username, role=role)
+        now_m = time.monotonic()
+        _TOKEN_USER_CACHE[token] = (now_m, user_id)
+        _TOKEN_USER_DICT_CACHE[token] = (now_m, user)
+        response.set_cookie(
+            key="access_token",
+            value=token,
+            max_age=SESSION_MAX_DAYS * 86400,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
 
     last_session_id = None
     workspace_key = None

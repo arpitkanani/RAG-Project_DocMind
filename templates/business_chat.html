@@ -10,7 +10,7 @@
     href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/static/css/main.css?v=7" />
+  <link rel="stylesheet" href="/static/css/main.css?v=9" />
   <style>
     :root {
       --bg-ivory: #F5F2EA;
@@ -471,6 +471,153 @@
     .toast.success { background: #1E3A2F; border-color: rgba(57, 130, 99, 0.5); color: #7BE0B3; }
     .toast.error { background: #3B1C1A; border-color: rgba(198, 83, 78, 0.5); color: #FF9B97; }
     .toast.warn { background: #3B2E15; border-color: rgba(185, 134, 56, 0.5); color: #FCE19B; }
+
+    /* ══════════════════════ RESPONSIVE BREAKPOINTS ══════════════════════ */
+    @media (min-width: 769px) and (max-width: 1024px) {
+      .chat-header {
+        padding: 0.65rem 1.4rem;
+      }
+      .chat-messages {
+        padding: 4.5rem 1.5rem 6.5rem;
+      }
+      .chat-row {
+        max-width: 86%;
+      }
+      .composer-floating-wrapper {
+        padding: 0 1.5rem 1.25rem;
+      }
+      .composer-box {
+        max-width: 720px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .chat-header {
+        padding: 0.55rem 1rem;
+      }
+      .chat-avatar {
+        width: 32px;
+        height: 32px;
+        font-size: 0.85rem;
+        border-radius: 8px;
+      }
+      .chat-bot-info h1 {
+        font-size: 0.92rem;
+      }
+      .biz-name-link {
+        font-size: 0.74rem;
+      }
+      .nav-return-pill {
+        padding: 4px 10px;
+        font-size: 0.74rem;
+      }
+      .nav-return-pill span {
+        display: none;
+      }
+      .nav-return-pill::after {
+        content: "Overview";
+      }
+      .chat-messages {
+        padding: 3.8rem 0.85rem 6.5rem;
+        gap: 12px;
+      }
+      .chat-row {
+        max-width: 94%;
+        gap: 8px;
+      }
+      .row-avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        font-size: 0.75rem;
+      }
+      .chat-bubble {
+        padding: 10px 14px;
+        font-size: 0.88rem;
+        border-radius: 14px;
+      }
+      .tool-status-bubble {
+        margin-left: 36px;
+        font-size: 0.75rem;
+        padding: 4px 10px;
+      }
+      .composer-floating-wrapper {
+        padding: 0 0.85rem max(0.85rem, env(safe-area-inset-bottom));
+      }
+      .composer-box {
+        border-radius: 20px;
+        padding: 5px 6px 5px 12px;
+      }
+      .composer-send-btn {
+        width: 36px;
+        height: 36px;
+      }
+      .toast {
+        min-width: 0;
+        max-width: calc(100vw - 32px);
+      }
+    }
+
+    @media (max-width: 480px) {
+      .chat-header {
+        padding: 0.5rem 0.75rem;
+      }
+      .chat-messages {
+        padding: 3.6rem 0.6rem 6rem;
+      }
+      .chat-row {
+        max-width: 96%;
+      }
+      .chat-bubble {
+        padding: 9px 12px;
+        font-size: 0.85rem;
+      }
+      .composer-floating-wrapper {
+        padding: 0 0.5rem max(0.6rem, env(safe-area-inset-bottom));
+      }
+      .suggestion-chip {
+        padding: 5px 10px;
+        font-size: 0.74rem;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .chat-header {
+        padding: 0.45rem 0.65rem;
+      }
+      .chat-brand {
+        gap: 8px;
+      }
+      .chat-avatar {
+        width: 28px;
+        height: 28px;
+        font-size: 0.75rem;
+      }
+      .chat-bot-info h1 {
+        font-size: 0.85rem;
+      }
+      .biz-name-link {
+        font-size: 0.7rem;
+      }
+      .nav-return-pill {
+        padding: 3px 8px;
+        font-size: 0.7rem;
+      }
+      .composer-floating-wrapper {
+        padding: 0 0.35rem max(0.5rem, env(safe-area-inset-bottom));
+      }
+      .composer-box {
+        padding: 4px 5px 4px 10px;
+        gap: 6px;
+      }
+      .composer-textarea {
+        font-size: 0.88rem;
+      }
+      .composer-send-btn {
+        width: 32px;
+        height: 32px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -546,6 +693,6 @@
     </div>
   </div>
 
-  <script src="/static/js/business_chat.js?v=9"></script>
+  <script src="/static/js/business_chat.js?v=12"></script>
 </body>
 </html>

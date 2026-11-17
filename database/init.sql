@@ -119,6 +119,10 @@ CREATE TABLE IF NOT EXISTS bot_leads (
     id                  BIGSERIAL PRIMARY KEY,
     bot_id              TEXT REFERENCES deployed_bots(bot_id) ON DELETE CASCADE,
     customer_username   TEXT NOT NULL,
+    customer_name       TEXT,
+    customer_email      TEXT,
+    customer_phone      TEXT,
+    session_id          TEXT,
     inquiry_type        TEXT NOT NULL DEFAULT 'appointment',
     message_excerpt     TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -145,6 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_bot_chat_sessions_user_lookup ON bot_chat_session
 CREATE INDEX IF NOT EXISTS idx_bot_chat_sessions_name_lookup ON bot_chat_sessions(customer_name, bot_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bot_messages_session ON bot_messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_bot_leads_bot ON bot_leads(bot_id);
+CREATE INDEX IF NOT EXISTS idx_bot_leads_session ON bot_leads(session_id);
 
 -- Default guest account
 INSERT INTO users (id, username, email, name, is_verified, is_active)

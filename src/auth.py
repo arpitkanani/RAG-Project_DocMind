@@ -222,7 +222,7 @@ async def get_current_user(
     if token:
         now = time.monotonic()
         cached = _TOKEN_USER_CACHE.get(token)
-        if cached and (now - cached[0]) < 60.0:
+        if cached and (now - cached[0]) < 300.0:
             return cached[1]
 
         payload = decode_access_token(token)
@@ -288,6 +288,15 @@ def register_admin(username: str, email: str, password: str) -> dict:
             )
 
     token = create_access_token(user_id=user_id, session_id=session_id, email=email_clean, username=username_clean, role="admin")
+    now_m = time.monotonic()
+    user_dict = {
+        "id": user_id,
+        "username": username_clean,
+        "email": email_clean,
+        "role": "admin",
+    }
+    _TOKEN_USER_CACHE[token] = (now_m, user_id)
+    _TOKEN_USER_DICT_CACHE[token] = (now_m, user_dict)
     return {
         "user_id": user_id,
         "username": username_clean,
@@ -340,6 +349,15 @@ def register_customer(username: str, password: str) -> dict:
                     (session_id, user_id, session_hash),
                 )
                 token = create_access_token(user_id=user_id, session_id=session_id, email=user_email, username=username_clean, role="user")
+                now_m = time.monotonic()
+                user_dict = {
+                    "id": user_id,
+                    "username": username_clean,
+                    "email": user_email,
+                    "role": "user",
+                }
+                _TOKEN_USER_CACHE[token] = (now_m, user_id)
+                _TOKEN_USER_DICT_CACHE[token] = (now_m, user_dict)
                 return {
                     "user_id": user_id,
                     "username": username_clean,
@@ -373,6 +391,15 @@ def register_customer(username: str, password: str) -> dict:
             )
 
     token = create_access_token(user_id=user_id, session_id=session_id, email=email_clean, username=username_clean, role="user")
+    now_m = time.monotonic()
+    user_dict = {
+        "id": user_id,
+        "username": username_clean,
+        "email": email_clean,
+        "role": "user",
+    }
+    _TOKEN_USER_CACHE[token] = (now_m, user_id)
+    _TOKEN_USER_DICT_CACHE[token] = (now_m, user_dict)
     return {
         "user_id": user_id,
         "username": username_clean,
@@ -426,6 +453,15 @@ def authenticate_admin(email: str, password: str) -> Optional[dict]:
             )
 
     token = create_access_token(user_id=user_id, session_id=session_id, email=email_clean, username=username, role="admin")
+    now_m = time.monotonic()
+    user_dict = {
+        "id": user_id,
+        "username": username,
+        "email": email_clean,
+        "role": "admin",
+    }
+    _TOKEN_USER_CACHE[token] = (now_m, user_id)
+    _TOKEN_USER_DICT_CACHE[token] = (now_m, user_dict)
     return {
         "user_id": user_id,
         "username": username,
@@ -481,6 +517,15 @@ def authenticate_customer(username: str, password: str) -> Optional[dict]:
                     (session_id, user_id, session_hash),
                 )
             token = create_access_token(user_id=user_id, session_id=session_id, email=email_clean, username=username_clean, role="user")
+            now_m = time.monotonic()
+            user_dict = {
+                "id": user_id,
+                "username": username_clean,
+                "email": email_clean,
+                "role": "user",
+            }
+            _TOKEN_USER_CACHE[token] = (now_m, user_id)
+            _TOKEN_USER_DICT_CACHE[token] = (now_m, user_dict)
             return {
                 "user_id": user_id,
                 "username": username_clean,
@@ -531,6 +576,15 @@ def authenticate_customer(username: str, password: str) -> Optional[dict]:
             )
 
     token = create_access_token(user_id=user_id, session_id=session_id, email=email, username=username_clean, role=role)
+    now_m = time.monotonic()
+    user_dict = {
+        "id": user_id,
+        "username": username_clean,
+        "email": email,
+        "role": role,
+    }
+    _TOKEN_USER_CACHE[token] = (now_m, user_id)
+    _TOKEN_USER_DICT_CACHE[token] = (now_m, user_dict)
     return {
         "user_id": user_id,
         "username": username_clean,
@@ -553,27 +607,55 @@ async def get_current_admin(request: Request) -> dict:
     if not token:
         raise HTTPException(status_code=401, detail="Admin authentication required. Please sign in.")
 
+    now = time.monotonic()
+    cached = _TOKEN_USER_DICT_CACHE.get(token)
+    if cached and (now - cached[0]) < 300.0:
+        user = cached[1]
+        if user.get("role") == "admin":
+            return user
+        raise HTTPException(status_code=403, detail="Admin privileges required to access this resource.")
+
     payload = decode_access_token(token)
     if not payload or not payload.get("sub"):
         raise HTTPException(status_code=401, detail="Invalid or expired session token.")
 
-    user_id = str(payload["sub"])
-    with get_db_cursor(commit=False) as cur:
-        cur.execute("SELECT id, username, email, role FROM users WHERE id = %s LIMIT 1", (user_id,))
-        user = cur.fetchone()
+    # Cryptographically verified token containing role
+    role = payload.get("role")
+    if role == "admin":
+        user_dict = {
+            "id": str(payload["sub"]),
+            "username": payload.get("username") or (payload.get("email", "").split("@")[0] if payload.get("email") else "Admin"),
+            "email": payload.get("email", ""),
+            "role": "admin",
+        }
+        _TOKEN_USER_DICT_CACHE[token] = (now, user_dict)
+        _TOKEN_USER_CACHE[token] = (now, str(payload["sub"]))
+        return user_dict
 
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found.")
+    # Fallback for tokens without role claim in payload
+    if not role:
+        user_id = str(payload["sub"])
+        with get_db_cursor(commit=False) as cur:
+            cur.execute("SELECT id, username, email, role FROM users WHERE id = %s LIMIT 1", (user_id,))
+            user = cur.fetchone()
 
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin privileges required to access this resource.")
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found.")
 
-    return {
-        "id": str(user["id"]),
-        "username": user.get("username"),
-        "email": user.get("email"),
-        "role": "admin",
-    }
+        if user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin privileges required to access this resource.")
+
+        user_dict = {
+            "id": str(user["id"]),
+            "username": user.get("username"),
+            "email": user.get("email"),
+            "role": "admin",
+        }
+        _TOKEN_USER_DICT_CACHE[token] = (now, user_dict)
+        _TOKEN_USER_CACHE[token] = (now, user_id)
+        return user_dict
+
+    raise HTTPException(status_code=403, detail="Admin privileges required to access this resource.")
 
 
 async def get_current_user_optional(request: Request) -> Optional[dict]:
@@ -588,25 +670,21 @@ async def get_current_user_optional(request: Request) -> Optional[dict]:
     if token:
         now = time.monotonic()
         cached = _TOKEN_USER_DICT_CACHE.get(token)
-        if cached and (now - cached[0]) < 60.0:
+        if cached and (now - cached[0]) < 300.0:
             return cached[1]
         try:
             payload = decode_access_token(token)
             if payload and payload.get("sub"):
-                user_id = str(payload["sub"])
-                with get_db_cursor(commit=False) as cur:
-                    cur.execute("SELECT id, username, email, role FROM users WHERE id = %s LIMIT 1", (user_id,))
-                    user = cur.fetchone()
-
-                if user:
-                    user_dict = {
-                        "id": str(user["id"]),
-                        "username": user.get("username"),
-                        "email": user.get("email"),
-                        "role": user.get("role") or "user",
-                    }
-                    _TOKEN_USER_DICT_CACHE[token] = (now, user_dict)
-                    return user_dict
+                role = payload.get("role") or "user"
+                user_dict = {
+                    "id": str(payload["sub"]),
+                    "username": payload.get("username") or (payload.get("email", "").split("@")[0] if payload.get("email") else "User"),
+                    "email": payload.get("email", ""),
+                    "role": role,
+                }
+                _TOKEN_USER_DICT_CACHE[token] = (now, user_dict)
+                _TOKEN_USER_CACHE[token] = (now, str(payload["sub"]))
+                return user_dict
         except Exception:
             pass
 
@@ -620,7 +698,7 @@ async def get_current_user_optional(request: Request) -> Optional[dict]:
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         now = time.monotonic()
         cached_ak = _API_KEY_CACHE.get(key_hash)
-        if cached_ak and (now - cached_ak[0]) < 60.0:
+        if cached_ak and (now - cached_ak[0]) < 300.0:
             return {
                 "id": str(cached_ak[1]["id"]),
                 "username": cached_ak[1].get("username"),

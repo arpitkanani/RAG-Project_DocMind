@@ -1,6 +1,10 @@
 import asyncio
 import os
+import sys
 import warnings
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import certifi
 os.environ["SSL_CERT_FILE"] = certifi.where()

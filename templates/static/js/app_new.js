@@ -413,7 +413,16 @@ function bindUI() {
   try {
     safeOn("attachBtn", "click", (e) => {
       e.preventDefault();
-      openModal();
+      if (window.innerWidth <= 1024) {
+        const m = el("mobileAttachMenu");
+        if (m) {
+          m.classList.toggle("open");
+          const p = el("sourcesPopover");
+          if (p) p.classList.remove("open");
+        }
+        return;
+      }
+      openModal("file");
     });
 
     safeOn("ytInput", "keydown", (e) => {
@@ -437,9 +446,18 @@ function bindUI() {
     safeOn("mobileMenuUpload", "click", () => {
       const m = el("mobileAttachMenu");
       if (m) m.classList.remove("open");
-      openModal();
+      openModal("file");
     });
-    safeOn("mobileMenuSources", "click", () => {
+    safeOn("mobileMenuYt", "click", () => {
+      const m = el("mobileAttachMenu");
+      if (m) m.classList.remove("open");
+      openModal("yt");
+    });
+    safeOn("mobileMenuSources", "click", (e) => {
+      if (e) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
       const m = el("mobileAttachMenu");
       if (m) m.classList.remove("open");
       toggleSourcesPopover();
@@ -457,19 +475,47 @@ function bindUI() {
         menu.classList.remove("open");
       }
     });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        const menu = el("mobileAttachMenu");
+        if (menu && menu.classList.contains("open")) {
+          menu.classList.remove("open");
+        }
+      }
+    });
 
-    safeOn("sourcesToggleBtn", "click", toggleSourcesPopover);
+    safeOn("sourcesToggleBtn", "click", (e) => {
+      if (e) {
+        e.stopPropagation();
+      }
+      toggleSourcesPopover();
+    });
     document.addEventListener("click", (e) => {
       const popover = el("sourcesPopover");
       const toggleBtn = el("sourcesToggleBtn");
+      const mobileSourcesBtn = el("mobileMenuSources");
+      const attachMenu = el("mobileAttachMenu");
+      const mobilePill = el("mobileActiveSourcesBar");
       if (
         popover &&
         popover.classList.contains("open") &&
         !popover.contains(e.target) &&
         e.target !== toggleBtn &&
-        (!toggleBtn || !toggleBtn.contains(e.target))
+        (!toggleBtn || !toggleBtn.contains(e.target)) &&
+        e.target !== mobileSourcesBtn &&
+        (!mobileSourcesBtn || !mobileSourcesBtn.contains(e.target)) &&
+        (!attachMenu || !attachMenu.contains(e.target)) &&
+        (!mobilePill || !mobilePill.contains(e.target))
       ) {
         popover.classList.remove("open");
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        const popover = el("sourcesPopover");
+        if (popover && popover.classList.contains("open")) {
+          popover.classList.remove("open");
+        }
       }
     });
     safeOn("modalClose", "click", closeModal);
@@ -1031,9 +1077,9 @@ async function handleClearAll() {
 
 let _activeTab = "file";
 
-function openModal() {
+function openModal(defaultTab = "file") {
   el("modalBackdrop").classList.add("open");
-  switchTab("file");
+  switchTab(defaultTab || "file");
 }
 
 function closeModal() {
@@ -1890,6 +1936,7 @@ async function sendMessage() {
 
   input.value = "";
   input.style.height = "auto";
+  input.style.overflowY = "hidden";
   renderComposerChips();
   renderSourcesPanel();
   updateSendButton();
@@ -2050,16 +2097,29 @@ function renderSourcesPanel() {
   );
   const countBtn = el("sourcesToggleBtn");
   const countLabel = el("sourcesCount");
+  const mobileCount = el("mobileSourcesCount");
   const list = el("sourcesPopoverList");
 
   if (!readySources.length) {
-    countBtn.hidden = true;
+    if (countBtn) countBtn.hidden = true;
+    if (mobileCount) {
+      mobileCount.textContent = "";
+      mobileCount.style.display = "none";
+    }
+    if (list) {
+      list.innerHTML = '<div style="padding: 12px 8px; font-size: 0.82rem; color: var(--text-muted, #777); text-align: center;">No sources loaded in workspace yet.</div>';
+    }
+    renderMobileActiveSourcesBar();
     return;
   }
-  countBtn.hidden = false;
+  if (countBtn) countBtn.hidden = false;
 
   const activeCount = readySources.filter((s) => s.active !== false && !s.needs_reindex && !s.expired).length;
   countLabel.textContent = `${activeCount}/${readySources.length}`;
+  if (mobileCount) {
+    mobileCount.textContent = `${activeCount}/${readySources.length}`;
+    mobileCount.style.display = "inline-flex";
+  }
 
   list.innerHTML = readySources
     .map((src) => {
@@ -2115,10 +2175,52 @@ function renderSourcesPanel() {
       renderSourcesPanel();
     });
   });
+
+  renderMobileActiveSourcesBar();
+}
+
+function renderMobileActiveSourcesBar() {
+  const bar = el("mobileActiveSourcesBar");
+  if (!bar) return;
+  const readySources = workspaceState.sources.filter(
+    (s) => s.status === "ready" && s.collection && !s.expired
+  );
+  const activeSources = readySources.filter(
+    (s) => s.active !== false && !s.needs_reindex
+  );
+  if (!readySources.length) {
+    bar.hidden = true;
+    bar.innerHTML = "";
+    return;
+  }
+  bar.hidden = false;
+  bar.innerHTML = `
+    <div class="mobile-sources-pill" id="mobileSourcesPill">
+      <span class="mobile-sources-pill-dot ${activeSources.length ? 'active' : 'inactive'}"></span>
+      <span class="mobile-sources-pill-text">${activeSources.length} of ${readySources.length} sources active</span>
+      <button type="button" class="mobile-sources-pill-btn" id="mobilePillToggleBtn">${activeSources.length === readySources.length ? 'Filter' : 'Change'}</button>
+    </div>
+  `;
+  const toggleBtn = el("mobilePillToggleBtn");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleSourcesPopover();
+    });
+  }
 }
 
 function toggleSourcesPopover() {
-  el("sourcesPopover").classList.toggle("open");
+  const popover = el("sourcesPopover");
+  if (!popover) return;
+  const willOpen = !popover.classList.contains("open");
+  popover.classList.toggle("open");
+  if (willOpen) {
+    const attachMenu = el("mobileAttachMenu");
+    if (attachMenu) attachMenu.classList.remove("open");
+    renderSourcesPanel();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2696,7 +2798,13 @@ function formatTime(iso) {
 
 function autoResize() {
   this.style.height = "auto";
-  this.style.height = `${Math.min(this.scrollHeight, 180)}px`;
+  const newHeight = Math.min(this.scrollHeight, 180);
+  this.style.height = `${newHeight}px`;
+  if (this.scrollHeight > 180) {
+    this.style.overflowY = "auto";
+  } else {
+    this.style.overflowY = "hidden";
+  }
 }
 
 /**

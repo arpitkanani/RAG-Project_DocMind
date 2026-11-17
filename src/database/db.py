@@ -283,12 +283,21 @@ def init_db(sql_path: str = "database/init.sql") -> None:
                 id                  BIGSERIAL PRIMARY KEY,
                 bot_id              TEXT REFERENCES deployed_bots(bot_id) ON DELETE CASCADE,
                 customer_username   TEXT NOT NULL,
+                customer_name       TEXT,
+                customer_email      TEXT,
+                customer_phone      TEXT,
+                session_id          TEXT,
                 inquiry_type        TEXT NOT NULL DEFAULT 'appointment',
                 message_excerpt     TEXT,
                 created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
+        _safe_exec("ALTER TABLE bot_leads ADD COLUMN IF NOT EXISTS customer_name TEXT;")
+        _safe_exec("ALTER TABLE bot_leads ADD COLUMN IF NOT EXISTS customer_email TEXT;")
+        _safe_exec("ALTER TABLE bot_leads ADD COLUMN IF NOT EXISTS customer_phone TEXT;")
+        _safe_exec("ALTER TABLE bot_leads ADD COLUMN IF NOT EXISTS session_id TEXT;")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_bot_leads_bot ON bot_leads(bot_id);")
+        _safe_exec("CREATE INDEX IF NOT EXISTS idx_bot_leads_session ON bot_leads(session_id);")
 
         _safe_exec("""
             INSERT INTO users (id, username, email, name, is_verified, is_active)

@@ -10,8 +10,8 @@
     href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="/static/css/main.css?v=7" />
-  <link rel="stylesheet" href="/static/css/landing.css?v=23" />
+  <link rel="stylesheet" href="/static/css/main.css?v=8" />
+  <link rel="stylesheet" href="/static/css/landing.css?v=27" />
 </head>
 <body>
   <!-- Global Toast Notification Stack -->
@@ -25,12 +25,40 @@
     </a>
 
     <!-- Center Navigation Links with Right-to-Left Underline Slide on Hover -->
-    <ul class="nav-menu">
+    <ul class="nav-menu" id="navMenu">
       <li><a href="#overview" class="nav-menu-link active">Overview</a></li>
       <li><a href="#botShowcaseSection" class="nav-menu-link">Assistant Directory</a></li>
       <li><a href="#howItWorksSection" class="nav-menu-link">How It Works</a></li>
       <li><a href="#evaluationSection" class="nav-menu-link">Evaluation</a></li>
       <li><a href="#techSection" class="nav-menu-link">Technology</a></li>
+      <li class="mobile-nav-auth-item" id="mobileNavAuthItem">
+        <div class="mobile-nav-auth-divider"></div>
+        <div class="mobile-nav-auth-actions" id="mobileNavGuestGroup">
+          <button type="button" class="nav-link-ghost" id="mobileNavSignInBtn">Sign In</button>
+          <button type="button" class="nav-link-primary" id="mobileNavAdminRegisterBtn">Create Business Account</button>
+        </div>
+        <div class="mobile-nav-auth-actions" id="mobileNavUserGroup" style="display: none;">
+          <span class="mobile-nav-user-badge" id="mobileNavUserBadge"></span>
+          <a href="/admin-dashboard" class="nav-link-primary" id="mobileNavAdminDashboardLink" style="display: none;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect width="7" height="9" x="3" y="3" rx="1"></rect>
+              <rect width="7" height="5" x="14" y="3" rx="1"></rect>
+              <rect width="7" height="9" x="14" y="12" rx="1"></rect>
+              <rect width="7" height="5" x="3" y="16" rx="1"></rect>
+            </svg>
+            <span>Admin Dashboard</span>
+          </a>
+          <a href="/app" class="nav-link-primary" id="mobileNavExploreRagLink">Explore RAG Workspace →</a>
+          <button type="button" class="nav-link-ghost" id="mobileNavSignOutBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </li>
     </ul>
 
     <!-- Right Side Actions -->
@@ -43,8 +71,13 @@
             if (raw) {
               var u = JSON.parse(raw);
               if (u && (u.username || u.email)) {
-                document.write('<style id="earlyNavAuthStyle">#navGuestGroup{display:none!important;}#navUserGroup{display:flex!important;}' +
-                  (u.role === "admin" ? '#navAdminDashboardLink{display:inline-flex!important;}#navExploreRagLink{display:none!important;}' : '#navAdminDashboardLink{display:none!important;}#navExploreRagLink{display:inline-flex!important;}') +
+                document.write('<style id="earlyNavAuthStyle">' +
+                  '@media (min-width: 961px) { #navGuestGroup{display:none!important;} #navUserGroup{display:flex!important;} }' +
+                  '@media (max-width: 960px) { #navGuestGroup,#navUserGroup{display:none!important;} }' +
+                  '#mobileNavGuestGroup{display:none!important;} #mobileNavUserGroup{display:flex!important;}' +
+                  (u.role === "admin"
+                    ? '#navAdminDashboardLink,#mobileNavAdminDashboardLink{display:inline-flex!important;}#navExploreRagLink,#mobileNavExploreRagLink{display:none!important;}#expCardCreateAssistantBtn{display:inline-flex!important;}#expCardAdminRegisterBtn{display:none!important;}#bridgeCreateAssistantBtn{display:inline-flex!important;}#bridgeAdminRegisterBtn{display:none!important;}'
+                    : '#navAdminDashboardLink,#mobileNavAdminDashboardLink{display:none!important;}#navExploreRagLink,#mobileNavExploreRagLink{display:inline-flex!important;}#expCardCreateAssistantBtn{display:none!important;}#expCardAdminRegisterBtn{display:inline-flex!important;}#bridgeCreateAssistantBtn{display:none!important;}#bridgeAdminRegisterBtn{display:inline-flex!important;}') +
                   '</style>');
               }
             }
@@ -101,12 +134,10 @@
       </div>
 
       <!-- Mobile Hamburger Button -->
-      <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle Navigation">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="3" y1="12" x2="21" y2="12"></line>
-          <line x1="3" y1="6" x2="21" y2="6"></line>
-          <line x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
+      <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle Navigation" aria-expanded="false" aria-controls="navMenu">
+        <span class="hamburger-bar"></span>
+        <span class="hamburger-bar"></span>
+        <span class="hamburger-bar"></span>
       </button>
     </div>
   </nav>
@@ -118,7 +149,7 @@
         <span class="badge-sparkle">✦</span>
         <span>DocuVortex — Intelligent Document Reasoning &amp; Business AI Platform</span>
       </div>
-      <h1>Reason across your<br>documents, videos &amp;<br><span>enterprise knowledge</span></h1>
+      <h1>Reason across your<br class="hero-br-desktop">documents, videos &amp;<br class="hero-br-desktop"><span>enterprise knowledge</span></h1>
       <p class="hero-desc">
         A unified platform for multi-modal document research with verifiable citations and autonomous enterprise AI assistants with verified lead capture.
       </p>
@@ -397,6 +428,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
             Supported: Company Website URL &amp; Brochure PDFs (up to 3)
           </div>
+          <a href="/builder" id="expCardCreateAssistantBtn" class="exp-card-btn exp-card-btn-secondary" style="display: none; text-decoration: none;">Create New Assistant →</a>
           <button type="button" class="exp-card-btn exp-card-btn-secondary" id="expCardAdminRegisterBtn">Create Business Account →</button>
         </div>
       </div>
@@ -415,10 +447,6 @@
           Explore custom enterprise assistants trained on business brochures and product websites. Click any assistant to start an interactive conversation.
         </p>
       </div>
-      <a href="/builder" class="nav-link-primary" id="marketplaceCreateBotBtn" style="display: none; align-items: center; gap: 8px;">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Create New Assistant
-      </a>
     </div>
 
     <!-- 3-Card Grid Per Row on Desktop -->
@@ -572,6 +600,7 @@
         <h4>Looking to build a custom business assistant for your company?</h4>
         <p>Use <strong>Register as Admin</strong> to create an enterprise account. Scrape your company website, upload business brochures, complete the live Master Architect interview, and publish your assistant directly to the Directory.</p>
       </div>
+      <a href="/builder" class="btn-terracotta" id="bridgeCreateAssistantBtn" style="display: none; white-space: nowrap; text-decoration: none;">Create New Assistant →</a>
       <button type="button" class="btn-terracotta" id="bridgeAdminRegisterBtn" style="white-space: nowrap;">Create Business Account →</button>
     </div>
   </section>
@@ -968,6 +997,6 @@
     </div>
   </footer>
 
-  <script src="/static/js/landing.js?v=22"></script>
+  <script src="/static/js/landing.js?v=27"></script>
 </body>
 </html>

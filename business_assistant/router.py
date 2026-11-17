@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from business_assistant.agent import BusinessBotChatSession
 from business_assistant.architect import MasterArchitectInterview
 from business_assistant.prompts import generate_dynamic_prompt_with_azure
-from business_assistant.scraper import scrape_single_url
+from business_assistant.scraper import scrape_single_url, scrape_multiple_urls
 from src.auth import (
     get_current_admin,
     get_current_user_optional,
@@ -42,6 +42,8 @@ router = APIRouter(tags=["Business Assistant"])
 
 # Store in-memory active interviews by interview_id
 _active_interviews: dict[str, MasterArchitectInterview] = {}
+# Active bot existence cache to avoid repeated DB roundtrips on customer bot page
+_ACTIVE_BOT_IDS_CACHE: set[str] = set()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -55,7 +57,7 @@ async def builder_page(request: Request):
     if not user:
         return RedirectResponse(url="/?action=login&role=admin", status_code=303)
     if user.get("role") != "admin":
-        return RedirectResponse(url="/?action=login&role=admin", status_code=303)
+        return RedirectResponse(url="/?action=register_admin&role=admin", status_code=303)
     try:
         return read_template("builder.html")
     except Exception as e:
@@ -70,7 +72,7 @@ async def admin_dashboard_page(request: Request):
     if not user:
         return RedirectResponse(url="/?action=login&role=admin", status_code=303)
     if user.get("role") != "admin":
-        return RedirectResponse(url="/?action=login&role=admin", status_code=303)
+        return RedirectResponse(url="/?action=register_admin&role=admin", status_code=303)
     try:
         return read_template("admin_dashboard.html")
     except Exception as e:
@@ -81,10 +83,12 @@ async def admin_dashboard_page(request: Request):
 @router.get("/bot/{bot_id}", response_class=HTMLResponse)
 async def customer_bot_page(bot_id: str):
     """Customer chat page for a deployed bot instance."""
-    with get_db_cursor(commit=False) as cur:
-        cur.execute("SELECT bot_id FROM deployed_bots WHERE bot_id = %s LIMIT 1", (bot_id,))
-        if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="Bot not found")
+    if bot_id not in _ACTIVE_BOT_IDS_CACHE:
+        with get_db_cursor(commit=False) as cur:
+            cur.execute("SELECT bot_id FROM deployed_bots WHERE bot_id = %s LIMIT 1", (bot_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Bot not found")
+        _ACTIVE_BOT_IDS_CACHE.add(bot_id)
     try:
         return read_template("business_chat.html")
     except Exception as e:
@@ -161,14 +165,21 @@ async def get_bot_metadata(bot_id: str):
 # ═══════════════════════════════════════════════════════════════════
 
 class ScrapeUrlRequest(BaseModel):
-    url: str
+    url: Optional[str] = None
+    urls: Optional[List[str]] = None
 
 
 @router.post("/api/business-bot/scrape-url")
 @router.post("/api/business-bot/admin/scrape-url")
 async def api_scrape_url(body: ScrapeUrlRequest, admin: dict = Depends(get_current_admin)):
-    """Scrapes a single webpage without following links."""
-    result = await scrape_single_url(body.url)
+    """Scrapes one or multiple webpages (up to 5) without recursive link crawling."""
+    urls_to_scrape = []
+    if body.urls:
+        urls_to_scrape.extend(body.urls)
+    if body.url:
+        urls_to_scrape.append(body.url)
+
+    result = await scrape_multiple_urls(urls_to_scrape)
     return result
 
 
@@ -351,6 +362,7 @@ async def api_save_draft_bot(body: DeployBotRequest, admin: dict = Depends(get_c
             ),
         )
 
+    _ACTIVE_BOT_IDS_CACHE.add(body.bot_id)
     logging.info("[Save Draft Bot] Admin '%s' saved draft bot '%s' (%s)", admin["username"], body.bot_id, body.business_name)
     return {
         "success": True,
@@ -407,6 +419,7 @@ async def api_deploy_bot(body: DeployBotRequest, admin: dict = Depends(get_curre
             ),
         )
 
+    _ACTIVE_BOT_IDS_CACHE.add(body.bot_id)
     logging.info("[Deploy Bot] Admin '%s' deployed bot '%s' (%s)", admin["username"], body.bot_id, body.business_name)
     return {
         "success": True,
@@ -479,6 +492,66 @@ async def api_update_bot(bot_id: str, body: UpdateBotRequest, admin: dict = Depe
     return {"success": True, "message": "Bot updated successfully."}
 
 
+@router.delete("/api/business-bot/admin/bots/{bot_id}")
+@router.delete("/api/business-bot/delete/{bot_id}")
+async def api_delete_bot(bot_id: str, admin: dict = Depends(get_current_admin)):
+    """
+    STRICT OWNERSHIP GUARD & RESILIENT TEARDOWN:
+    Deletes the bot, associated Qdrant collection (biz_{bot_id}), and cascades
+    to bot_chat_sessions, bot_messages, and bot_leads in PostgreSQL.
+    """
+    admin_id = admin["id"]
+    with get_db_cursor(commit=False) as cur:
+        cur.execute(
+            "SELECT bot_id, admin_id, persona_name, business_name FROM deployed_bots WHERE bot_id = %s LIMIT 1",
+            (bot_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Assistant not found.")
+
+        # Strict ownership validation
+        if str(row["admin_id"]) != str(admin_id):
+            logging.warning("Unauthorized delete attempt: Admin %s on bot %s owned by %s", admin_id, bot_id, row["admin_id"])
+            raise HTTPException(status_code=403, detail="Forbidden: You can only delete assistants created by your own account.")
+
+        persona_name = row["persona_name"]
+        business_name = row["business_name"]
+
+    # Step 1: Atomic PostgreSQL Deletion (foreign keys ON DELETE CASCADE automatically purge leads, chat sessions, messages)
+    with get_db_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM deployed_bots WHERE bot_id = %s AND admin_id = %s;",
+            (bot_id, admin_id),
+        )
+
+    # Evict from in-memory active bot cache
+    _ACTIVE_BOT_IDS_CACHE.discard(bot_id)
+
+    # Step 2: Non-blocking background cleanup for Qdrant collection
+    collection_name = f"biz_{bot_id}"
+    async def _async_qdrant_cleanup(col_name: str):
+        try:
+            from qdrant_client import AsyncQdrantClient
+            from src.constants import QDRANT_URL, QDRANT_API_KEY
+            if QDRANT_URL:
+                client = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=10)
+                await client.delete_collection(collection_name=col_name)
+                await client.close()
+                logging.info("[Bot Delete] Background Qdrant collection '%s' deleted successfully", col_name)
+        except Exception as qdrant_err:
+            logging.warning("[Bot Delete] Background Qdrant cleanup notice for '%s': %s", col_name, qdrant_err)
+
+    asyncio.create_task(_async_qdrant_cleanup(collection_name))
+
+    logging.info("[Bot Delete] Admin '%s' successfully deleted bot '%s' (%s - %s)", admin["username"], bot_id, persona_name, business_name)
+    return {
+        "success": True,
+        "message": f"Assistant '{persona_name}' deleted successfully.",
+        "deleted_bot_id": bot_id,
+    }
+
+
 @router.get("/api/business-bot/admin/bots")
 async def api_get_admin_bots(admin: dict = Depends(get_current_admin)):
     """Lists ONLY the bots created by the authenticated admin."""
@@ -527,7 +600,8 @@ async def api_get_bot_leads(bot_id: str, admin: dict = Depends(get_current_admin
 
         cur.execute(
             """
-            SELECT id, customer_username, inquiry_type, message_excerpt, created_at
+            SELECT id, customer_username, customer_name, customer_email, customer_phone,
+                   inquiry_type, message_excerpt, created_at
             FROM bot_leads
             WHERE bot_id = %s
             ORDER BY created_at DESC;
@@ -535,18 +609,32 @@ async def api_get_bot_leads(bot_id: str, admin: dict = Depends(get_current_admin
             (bot_id,),
         )
         leads = cur.fetchall() or []
+        formatted_leads = []
+        for l in leads:
+            email = (l.get("customer_email") or "").strip()
+            phone = (l.get("customer_phone") or "").strip()
+            contact_parts = []
+            if email:
+                contact_parts.append(email)
+            if phone:
+                contact_parts.append(phone)
+            contact_str = ", ".join(contact_parts) if contact_parts else "Not provided"
+
+            formatted_leads.append({
+                "id": l["id"],
+                "customer_username": l["customer_username"],
+                "customer_name": (l.get("customer_name") or l["customer_username"]).strip(),
+                "customer_email": email,
+                "customer_phone": phone,
+                "contact_info": contact_str,
+                "inquiry_type": l["inquiry_type"],
+                "inquiry_details": l.get("message_excerpt") or "Booking inquiry",
+                "message_excerpt": l.get("message_excerpt"),
+                "created_at": l["created_at"].isoformat() if l.get("created_at") else "",
+            })
         return {
             "success": True,
-            "leads": [
-                {
-                    "id": l["id"],
-                    "customer_username": l["customer_username"],
-                    "inquiry_type": l["inquiry_type"],
-                    "message_excerpt": l["message_excerpt"],
-                    "created_at": l["created_at"].isoformat() if l.get("created_at") else "",
-                }
-                for l in leads
-            ],
+            "leads": formatted_leads,
         }
 
 

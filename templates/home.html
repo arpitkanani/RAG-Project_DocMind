@@ -49,8 +49,8 @@
     window.__reportTelemetry({ type: "info", message: "🚀 home.html Head initialized telemetry logger" });
   </script>
 
-  <link rel="stylesheet" href="/static/css/main.css?v=7" />
-  <link rel="stylesheet" href="/static/css/style.css?v=55" />
+  <link rel="stylesheet" href="/static/css/main.css?v=8" />
+  <link rel="stylesheet" href="/static/css/style.css?v=58" />
 </head>
 <body>
 
@@ -153,6 +153,9 @@
         <!-- Source chips — hidden when workspace is empty -->
         <div class="chips-row" id="chipsRow" hidden></div>
 
+        <!-- Persistent mobile active sources bar — visible at <= 1024px when sources are loaded -->
+        <div class="mobile-active-sources-bar" id="mobileActiveSourcesBar" hidden></div>
+
         <!-- Input row — height NEVER changes -->
         <div class="input-row">
           <button class="sources-toggle-btn" id="sourcesToggleBtn" title="Choose which sources apply to your next question" hidden>
@@ -173,17 +176,24 @@
           </button>
           <input type="file" id="chatFileInput" multiple accept=".pdf,.docx" style="display:none;" />
           <div class="mobile-attach-menu" id="mobileAttachMenu">
-            <button class="mobile-attach-menu-item" id="mobileMenuUpload">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            <button class="mobile-attach-menu-item" id="mobileMenuUpload" type="button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
               </svg>
-              Upload
+              <span>Upload File</span>
             </button>
-            <button class="mobile-attach-menu-item" id="mobileMenuSources">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <button class="mobile-attach-menu-item" id="mobileMenuYt" type="button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/>
+              </svg>
+              <span>YouTube URL</span>
+            </button>
+            <button class="mobile-attach-menu-item" id="mobileMenuSources" type="button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M4 7h11a3 3 0 0 1 0 6H4"/><path d="m8 4-4 3 4 3"/><path d="M20 17H9a3 3 0 0 1 0-6h11"/><path d="m16 14 4 3-4 3"/>
               </svg>
-              Manage Sources
+              <span>Select Source</span>
+              <span class="mobile-sources-badge" id="mobileSourcesCount"></span>
             </button>
           </div>
 
@@ -316,6 +326,6 @@
   <!-- Toast notifications -->
   <div class="toast-stack" id="toastStack"></div>
 
-  <script src="/static/js/app_new.js?v=54"></script>
+  <script src="/static/js/app_new.js?v=57"></script>
 </body>
 </html>

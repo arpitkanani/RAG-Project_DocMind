@@ -16,7 +16,8 @@ Built on **LangGraph state machines**, **Qdrant vector databases**, and **Supaba
 
 ## 🌟 Key Features
 
-- 📄 **Multi-Format Document Ingestion:** Native parsing and chunking for PDF, DOCX, TXT, CSV, XLSX, and Markdown documents.
+### 1. Document & Media RAG Workspace (`/app`)
+- 📄 **Multi-Format Document Ingestion:** Native parsing and semantic chunking for PDF, DOCX, TXT, CSV, XLSX, and Markdown documents.
 - 🎥 **YouTube Video Intelligence:** Ingests YouTube URLs, retrieves accurate transcripts with timestamps, and enables conversational video analysis.
 - 🧠 **Agentic LangGraph Workflow:** Query rewriting, adaptive retrieval, context compression, hallucination verification, and strict citation grounding.
 - 🛡️ **3-Tier LLM Generation Fallback:** Automatic zero-downtime generation routing:
@@ -26,8 +27,30 @@ Built on **LangGraph state machines**, **Qdrant vector databases**, and **Supaba
   - **Fallback:** Local `BAAI/bge-small-en-v1.5` (384 dims) loaded lazily only when selected by the user.
   - **Per-Collection Consistency:** Collections are audited against active vector dimensions; incompatible documents display a `"Needs re-index"` warning badge.
 - ⚙️ **Workspace Settings UI:** In-app settings modal allowing instant switching between Azure OpenAI and local HuggingFace embeddings.
-- 🔑 **Frictionless Authentication:** API-key-first authentication generated directly on the landing page UI or via CLI (`seed_user.py`), cached in localStorage, and transmitted via `X-API-Key` headers. Includes guest mode for instant exploration.
 - 💾 **Stateful Conversational Memory:** Multi-turn session persistence backed by Supabase PostgreSQL `AsyncPostgresSaver` checkpointer, sliding context windows, and automatic background session summarization.
+
+### 2. Custom Business Bot Platform & Architect Wizard (`/builder`, `/admin-dashboard`, `/bot/{bot_id}`)
+- 🎙️ **Live Master Architect WebSocket Interview:** Interactive interview conducted by Azure OpenAI probing business domain across 10 critical operational vectors with real-time badge tracking.
+- 🛡️ **Dynamic Prompt Synthesis & Safety Shields:** Automatically compiles enterprise system prompts with verified knowledge boundaries, contact info, and anti-leak prompt-injection shields. Includes advisory guidance for two-step LLM verification before deployment.
+- 🌐 **Single-Page Website Scraping & Brochure Uploads:** Up to 5 website URLs and 3 PDF brochures (&le; 4 MB each) ingested into isolated Qdrant vector collections (`biz_{bot_id}`). Features browser export tips (`Ctrl + P` to PDF).
+- 💬 **Embeddable Customer Chat (`/bot/{bot_id}`):** High-concurrency chat with typewriter streaming, Warm Ivory glassmorphic header, and "Back to Overview" navigation pill.
+- 📋 **Automatic Lead Capture & Privacy Shield:** Automatically extracts customer contact inquiries (name, email, phone) into PostgreSQL `bot_leads` without echoing raw credentials back to users.
+
+### 3. Automated Browser Testing & Security
+- 🧪 **117 Automated Playwright Tests:** End-to-end browser tests verifying responsive layouts across **19 viewport dimensions** (`320x568` to `1920x1080`) with zero horizontal overflow.
+- 🔒 **Anti-Leak Security Suite:** Scans public endpoints against credential/connection string leaks, rejects unauthenticated access (401/303), and enforces multi-tenant role isolation (403 Forbidden).
+
+---
+
+## 🖥️ The Five Unified Workspaces
+
+| Workspace | Route | Target User | Key Capabilities |
+| :--- | :--- | :--- | :--- |
+| **1. Landing Page** | `/` | Guests, Users, Admins | Assistant Directory showcase, RAG vs Business Bot cards, unified Auth modal, role-based navigation. |
+| **2. Document RAG** | `/app` | Researchers, Analysts | Multi-document upload, YouTube transcript indexing, source filter popover, LangGraph citations. |
+| **3. Bot Architect** | `/builder` | Business Admins | 4-step wizard: website scraping, brochure upload, Master Architect live interview, prompt synthesis. |
+| **4. Admin Dashboard**| `/admin-dashboard` | Business Admins | My Bots directory, bot launcher, delete confirmation, Indian date formatting, inquiries & leads table. |
+| **5. Business Chat** | `/bot/{bot_id}` | End Customers | Dedicated chat with initial greeting chips, brochure RAG grounding, and appointment lead capture. |
 
 ---
 
@@ -159,6 +182,49 @@ flowchart TD
 | `GET` | `/sessions/{id}` | Retrieve full message history, citations, and attachment audit |
 | `DELETE`| `/sessions/{id}` | Permanently delete a chat session and associated metadata |
 | `GET` | `/health` | Check PostgreSQL pool and vector store health |
+| `GET` | `/builder` | Bot Architect Wizard page (guarded: requires Admin) |
+| `GET` | `/admin-dashboard` | Admin control center and leads table (guarded: requires Admin) |
+| `GET` | `/bot/{bot_id}` | Embeddable public customer bot chat interface |
+| `GET` | `/api/business-bot/public/list` | List active public bots for the Assistant Directory |
+| `GET` | `/api/business-bot/admin/bots` | List bots belonging to authenticated admin |
+| `DELETE`| `/api/business-bot/admin/bots/{id}` | Permanently delete bot, Qdrant collection, and leads |
+| `GET` | `/api/business-bot/admin/leads/{id}` | Retrieve customer inquiry leads captured for bot |
+| `POST` | `/api/business-bot/scrape-url` | Scrape up to 5 website URLs without recursive crawling |
+| `POST` | `/api/business-bot/upload-brochures` | Upload up to 3 PDF brochures (max 4MB each) |
+| `WS` | `/ws/business-bot/interview/{id}` | Real-time WebSocket Master Architect interview stream |
+| `WS` | `/ws/business-bot/chat/{id}` | Real-time WebSocket customer chat stream with tool RAG |
+
+---
+
+## 🧪 Automated Testing Suite (Playwright)
+
+DocuVortex includes a 117-test Playwright suite testing real Chromium rendering across 19 viewports:
+
+```bash
+# Run all 117 tests headlessly
+npx playwright test
+
+# Run tests with visible browser window
+npx playwright test --headed
+
+# Open the Playwright interactive UI runner
+npx playwright test --ui
+
+# View HTML report
+npx playwright show-report
+```
+
+---
+
+## 🚀 Azure Container Apps Deployment
+
+Deploy the containerized app with WebSocket sticky sessions and pre-baked embeddings:
+
+```bash
+# Make deployment script executable and deploy to Azure
+chmod +x scripts/deploy_azure.sh
+./scripts/deploy_azure.sh
+```
 
 ---
 

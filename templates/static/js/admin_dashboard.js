@@ -22,6 +22,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const editSystemPrompt = document.getElementById("editSystemPrompt");
   const editBotError = document.getElementById("editBotError");
 
+  // Delete Modal Elements
+  const deleteModalBackdrop = document.getElementById("deleteBotModalBackdrop");
+  const closeDeleteModalBtn = document.getElementById("closeDeleteModalBtn");
+  const cancelDeleteModalBtn = document.getElementById("cancelDeleteModalBtn");
+  const confirmDeleteBotBtn = document.getElementById("confirmDeleteBotBtn");
+  const deleteTargetPersonaName = document.getElementById("deleteTargetPersonaName");
+  const deleteTargetBizName = document.getElementById("deleteTargetBizName");
+  const deleteBotError = document.getElementById("deleteBotError");
+  let pendingDeleteBotId = null;
+
   let adminUser = null;
   let adminBots = [];
 
@@ -46,13 +56,20 @@ document.addEventListener("DOMContentLoaded", () => {
   // Authentication check & parallel dashboard startup
   async function initDashboard() {
     try {
-      // Pre-hydrate admin user from local cache for instant perception
+      // Pre-hydrate admin user and assistants from session cache for instant 0ms perception
       try {
         const cachedRaw = localStorage.getItem("docuvortex.user");
         if (cachedRaw) {
           const cachedUser = JSON.parse(cachedRaw);
           if (cachedUser && cachedUser.role === "admin") {
             adminUser = cachedUser;
+          }
+        }
+        const cachedBotsRaw = sessionStorage.getItem("docuvortex.admin_bots");
+        if (cachedBotsRaw) {
+          const cachedBots = JSON.parse(cachedBotsRaw);
+          if (Array.isArray(cachedBots) && cachedBots.length > 0) {
+            renderAdminBotsList(cachedBots);
           }
         }
       } catch (e) {}
@@ -67,6 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const authData = await authRes.json();
       if (!authData.authenticated || !authData.user || authData.user.role !== "admin") {
         localStorage.removeItem("docuvortex.user");
+        sessionStorage.removeItem("docuvortex.admin_bots");
         window.location.replace("/?action=login");
         return;
       }
@@ -75,7 +93,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (botsRes.ok) {
         const botsData = await botsRes.json();
-        renderAdminBotsList(Array.isArray(botsData) ? botsData : (botsData.bots || []));
+        const botsList = Array.isArray(botsData) ? botsData : (botsData.bots || []);
+        sessionStorage.setItem("docuvortex.admin_bots", JSON.stringify(botsList));
+        renderAdminBotsList(botsList);
       } else {
         await loadAdminBots();
       }
@@ -88,6 +108,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (e) {
       localStorage.removeItem("docuvortex.user");
+      sessionStorage.removeItem("docuvortex.admin_bots");
       window.location.replace("/?action=login");
     }
   }
@@ -104,6 +125,7 @@ document.addEventListener("DOMContentLoaded", () => {
         localStorage.removeItem("docuvortex.user");
         sessionStorage.removeItem("docuvortex.apiKey");
         sessionStorage.removeItem("docuvortex.user");
+        sessionStorage.removeItem("docuvortex.admin_bots");
       } catch (e) {}
       window.location.replace("/");
     });
@@ -130,16 +152,28 @@ document.addEventListener("DOMContentLoaded", () => {
       const bizName = bot.business_name || "Business";
       const summary = bot.business_summary || bot.summary || "Custom AI Assistant";
       const initial = persona.slice(0, 1).toUpperCase();
+      const escapedPersona = escapeHtml(persona).replace(/'/g, "\\'");
+      const escapedBiz = escapeHtml(bizName).replace(/'/g, "\\'");
 
       html += `
-        <div class="dash-card">
+        <div class="dash-card" id="botCard_${botId}">
           <div>
             <div class="dash-card-header">
-              <div class="dash-bot-avatar">${initial}</div>
-              <div>
-                <h3 class="dash-card-title">${escapeHtml(persona)}</h3>
-                <span class="dash-card-biz">${escapeHtml(bizName)}</span>
+              <div class="dash-card-header-left">
+                <div class="dash-bot-avatar">${initial}</div>
+                <div>
+                  <h3 class="dash-card-title">${escapeHtml(persona)}</h3>
+                  <span class="dash-card-biz">${escapeHtml(bizName)}</span>
+                </div>
               </div>
+              <button type="button" class="btn-card-delete" onclick="confirmDeleteBot('${botId}', '${escapedPersona}', '${escapedBiz}')" title="Delete Assistant" aria-label="Delete Assistant ${escapeHtml(persona)}">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  <line x1="10" y1="11" x2="10" y2="17"></line>
+                  <line x1="14" y1="11" x2="14" y2="17"></line>
+                </svg>
+              </button>
             </div>
             <p class="dash-card-summary">${escapeHtml(summary)}</p>
           </div>
@@ -166,7 +200,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/business-bot/admin/bots", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load your assistants");
       const data = await res.json();
-      renderAdminBotsList(Array.isArray(data) ? data : (data.bots || []));
+      const botsList = Array.isArray(data) ? data : (data.bots || []);
+      sessionStorage.setItem("docuvortex.admin_bots", JSON.stringify(botsList));
+      renderAdminBotsList(botsList);
     } catch (e) {
       myBotsGrid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; color: var(--status-red, #C6534E); padding: 36px;">Error loading assistants: ${escapeHtml(e.message)}</div>`;
     }
@@ -195,6 +231,86 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (closeEditModalBtn) closeEditModalBtn.addEventListener("click", closeEditModal);
   if (cancelEditModalBtn) cancelEditModalBtn.addEventListener("click", closeEditModal);
+
+  // Delete Modal Handlers
+  window.confirmDeleteBot = function (botId, personaName, bizName) {
+    pendingDeleteBotId = String(botId);
+    if (deleteTargetPersonaName) deleteTargetPersonaName.textContent = personaName || "Assistant";
+    if (deleteTargetBizName) deleteTargetBizName.textContent = bizName || "Business";
+    if (deleteBotError) deleteBotError.style.display = "none";
+    if (confirmDeleteBotBtn) {
+      confirmDeleteBotBtn.disabled = false;
+      confirmDeleteBotBtn.textContent = "Delete Assistant";
+    }
+    if (deleteModalBackdrop) deleteModalBackdrop.classList.add("open");
+  };
+
+  function closeDeleteModal() {
+    if (deleteModalBackdrop) deleteModalBackdrop.classList.remove("open");
+    pendingDeleteBotId = null;
+  }
+
+  if (closeDeleteModalBtn) closeDeleteModalBtn.addEventListener("click", closeDeleteModal);
+  if (cancelDeleteModalBtn) cancelDeleteModalBtn.addEventListener("click", closeDeleteModal);
+
+  if (confirmDeleteBotBtn) {
+    confirmDeleteBotBtn.addEventListener("click", async () => {
+      if (!pendingDeleteBotId) return;
+      const deletedId = pendingDeleteBotId;
+      const cardEl = document.getElementById("botCard_" + deletedId);
+
+      // 1. Instantly close modal
+      closeDeleteModal();
+
+      // 2. Instantly remove card optimistically with smooth exit transition
+      if (cardEl) {
+        cardEl.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+        cardEl.style.opacity = "0";
+        cardEl.style.transform = "scale(0.95)";
+        setTimeout(() => {
+          cardEl.remove();
+          adminBots = adminBots.filter((b) => String(b.bot_id || b.id) !== deletedId);
+          sessionStorage.setItem("docuvortex.admin_bots", JSON.stringify(adminBots));
+          if (adminBots.length === 0) {
+            renderAdminBotsList([]);
+          }
+        }, 210);
+      } else {
+        adminBots = adminBots.filter((b) => String(b.bot_id || b.id) !== deletedId);
+        sessionStorage.setItem("docuvortex.admin_bots", JSON.stringify(adminBots));
+        if (adminBots.length === 0) {
+          renderAdminBotsList([]);
+        }
+      }
+
+      // 3. Instantly notify user
+      showToast("Assistant deleted successfully.");
+
+      // 4. Background server deletion
+      try {
+        const res = await fetch(`/api/business-bot/admin/bots/${deletedId}`, {
+          method: "DELETE",
+          credentials: "include",
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.detail || "Server failed to delete assistant");
+        }
+      } catch (err) {
+        // Rollback on network/server error
+        showToast("Delete failed: " + err.message, true);
+        await loadAdminBots();
+      }
+    });
+  }
+
+  // Escape key dismisses modals
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (editModalBackdrop && editModalBackdrop.classList.contains("open")) closeEditModal();
+      if (deleteModalBackdrop && deleteModalBackdrop.classList.contains("open")) closeDeleteModal();
+    }
+  });
 
   if (editBotForm) {
     editBotForm.addEventListener("submit", async (e) => {
@@ -318,13 +434,31 @@ document.addEventListener("DOMContentLoaded", () => {
     leadsTableBody.innerHTML = leads
       .map((l) => {
         const dt = formatIndianDateTime(l.created_at);
+        let contactHtml = "";
+        const email = l.customer_email ? String(l.customer_email).trim() : "";
+        const phone = l.customer_phone ? String(l.customer_phone).trim() : "";
+        if (email || phone) {
+          const parts = [];
+          if (email) {
+            parts.push(`<a href="mailto:${escapeHtml(email)}" style="color: var(--terracotta, #BC704F); text-decoration: underline; font-weight: 500;">${escapeHtml(email)}</a>`);
+          }
+          if (phone) {
+            parts.push(`<a href="tel:${escapeHtml(phone)}" style="color: var(--forest-charcoal, #29352D); text-decoration: none; font-weight: 500;">📞 ${escapeHtml(phone)}</a>`);
+          }
+          contactHtml = parts.join("<br/>");
+        } else if (l.contact_info && l.contact_info !== "Not provided") {
+          contactHtml = escapeHtml(l.contact_info);
+        } else {
+          contactHtml = `<span style="color: var(--forest-charcoal-muted, #677369); font-style: italic;">Not provided</span>`;
+        }
+
         return `
         <tr>
           <td style="white-space: nowrap; font-size: 0.82rem; color: var(--forest-charcoal-muted, #677369);">${escapeHtml(dt)}</td>
           <td><strong style="color: var(--terracotta, #BC704F);">${escapeHtml(l.bot_persona || "Assistant")}</strong></td>
-          <td style="font-weight: 600;">${escapeHtml(l.customer_name || "Customer")}</td>
-          <td>${escapeHtml(l.contact_info || "Not provided")}</td>
-          <td>${escapeHtml(l.inquiry_details || "Booking inquiry")}</td>
+          <td style="font-weight: 600;">${escapeHtml(l.customer_name || l.customer_username || "Customer")}</td>
+          <td>${contactHtml}</td>
+          <td>${escapeHtml(l.inquiry_details || l.message_excerpt || "Booking inquiry")}</td>
         </tr>`;
       })
       .join("");
@@ -338,6 +472,34 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function showToast(message, isError = false) {
+    let toast = document.getElementById("adminToast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "adminToast";
+      toast.style.position = "fixed";
+      toast.style.bottom = "24px";
+      toast.style.right = "24px";
+      toast.style.padding = "12px 20px";
+      toast.style.borderRadius = "10px";
+      toast.style.color = "#FFFFFF";
+      toast.style.fontWeight = "600";
+      toast.style.fontSize = "0.88rem";
+      toast.style.boxShadow = "0 6px 20px rgba(41, 53, 45, 0.2)";
+      toast.style.zIndex = "9999";
+      toast.style.transition = "opacity 0.3s ease, transform 0.3s ease";
+      document.body.appendChild(toast);
+    }
+    toast.style.background = isError ? "var(--status-red, #C6534E)" : "var(--forest-charcoal, #29352D)";
+    toast.textContent = message;
+    toast.style.opacity = "1";
+    toast.style.transform = "translateY(0)";
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      toast.style.transform = "translateY(8px)";
+    }, 3500);
   }
 
   initDashboard();
