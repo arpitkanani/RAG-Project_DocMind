@@ -1,10 +1,13 @@
 import asyncio
+import base64
 import json
 import os
 import re
 import sys
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+import httpx
+import yaml
 try:
     import pymupdf as fitz
 except ImportError:
@@ -44,6 +47,278 @@ router = APIRouter(tags=["Business Assistant"])
 _active_interviews: dict[str, MasterArchitectInterview] = {}
 # Active bot existence cache to avoid repeated DB roundtrips on customer bot page
 _ACTIVE_BOT_IDS_CACHE: set[str] = set()
+
+
+def get_business_bot_config() -> dict:
+    try:
+        with open("config/config.yaml", "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        bot_cfg = cfg.get("business_bot", {})
+        brochure_cfg = bot_cfg.get("brochure", {})
+        return {
+            "max_file_size_mb": int(brochure_cfg.get("max_file_size_mb", 30)),
+            "max_files_count": int(brochure_cfg.get("max_files_count", 5)),
+            "enable_vision_ocr": bool(brochure_cfg.get("enable_vision_ocr", True)),
+            "primary_vision_provider": str(brochure_cfg.get("primary_vision_provider", "azure")),
+            "vision_model": str(brochure_cfg.get("vision_model", "gpt-5.4-nano")),
+            "fallback_vision_provider": str(brochure_cfg.get("fallback_vision_provider", "gemini")),
+            "max_ocr_pages_per_doc": int(brochure_cfg.get("max_ocr_pages_per_doc", 15)),
+            "min_text_chars_for_ocr": int(brochure_cfg.get("min_text_chars_for_ocr", 80)),
+            "allowed_extensions": list(brochure_cfg.get("allowed_extensions", [".pdf"])),
+            "max_pages_count": int(bot_cfg.get("website", {}).get("max_pages_count", 5)),
+            "scrape_timeout_seconds": float(bot_cfg.get("website", {}).get("scrape_timeout_seconds", 15.0)),
+        }
+    except Exception as e:
+        logging.warning("Could not read business_bot config, using defaults: %s", e)
+        return {
+            "max_file_size_mb": 30,
+            "max_files_count": 5,
+            "enable_vision_ocr": True,
+            "primary_vision_provider": "azure",
+            "vision_model": "gpt-5.4-nano",
+            "fallback_vision_provider": "gemini",
+            "max_ocr_pages_per_doc": 15,
+            "min_text_chars_for_ocr": 80,
+            "allowed_extensions": [".pdf"],
+            "max_pages_count": 5,
+            "scrape_timeout_seconds": 15.0,
+        }
+
+
+VISION_OCR_PROMPT = (
+    "You are an expert document OCR engine. Transcribe all text, product names, "
+    "descriptions, pricing, discounts, tables, specifications, and contact info visible "
+    "on this brochure page in clean, structured markdown. Do NOT invent facts. "
+    "If there is no text or only decorative graphics, reply with nothing."
+)
+
+
+class FatalVisionError(Exception):
+    """Raised when a vision provider fails with a permanent non-retryable error (e.g. 400 decommissioned, 401, 404, 429 quota)."""
+    pass
+
+
+async def _call_vision_provider(
+    provider: str,
+    image_bytes: bytes,
+    filename: str,
+    page_num: int,
+    model: str = "gpt-5.4-nano",
+) -> str:
+    """Executes a single vision OCR call against the specified provider."""
+    provider = provider.lower()
+    b64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+    # 1. Azure OpenAI (gpt-5.4-nano)
+    if provider == "azure":
+        azure_key = os.getenv("AZURE_OPENAI_MODEL_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+        raw_endpoint = os.getenv("AZURE_OPENAI_MODEL_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT")
+        if not azure_key or not raw_endpoint:
+            raise FatalVisionError("Azure OpenAI credentials not configured.")
+
+        clean_endpoint = raw_endpoint.strip().rstrip("/")
+        clean_endpoint = re.sub(r"/openai(?:/v\d+)?(?:/.*)?/?$", "", clean_endpoint, flags=re.IGNORECASE)
+        clean_endpoint = re.sub(r"/responses/?$", "", clean_endpoint, flags=re.IGNORECASE)
+        deployment = (
+            os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            or model
+            or "gpt-5.4-nano"
+        ).strip("\"'")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01").strip("\"'")
+
+        url = f"{clean_endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": VISION_OCR_PROMPT},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0.1,
+            "max_completion_tokens": 1024,
+        }
+        headers = {"api-key": azure_key, "Content-Type": "application/json"}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"] or ""
+                logging.info("[Azure Vision OCR] Extracted %d chars from %s (page %d)", len(content), filename, page_num)
+                return content.strip()
+            elif resp.status_code in (400, 401, 403, 404, 429):
+                raise FatalVisionError(f"Azure HTTP {resp.status_code}: {resp.text[:150]}")
+            else:
+                logging.warning("Azure Vision HTTP %d for %s (page %d): %s", resp.status_code, filename, page_num, resp.text[:100])
+                return ""
+
+    # 2. Google Gemini Flash
+    elif provider == "gemini":
+        google_key = os.getenv("GOOGLE_API_KEY")
+        if not google_key:
+            raise FatalVisionError("GOOGLE_API_KEY not configured.")
+
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={google_key}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": VISION_OCR_PROMPT},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": b64_image}}
+                    ]
+                }
+            ],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                content = parts[0].get("text", "") if parts else ""
+                logging.info("[Gemini Vision OCR] Extracted %d chars from %s (page %d)", len(content), filename, page_num)
+                return content.strip()
+            elif resp.status_code in (400, 401, 403, 404, 429):
+                raise FatalVisionError(f"Gemini HTTP {resp.status_code}: {resp.text[:150]}")
+            else:
+                logging.warning("Gemini Vision HTTP %d for %s (page %d): %s", resp.status_code, filename, page_num, resp.text[:100])
+                return ""
+
+    # 3. Groq (Legacy or alternate)
+    elif provider == "groq":
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if not groq_api_key:
+            raise FatalVisionError("GROQ_API_KEY not configured.")
+
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": VISION_OCR_PROMPT},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                    ]
+                }
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1024,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"] or ""
+                return content.strip()
+            elif resp.status_code in (400, 401, 403, 404, 429):
+                raise FatalVisionError(f"Groq HTTP {resp.status_code}: {resp.text[:150]}")
+            else:
+                return ""
+
+    raise FatalVisionError(f"Unknown vision provider: {provider}")
+
+
+class VisionCircuitBreaker:
+    """Manages multi-tier vision fallbacks and halts runaway API loops on fatal errors."""
+
+    def __init__(
+        self,
+        primary_provider: str = "azure",
+        fallback_provider: Optional[str] = "gemini",
+        vision_model: str = "gpt-5.4-nano",
+        max_ocr_pages: int = 15,
+    ):
+        self.primary = (primary_provider or "azure").strip().lower()
+        self.fallback = (fallback_provider or "gemini").strip().lower() if fallback_provider else None
+        self.vision_model = vision_model
+        self.max_ocr_pages = max_ocr_pages
+        self.primary_failed = False
+        self.fallback_failed = False
+        self.circuit_tripped = False
+        self.ocr_count = 0
+
+    def is_active(self) -> bool:
+        return (not self.circuit_tripped) and (self.ocr_count < self.max_ocr_pages)
+
+    def current_provider(self) -> Optional[str]:
+        if self.circuit_tripped:
+            return None
+        if not self.primary_failed:
+            return self.primary
+        if not self.fallback_failed and self.fallback:
+            return self.fallback
+        return None
+
+    async def extract_ocr(self, image_bytes: bytes, filename: str, page_num: int) -> str:
+        if not self.is_active():
+            return ""
+
+        provider = self.current_provider()
+        if not provider:
+            return ""
+
+        try:
+            text = await _call_vision_provider(provider, image_bytes, filename, page_num, self.vision_model)
+            if text:
+                self.ocr_count += 1
+            return text
+        except FatalVisionError as fatal_err:
+            logging.warning("[Vision OCR] Fatal failure on provider '%s' (%s).", provider, fatal_err)
+            if provider == self.primary and self.fallback and not self.fallback_failed:
+                self.primary_failed = True
+                fallback_prov = self.fallback
+                logging.info(
+                    "[Vision OCR] Instantly failing over to fallback provider '%s' for %s (page %d).",
+                    fallback_prov,
+                    filename,
+                    page_num,
+                )
+                try:
+                    fb_text = await _call_vision_provider(fallback_prov, image_bytes, filename, page_num, self.vision_model)
+                    if fb_text:
+                        self.ocr_count += 1
+                    return fb_text
+                except Exception as fb_err:
+                    self.fallback_failed = True
+                    self.circuit_tripped = True
+                    logging.warning(
+                        "[Vision OCR] Fallback provider '%s' also failed (%s). Tripping Vision Circuit Breaker for remaining pages (using pure digital text).",
+                        fallback_prov,
+                        fb_err,
+                    )
+                    return ""
+            else:
+                self.circuit_tripped = True
+                logging.warning(
+                    "[Vision OCR] Vision Circuit Breaker tripped for remaining pages (continuing cleanly with native digital text)."
+                )
+                return ""
+        except Exception as exc:
+            logging.warning("[Vision OCR] Transient note on %s (page %d): %s", filename, page_num, exc)
+            return ""
+
+
+async def extract_text_with_groq_vision(
+    image_bytes: bytes,
+    filename: str,
+    page_num: int,
+    model: str = "llama-3.2-11b-vision-preview",
+) -> str:
+    """Backward-compatible helper invoking resilient vision provider."""
+    breaker = VisionCircuitBreaker(primary_provider="azure", fallback_provider="gemini", vision_model="gpt-5.4-nano")
+    return await breaker.extract_ocr(image_bytes, filename, page_num)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -160,6 +435,16 @@ async def get_bot_metadata(bot_id: str):
         }
 
 
+@router.get("/api/business-bot/config")
+@router.get("/api/business-bot/admin/config")
+async def api_get_business_bot_config():
+    """Returns dynamic configuration parameters for business bot creation, brochure uploads, and scraping."""
+    return {
+        "success": True,
+        "config": get_business_bot_config(),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  ADMIN APIs (Guarded by get_current_admin)
 # ═══════════════════════════════════════════════════════════════════
@@ -172,14 +457,19 @@ class ScrapeUrlRequest(BaseModel):
 @router.post("/api/business-bot/scrape-url")
 @router.post("/api/business-bot/admin/scrape-url")
 async def api_scrape_url(body: ScrapeUrlRequest, admin: dict = Depends(get_current_admin)):
-    """Scrapes one or multiple webpages (up to 5) without recursive link crawling."""
+    """Scrapes one or multiple webpages without recursive link crawling."""
     urls_to_scrape = []
     if body.urls:
         urls_to_scrape.extend(body.urls)
     if body.url:
         urls_to_scrape.append(body.url)
 
-    result = await scrape_multiple_urls(urls_to_scrape)
+    bot_cfg = get_business_bot_config()
+    result = await scrape_multiple_urls(
+        urls_to_scrape,
+        timeout=bot_cfg["scrape_timeout_seconds"],
+        max_pages=bot_cfg["max_pages_count"],
+    )
     return result
 
 
@@ -206,11 +496,23 @@ async def api_upload_brochures(
     admin: dict = Depends(get_current_admin),
 ):
     """
-    Validates up to 3 PDFs (max 4MB each).
-    Extracts text for Master Architect context and indexes into Qdrant collection biz_{bot_id}.
+    Validates up to max_files PDFs (max max_file_size_mb each).
+    Extracts digital text + optional Groq Vision OCR for images/scans,
+    synthesizes context for Master Architect and indexes into Qdrant collection biz_{bot_id}.
     """
-    if len(files) > 3:
-        raise HTTPException(status_code=400, detail="Maximum 3 brochure PDFs allowed.")
+    bot_cfg = get_business_bot_config()
+    max_files = bot_cfg["max_files_count"]
+    max_size_mb = bot_cfg["max_file_size_mb"]
+    enable_vision = bot_cfg["enable_vision_ocr"]
+    vision_model = bot_cfg["vision_model"]
+    primary_prov = bot_cfg.get("primary_vision_provider", "azure")
+    fallback_prov = bot_cfg.get("fallback_vision_provider", "gemini")
+    max_ocr_pages = bot_cfg.get("max_ocr_pages_per_doc", 15)
+    min_text_chars = bot_cfg.get("min_text_chars_for_ocr", 80)
+    allowed_exts = tuple(bot_cfg["allowed_extensions"])
+
+    if len(files) > max_files:
+        raise HTTPException(status_code=400, detail=f"Maximum {max_files} brochure PDFs allowed.")
 
     assigned_bot_id = bot_id or f"bot_{uuid.uuid4().hex[:8]}"
     collection_name = f"biz_{assigned_bot_id}"
@@ -219,26 +521,71 @@ async def api_upload_brochures(
     attachments_meta = []
     all_docs = []
 
+    # Resilient multi-tier vision circuit breaker for this upload job
+    breaker = VisionCircuitBreaker(
+        primary_provider=primary_prov,
+        fallback_provider=fallback_prov,
+        vision_model=vision_model,
+        max_ocr_pages=max_ocr_pages,
+    )
+
     for file in files:
-        if not file.filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail=f"File '{file.filename}' is not a PDF. Only PDFs are supported.")
+        if not file.filename.lower().endswith(allowed_exts):
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{file.filename}' is not supported. Allowed formats: {', '.join(allowed_exts)}.",
+            )
 
         content_bytes = await file.read()
         size_mb = len(content_bytes) / (1024 * 1024)
-        if size_mb > 4.0:
-            raise HTTPException(status_code=400, detail=f"File '{file.filename}' ({size_mb:.1f}MB) exceeds the 4MB limit.")
+        if size_mb > max_size_mb:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{file.filename}' ({size_mb:.1f}MB) exceeds the {max_size_mb}MB limit.",
+            )
 
-        # Extract text via PyMuPDF
+        # Extract text via PyMuPDF + Smart Multi-Tier Vision OCR
         file_text = ""
         try:
             doc = fitz.open(stream=content_bytes, filetype="pdf")
             for page_num, page in enumerate(doc, start=1):
                 page_text = page.get_text() or ""
-                file_text += page_text + "\n"
-                if page_text.strip():
-                    text_chunks = _split_text_into_chunks(page_text, chunk_size=800, overlap=150)
+                images_on_page = page.get_images()
+                has_images = len(images_on_page) > 0
+                clean_text = page_text.strip()
+                # Smart OCR: only invoke vision if page is truly sparse (< min_text_chars) with images
+                is_sparse_text = len(clean_text) < min_text_chars
+
+                ocr_text = ""
+                if enable_vision and breaker.is_active() and has_images and is_sparse_text:
+                    try:
+                        pix = page.get_pixmap(dpi=150)
+                        img_bytes = pix.tobytes("jpeg")
+                        ocr_text = await breaker.extract_ocr(img_bytes, file.filename, page_num)
+                    except Exception as ocr_err:
+                        logging.warning("Page pixmap/OCR failed for %s (page %d): %s", file.filename, page_num, ocr_err)
+
+                combined_page_text = clean_text
+                if ocr_text:
+                    if combined_page_text:
+                        combined_page_text = f"{combined_page_text}\n\n[Visual Content / Image OCR]:\n{ocr_text}"
+                    else:
+                        combined_page_text = ocr_text
+
+                file_text += combined_page_text + "\n"
+                if combined_page_text.strip():
+                    text_chunks = _split_text_into_chunks(combined_page_text, chunk_size=800, overlap=150)
                     for c in text_chunks:
-                        all_docs.append(Document(page_content=c, metadata={"source": file.filename, "page": page_num, "bot_id": assigned_bot_id}))
+                        all_docs.append(
+                            Document(
+                                page_content=c,
+                                metadata={
+                                    "source": file.filename,
+                                    "page": page_num,
+                                    "bot_id": assigned_bot_id,
+                                },
+                            )
+                        )
             extracted_chunks.append(f"=== BROCHURE: {file.filename} ===\n{file_text[:8000]}")
         except Exception as pdf_err:
             logging.warning("PyMuPDF extraction note for %s: %s", file.filename, pdf_err)
@@ -249,20 +596,31 @@ async def api_upload_brochures(
             "collection": collection_name,
         })
 
-    # Ingest into Qdrant collection
+    # Ingest into Qdrant collection with rate limit resilience
+    rag_indexed = False
+    rag_warning = None
     if all_docs:
         try:
             vs = VectorStore(collection_name=collection_name)
-            vs.store_documents(all_docs)
+            vs.add_documents(chunks=all_docs)
+            rag_indexed = True
             logging.info("Successfully indexed %d chunks for collection %s", len(all_docs), collection_name)
         except Exception as ing_err:
-            logging.error("Failed indexing brochure chunks for %s: %s", collection_name, ing_err)
+            logging.warning(
+                "Vector store ingestion note for %s: %s (continuing in prompt-context synthesis mode)",
+                collection_name,
+                ing_err,
+            )
+            rag_indexed = False
+            rag_warning = "Vector indexing temporarily rate-limited; operating in prompt-context synthesis mode."
 
     combined_text = "\n\n".join(extracted_chunks)
     return {
         "success": True,
         "bot_id": assigned_bot_id,
         "attachments": attachments_meta,
+        "rag_indexed": rag_indexed,
+        "warning": rag_warning,
         "extracted_brochures_text": combined_text[:16000],
     }
 
@@ -488,8 +846,39 @@ async def api_update_bot(bot_id: str, body: UpdateBotRequest, admin: dict = Depe
             ),
         )
 
-    logging.info("[Bot Update] Admin '%s' updated bot '%s'", admin["username"], bot_id)
-    return {"success": True, "message": "Bot updated successfully."}
+    if body.status:
+        if body.status.lower() == "active":
+            _ACTIVE_BOT_IDS_CACHE.add(bot_id)
+        elif body.status.lower() == "draft":
+            _ACTIVE_BOT_IDS_CACHE.discard(bot_id)
+
+    logging.info("[Bot Update] Admin '%s' updated bot '%s' (status: %s)", admin["username"], bot_id, body.status)
+    return {"success": True, "message": "Bot updated successfully.", "status": body.status}
+
+
+@router.post("/api/business-bot/admin/bots/{bot_id}/publish")
+async def api_publish_bot(bot_id: str, admin: dict = Depends(get_current_admin)):
+    """STRICT OWNERSHIP GUARD: One-click publishes a draft bot to the public directory."""
+    admin_id = admin["id"]
+    with get_db_cursor(commit=True) as cur:
+        cur.execute("SELECT admin_id FROM deployed_bots WHERE bot_id = %s LIMIT 1", (bot_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Assistant not found.")
+        if str(row["admin_id"]) != str(admin_id):
+            raise HTTPException(status_code=403, detail="Forbidden: You can only publish assistants created by your own account.")
+        cur.execute(
+            "UPDATE deployed_bots SET status = 'active', updated_at = now() WHERE bot_id = %s AND admin_id = %s;",
+            (bot_id, admin_id),
+        )
+    _ACTIVE_BOT_IDS_CACHE.add(bot_id)
+    logging.info("[Bot Publish] Admin '%s' published bot '%s' live to directory", admin["username"], bot_id)
+    return {
+        "success": True,
+        "message": "Assistant published live to the public directory successfully.",
+        "status": "active",
+        "bot_id": bot_id,
+    }
 
 
 @router.delete("/api/business-bot/admin/bots/{bot_id}")

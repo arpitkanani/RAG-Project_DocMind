@@ -321,16 +321,13 @@ class _PerfCursorWrapper:
         perf_count("db_queries", 1)
         with perf_step("db_query"):
             try:
-                res = self._cur.execute(*args, **kwargs)
-                self._executed = True
-                return res
+                return self._cur.execute(*args, **kwargs)
             except Exception as e:
                 import psycopg2
-                if not self._executed and isinstance(e, (psycopg2.OperationalError, psycopg2.InterfaceError)) and self._db_cursor_ctx:
+                if isinstance(e, (psycopg2.OperationalError, psycopg2.InterfaceError)) and self._db_cursor_ctx:
                     logging.warning("Pooled socket closed by server, retrying query with fresh connection: %s", e)
                     new_wrapper = self._db_cursor_ctx.reconnect()
                     self._cur = new_wrapper._cur
-                    self._executed = True
                     return self._cur.execute(*args, **kwargs)
                 raise
 
@@ -387,14 +384,47 @@ class get_db_cursor:
         self.cur = None
 
     def reconnect(self):
-        """Evicts broken connection and acquires a fresh one."""
+        """Evicts broken connection and acquires a verified live connection."""
         p = get_pool()
         if self.conn:
             try:
                 p.putconn(self.conn, close=True)
             except Exception:
-                pass
-        self.conn = _get_healthy_conn(p)
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+            self.conn = None
+
+        self._is_direct_conn = False
+
+        # Attempt to acquire and verify a healthy connection from the pool,
+        # evicting any additional stale/idle-terminated sockets.
+        max_pool_checks = max(p.maxconn, 5)
+        for _ in range(max_pool_checks):
+            try:
+                candidate = p.getconn()
+                if getattr(candidate, "closed", 0) != 0:
+                    p.putconn(candidate, close=True)
+                    continue
+                # Verify socket is genuinely alive with a 0-cost ping
+                with candidate.cursor() as test_cur:
+                    test_cur.execute("SELECT 1;")
+                self.conn = candidate
+                break
+            except Exception:
+                try:
+                    p.putconn(candidate, close=True)
+                except Exception:
+                    pass
+
+        # If all pooled connections were severed by the remote server, create a fresh connection
+        if not self.conn:
+            import psycopg2
+            logging.info("Creating a fresh direct DB connection after pool socket eviction...")
+            self.conn = psycopg2.connect(_get_db_url())
+            self._is_direct_conn = True
+
         self.raw_cur = self.conn.cursor(cursor_factory=RealDictCursor)
         self.cur = _PerfCursorWrapper(self.raw_cur, db_cursor_ctx=self)
         return self.cur
@@ -436,7 +466,13 @@ class get_db_cursor:
                     pass
             if self.conn:
                 try:
-                    get_pool().putconn(self.conn, close=is_conn_error)
+                    if getattr(self, "_is_direct_conn", False):
+                        self.conn.close()
+                    else:
+                        get_pool().putconn(self.conn, close=is_conn_error)
                 except Exception:
-                    pass
+                    try:
+                        self.conn.close()
+                    except Exception:
+                        pass
         return False  # never swallow exceptions

@@ -27,12 +27,12 @@ Built on **LangGraph state machines**, **Qdrant vector databases**, and **Supaba
   - **Fallback:** Local `BAAI/bge-small-en-v1.5` (384 dims) loaded lazily only when selected by the user.
   - **Per-Collection Consistency:** Collections are audited against active vector dimensions; incompatible documents display a `"Needs re-index"` warning badge.
 - ⚙️ **Workspace Settings UI:** In-app settings modal allowing instant switching between Azure OpenAI and local HuggingFace embeddings.
-- 💾 **Stateful Conversational Memory:** Multi-turn session persistence backed by Supabase PostgreSQL `AsyncPostgresSaver` checkpointer, sliding context windows, and automatic background session summarization.
+- 💾 **Stateful Conversational Memory:** Multi-turn session persistence backed by Supabase PostgreSQL `AsyncPostgresSaver` checkpointer, 10-turn (20 messages) verbatim context window, and batched background session summarization to minimize redundant LLM calls.
 
 ### 2. Custom Business Bot Platform & Architect Wizard (`/builder`, `/admin-dashboard`, `/bot/{bot_id}`)
 - 🎙️ **Live Master Architect WebSocket Interview:** Interactive interview conducted by Azure OpenAI probing business domain across 10 critical operational vectors with real-time badge tracking.
 - 🛡️ **Dynamic Prompt Synthesis & Safety Shields:** Automatically compiles enterprise system prompts with verified knowledge boundaries, contact info, and anti-leak prompt-injection shields. Includes advisory guidance for two-step LLM verification before deployment.
-- 🌐 **Single-Page Website Scraping & Brochure Uploads:** Up to 5 website URLs and 3 PDF brochures (&le; 4 MB each) ingested into isolated Qdrant vector collections (`biz_{bot_id}`). Features browser export tips (`Ctrl + P` to PDF).
+- 🌐 **Single-Page Website Scraping & Multimodal Brochure Ingestion:** Up to 5 website URLs and 5 PDF brochures (&le; 30 MB each, dynamically configurable via `config/config.yaml`) ingested into isolated Qdrant vector collections (`biz_{bot_id}`) with multimodal Groq Vision OCR (`llama-3.2-11b-vision-preview`) for brochure images, scans, and tables. Features browser export tips (`Ctrl + P` to PDF).
 - 💬 **Embeddable Customer Chat (`/bot/{bot_id}`):** High-concurrency chat with typewriter streaming, Warm Ivory glassmorphic header, and "Back to Overview" navigation pill.
 - 📋 **Automatic Lead Capture & Privacy Shield:** Automatically extracts customer contact inquiries (name, email, phone) into PostgreSQL `bot_leads` without echoing raw credentials back to users.
 

@@ -50,3 +50,40 @@ try:
 except Exception:
     pass
 
+from logging.handlers import RotatingFileHandler
+
+# Dedicated latency log file for all flows (Custom Bots, RAG, Architect, Prompts, etc.)
+LATENCY_LOG_PATH = os.path.join(LOG_DIRECTORY, "latency.log")
+latency_handler = RotatingFileHandler(
+    LATENCY_LOG_PATH,
+    maxBytes=10 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+latency_handler.setLevel(logging.INFO)
+latency_formatter = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+latency_handler.setFormatter(latency_formatter)
+
+latency_logger = logging.getLogger("latency_telemetry")
+latency_logger.setLevel(logging.INFO)
+if not latency_logger.handlers:
+    latency_logger.addHandler(latency_handler)
+    # Also output to the active session's dated log file
+    latency_logger.addHandler(file_handler)
+latency_logger.propagate = False
+
+
+def log_latency(flow: str, message: str, **kwargs) -> None:
+    """
+    Unified latency logging utility across all application flows.
+    Writes structured latency records directly to logs/latency.log
+    as well as the active session dated log file (logs/<date_month_year>+<time>.log).
+    """
+    prefix = f"[{flow.upper()}]" if flow else "[LATENCY]"
+    formatted_msg = f"{prefix} {message}"
+    if kwargs:
+        extra_parts = [f"{k}={v}" for k, v in kwargs.items()]
+        formatted_msg = f"{formatted_msg} | " + " | ".join(extra_parts)
+    latency_logger.info(formatted_msg)
+
+

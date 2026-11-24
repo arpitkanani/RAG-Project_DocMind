@@ -16,7 +16,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let chatWs = null;
   let currentBotRow = null;
-  let currentToolStatusEl = null;
 
   function showToast(message, type = "success", durationMs = 3800) {
     let stack = document.getElementById("toastStack");
@@ -110,11 +109,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function scrollToBottom(force = false) {
-    const threshold = 120;
-    const isNearBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < threshold;
-    if (force || isNearBottom) {
-      chatMessages.scrollTop = chatMessages.scrollHeight;
+  let userIsScrollingUp = false;
+
+  // Track if user manually scrolls away from bottom
+  chatMessages.addEventListener("scroll", () => {
+    const distanceFromBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
+    // Pause auto-scroll only if user scrolled up more than 80px from bottom
+    userIsScrollingUp = distanceFromBottom > 80;
+  }, { passive: true });
+
+  function scrollToBottom(force = false, smooth = false) {
+    if (force) {
+      userIsScrollingUp = false;
+    }
+    if (!userIsScrollingUp || force) {
+      if (smooth) {
+        chatMessages.scrollTo({
+          top: chatMessages.scrollHeight,
+          behavior: "smooth",
+        });
+      } else {
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
     }
   }
 
@@ -163,27 +179,36 @@ document.addEventListener("DOMContentLoaded", () => {
           if (botGreetingBubble && data.content) {
             botGreetingBubble.innerHTML = formatMarkdown(data.content);
           }
+          scrollToBottom(true);
           if (data.session_expired) {
             showToast("Previous conversation expired after 72 hours of inactivity. Starting a new session.", "warn", 5000);
           }
         } else if (data.type === "tool_status") {
-          removeThinkingIndicator();
-          showToolStatus(data.message || "Searching company brochures...");
+          // Intentionally keep the three-dots thinking indicator active; do not render any tool status badge
         } else if (data.type === "token") {
           removeThinkingIndicator();
-          removeToolStatus();
           appendBotToken(data.token);
         } else if (data.type === "lead_alert") {
-          showLeadCapturedNotice(data);
-          showToast(`Inquiry captured for ${data.customer_name || "you"}!`, "success", 4000);
+          if (data.has_contact) {
+            showLeadCapturedNotice(data);
+            showToast("Inquiry recorded! Our team will be in touch shortly.", "success", 4000);
+          }
         } else if (data.type === "done") {
           removeThinkingIndicator();
-          removeToolStatus();
+          if (data.latency) {
+            console.info("[Bot Latency]", data.latency);
+            if (window.location.search.includes("debug=1") && currentBotRow) {
+              const latPill = document.createElement("div");
+              latPill.className = "latency-debug-pill";
+              latPill.style.cssText = "font-size: 0.72rem; color: #8F8C84; margin-top: 4px; margin-left: 48px; opacity: 0.85;";
+              latPill.innerHTML = `⚡ ${data.latency.total_ms}ms (TTFT: ${data.latency.ttft_ms}ms · ${data.latency.tokens_per_sec} tok/s · RAG: ${data.latency.rag_ms}ms)`;
+              currentBotRow.parentNode.insertBefore(latPill, currentBotRow.nextSibling);
+            }
+          }
           finalizeCurrentBotMessage();
         } else if (data.type === "error") {
           dismissLoader();
           removeThinkingIndicator();
-          removeToolStatus();
           // Never display error messages inside the chat window
           if (currentBotRow && (!currentBotRawText || !currentBotRawText.trim())) {
             currentBotRow.remove();
@@ -199,7 +224,6 @@ document.addEventListener("DOMContentLoaded", () => {
     chatWs.onerror = (err) => {
       console.error("Chat WS error:", err);
       removeThinkingIndicator();
-      removeToolStatus();
       finalizeCurrentBotMessage();
       showToast("WebSocket communication error. Please try again.", "error", 3500);
     };
@@ -207,7 +231,6 @@ document.addEventListener("DOMContentLoaded", () => {
     chatWs.onclose = () => {
       console.debug("Chat WS closed. Reconnecting in 3s...");
       removeThinkingIndicator();
-      removeToolStatus();
       finalizeCurrentBotMessage();
       showToast("Connection lost. Reconnecting to assistant...", "warn", 3500);
       setTimeout(connectWebSocket, 3000);
@@ -231,34 +254,12 @@ document.addEventListener("DOMContentLoaded", () => {
       </div>
     `;
     chatMessages.appendChild(row);
-    scrollToBottom(true);
+    scrollToBottom(true, true);
   }
 
   function removeThinkingIndicator() {
     const el = document.getElementById("thinkingIndicatorRow");
     if (el) el.remove();
-  }
-
-  function showToolStatus(msg) {
-    if (!currentToolStatusEl) {
-      currentToolStatusEl = document.createElement("div");
-      currentToolStatusEl.className = "tool-status-bubble";
-      chatMessages.appendChild(currentToolStatusEl);
-    }
-    currentToolStatusEl.innerHTML = `
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-      </svg>
-      ${escapeHtml(msg)}
-    `;
-    scrollToBottom(false);
-  }
-
-  function removeToolStatus() {
-    if (currentToolStatusEl) {
-      currentToolStatusEl.remove();
-      currentToolStatusEl = null;
-    }
   }
 
   function formatMarkdown(text) {
@@ -275,8 +276,8 @@ document.addEventListener("DOMContentLoaded", () => {
     s = s.replace(/^## (.*$)/gim, '<h3 style="margin: 14px 0 6px; color: #29352D; font-size: 1.08rem; font-weight: 800; font-family: \'Lora\', serif;">$1</h3>');
 
     // Bold & italic
-    s = s.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #1E2721; font-weight: 700;">$1</strong>');
-    s = s.replace(/\*(.*?)\*/g, '<em style="color: #576359;">$1</em>');
+    s = s.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #29352D; font-weight: 700;">$1</strong>');
+    s = s.replace(/\*(.*?)\*/g, '<em style="color: #5C5952;">$1</em>');
 
     // Inline code
     s = s.replace(/`([^`]+)`/g, '<code style="background: rgba(41, 53, 45, 0.08); padding: 2px 6px; border-radius: 4px; font-family: \'JetBrains Mono\', monospace; font-size: 0.88em;">$1</code>');
@@ -305,22 +306,22 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentBotRawText = "";
 
   function appendBotToken(token) {
-    const isFirstToken = !currentBotRow;
     if (!currentBotRow) {
       currentBotRow = document.createElement("div");
       currentBotRow.className = "chat-row bot";
       const initial = (headerAvatar?.textContent || "B").trim();
       currentBotRow.innerHTML = `
-        <div class="row-avatar">${initial}</div>
+        <div class="row-avatar">${escapeHtml(initial)}</div>
         <div class="chat-bubble"></div>
       `;
       chatMessages.appendChild(currentBotRow);
       currentBotRawText = "";
+      scrollToBottom(true);
     }
     currentBotRawText += token;
     const bubble = currentBotRow.querySelector(".chat-bubble");
     bubble.innerHTML = formatMarkdown(currentBotRawText);
-    scrollToBottom(isFirstToken);
+    scrollToBottom(false);
   }
 
   function showLeadCapturedNotice(lead) {
@@ -332,10 +333,10 @@ document.addEventListener("DOMContentLoaded", () => {
     notice.style.border = "1px solid rgba(57, 130, 99, 0.35)";
     notice.style.borderRadius = "12px";
     notice.style.fontSize = "0.84rem";
-    notice.style.color = "#255E44";
+    notice.style.color = "#29352D";
     notice.innerHTML = `
-      <strong style="color: #1E4633;">📅 Appointment / Inquiry Recorded:</strong><br/>
-      Our team has received your request. A specialist will be in touch shortly.
+      <strong style="color: #29352D;">📅 Contact Details &amp; Request Received:</strong><br/>
+      Our team has noted your details and will be in touch shortly.
     `;
     chatMessages.appendChild(notice);
     scrollToBottom(true);
@@ -349,6 +350,7 @@ document.addEventListener("DOMContentLoaded", () => {
       customerQueryInput.disabled = false;
       customerQueryInput.focus();
     }
+    scrollToBottom(true, true);
   }
 
   function sendQuery(queryText) {
@@ -369,7 +371,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <div class="chat-bubble">${escapeHtml(text)}</div>
     `;
     chatMessages.appendChild(userRow);
-    scrollToBottom(true);
+    scrollToBottom(true, true);
 
     // Reset input
     customerQueryInput.value = "";

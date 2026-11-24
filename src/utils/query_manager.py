@@ -12,6 +12,7 @@ import asyncio
 import json
 import re
 import sys
+import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 from langchain_core.runnables import RunnableConfig
 
@@ -27,7 +28,7 @@ from src.exception import (
     VectorStoreUnavailableError,
 )
 from src.graph.builder import rag_graph
-from src.logger import logging
+from src.logger import logging, log_latency
 from src.utils.helpers import extract_text
 from src.utils.rate_limiter import LLMRateLimitError
 
@@ -36,6 +37,7 @@ _STAGE_LABELS = {
     "load_context": ("classifying", "Analyzing query..."),
     "classify_intent": ("classifying", "Analyzing query..."),
     "clarify_question": ("classifying", "Checking question clarity..."),
+    "guardrail_response": ("guardrail", "Verifying request..."),
     "chitchat": ("thinking", "Thinking..."),
     "run_react_agent": ("thinking", "Thinking..."),
     "agent": ("thinking", "Thinking..."),
@@ -178,6 +180,7 @@ class QueryManager:
         app_graph: Any,
     ):
         """Executes the StateGraph inside an asyncio.shield block."""
+        t_query_start = time.perf_counter()
         user_id = active_query.user_id
         session_id = active_query.session_id
         query = active_query.query
@@ -430,6 +433,13 @@ class QueryManager:
                 "citations": full_citations,
             })
             active_query.final_answer = full_final_answer
+
+            total_query_ms = (time.perf_counter() - t_query_start) * 1000.0
+            log_latency(
+                "RAG_WORKSPACE",
+                f"Session: '{session_id}' | User: '{user_id}' | Query: {query[:80]!r} | "
+                f"Total Latency: {total_query_ms:.1f}ms | Answer Length: {len(full_final_answer)} chars"
+            )
 
             logging.info(
                 "<<< [LIVE QUERY COMPLETED] session: %s | user: %s\nFinal Answer:\n%s%s",

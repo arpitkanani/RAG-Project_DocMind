@@ -25,9 +25,25 @@ class MemoryManager:
         self.session_id = session_id
         self.user_id = user_id
         self.window_days = config.get("memory", {}).get("window_days", 7)
-        self.recent_turns_to_keep = config.get("memory", {}).get("recent_messages_verbatim", 6)
+        self.recent_turns_to_keep = config.get("memory", {}).get("recent_messages_verbatim", 20)
+        self.summary_batch_threshold = config.get("memory", {}).get("summary_batch_threshold", 10)
 
     def _ensure_session(self, cur, title: Optional[str] = None):
+        # Verify ownership if session already exists
+        if self.session_id and self.user_id:
+            cur.execute("SELECT user_id FROM sessions WHERE session_id = %s LIMIT 1;", (self.session_id,))
+            existing = cur.fetchone()
+            if existing and existing.get("user_id"):
+                if str(existing["user_id"]) != str(self.user_id):
+                    logging.warning(
+                        "Prevented session collision/hijack: session %s owned by %s, not %s",
+                        self.session_id,
+                        existing["user_id"],
+                        self.user_id,
+                    )
+                    import uuid
+                    self.session_id = f"sess_{uuid.uuid4().hex[:12]}"
+
         cur.execute(
             """
             INSERT INTO sessions (session_id, user_id, title, created_at, updated_at)
@@ -35,6 +51,7 @@ class MemoryManager:
             ON CONFLICT (session_id) DO UPDATE
                 SET title = COALESCE(%s, sessions.title),
                     updated_at = now()
+            WHERE sessions.user_id = EXCLUDED.user_id;
             """,
             (self.session_id, self.user_id, title, title),
         )
@@ -170,6 +187,9 @@ class MemoryManager:
             or self._normalize_dt(datetime.fromisoformat(m["timestamp"])) > already_covered_through
         ]
 
+        if not to_fold_in or len(to_fold_in) < self.summary_batch_threshold:
+            return cached["summary"] if cached else ""
+
         new_summary = self._summarize_messages(
             to_fold_in, previous_summary=cached["summary"] if cached else ""
         )
@@ -212,12 +232,14 @@ class MemoryManager:
                     """
                     SELECT m.role, m.content, m.attachments, m.created_at
                     FROM messages m
+                    JOIN sessions s ON s.session_id = m.session_id
                     WHERE m.session_id = %s
+                      AND (s.user_id = %s OR %s IS NULL)
                       AND m.created_at >= (now() - (%s || ' days')::interval)
                     ORDER BY m.created_at ASC
                     LIMIT 100;
                     """,
-                    (self.session_id, str(self.window_days)),
+                    (self.session_id, self.user_id, self.user_id, str(self.window_days)),
                 )
                 rows = cur.fetchall()
 
@@ -429,38 +451,49 @@ class MemoryManager:
         """
         try:
             with get_db_cursor(commit=False) as cur:
-                # 1. Fetch session record for title and timestamps
+                # 1. Fetch session record for title and timestamps with strict user ownership
                 cur.execute(
                     "SELECT title, created_at, updated_at FROM sessions WHERE session_id = %s AND user_id = %s LIMIT 1;",
                     (self.session_id, self.user_id),
                 )
-                s_row = cur.fetchone() or {}
+                s_row = cur.fetchone()
+                if not s_row:
+                    return {
+                        "session_id": self.session_id,
+                        "title": "New Chat",
+                        "messages": [],
+                        "attachments": [],
+                        "is_older_than_7_days": False,
+                        "has_expired_attachments": False,
+                    }
 
-                # 2. Fetch messages using composite index idx_messages_session_created
+                # 2. Fetch messages joining sessions to guarantee user isolation
                 cur.execute(
                     """
-                    SELECT role, content, attachments, created_at
-                    FROM messages
-                    WHERE session_id = %s
-                    ORDER BY created_at ASC
+                    SELECT m.role, m.content, m.attachments, m.created_at
+                    FROM messages m
+                    JOIN sessions s ON s.session_id = m.session_id
+                    WHERE m.session_id = %s AND s.user_id = %s
+                    ORDER BY m.created_at ASC
                     LIMIT 100;
                     """,
-                    (self.session_id,),
+                    (self.session_id, self.user_id),
                 )
                 msg_rows = cur.fetchall()
 
-                # 3. Fetch attachments using composite index idx_attachments_session_created
+                # 3. Fetch attachments joining sessions
                 cur.execute(
                     """
-                    SELECT name, collection, source_type AS type,
-                           COALESCE(embedding_model, 'text-embedding-3-small') AS embedding_model,
-                           COALESCE(vector_dim, 1536) AS vector_dim,
-                           extra, created_at
-                    FROM attachments
-                    WHERE session_id = %s
-                    ORDER BY created_at ASC;
+                    SELECT a.name, a.collection, a.source_type AS type,
+                           COALESCE(a.embedding_model, 'text-embedding-3-small') AS embedding_model,
+                           COALESCE(a.vector_dim, 1536) AS vector_dim,
+                           a.extra, a.created_at
+                    FROM attachments a
+                    JOIN sessions s ON s.session_id = a.session_id
+                    WHERE a.session_id = %s AND s.user_id = %s
+                    ORDER BY a.created_at ASC;
                     """,
-                    (self.session_id,),
+                    (self.session_id, self.user_id),
                 )
                 att_rows = cur.fetchall()
 

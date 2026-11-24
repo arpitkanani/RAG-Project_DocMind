@@ -108,6 +108,37 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentTurn = 1;
   let simWs = null;
 
+  // Dynamic Configuration State (loaded from /api/business-bot/config)
+  let maxFileSizeMb = 30;
+  let maxFilesCount = 5;
+  let maxPagesCount = 5;
+
+  async function loadBuilderConfig() {
+    try {
+      const res = await fetch("/api/business-bot/config");
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.config) {
+          if (data.config.max_file_size_mb) maxFileSizeMb = data.config.max_file_size_mb;
+          if (data.config.max_files_count) maxFilesCount = data.config.max_files_count;
+          if (data.config.max_pages_count) maxPagesCount = data.config.max_pages_count;
+          updateDynamicConfigUI();
+        }
+      }
+    } catch (e) {
+      console.warn("Failed fetching /api/business-bot/config, using defaults:", e);
+    }
+  }
+
+  function updateDynamicConfigUI() {
+    document.querySelectorAll(".dyn-max-size").forEach((el) => (el.textContent = maxFileSizeMb));
+    document.querySelectorAll(".dyn-max-files").forEach((el) => (el.textContent = maxFilesCount));
+    document.querySelectorAll(".dyn-max-pages").forEach((el) => (el.textContent = maxPagesCount));
+  }
+
+  // Fetch dynamic config immediately
+  loadBuilderConfig();
+
   // ══════════════════════ STEP NAVIGATION ══════════════════════
   function goToStep(stepIndex) {
     panels.forEach((p, idx) => {
@@ -156,13 +187,13 @@ document.addEventListener("DOMContentLoaded", () => {
         step1Error.style.display = "block";
         return;
       }
-      if (f.size > 4 * 1024 * 1024) {
-        step1Error.textContent = `File "${f.name}" exceeds the 4 MB limit.`;
+      if (f.size > maxFileSizeMb * 1024 * 1024) {
+        step1Error.textContent = `File "${f.name}" exceeds the ${maxFileSizeMb} MB limit.`;
         step1Error.style.display = "block";
         return;
       }
-      if (stagedFiles.length >= 3) {
-        step1Error.textContent = "Maximum 3 brochure PDFs allowed.";
+      if (stagedFiles.length >= maxFilesCount) {
+        step1Error.textContent = `Maximum ${maxFilesCount} brochure PDFs allowed.`;
         step1Error.style.display = "block";
         return;
       }
@@ -208,8 +239,8 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnAddUrlRow && websiteUrlsContainer) {
     btnAddUrlRow.addEventListener("click", () => {
       const currentRows = websiteUrlsContainer.querySelectorAll(".website-url-field");
-      if (currentRows.length >= 5) {
-        showToast("Maximum of 5 website pages allowed.", "info");
+      if (currentRows.length >= maxPagesCount) {
+        showToast(`Maximum of ${maxPagesCount} website pages allowed.`, "info");
         return;
       }
       const row = document.createElement("div");
@@ -223,7 +254,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const removeBtn = row.querySelector(".btn-remove-url");
       removeBtn.addEventListener("click", () => {
         row.remove();
-        if (websiteUrlsContainer.querySelectorAll(".website-url-field").length < 5 && btnAddUrlRow) {
+        if (websiteUrlsContainer.querySelectorAll(".website-url-field").length < maxPagesCount && btnAddUrlRow) {
           btnAddUrlRow.style.display = "inline-flex";
         }
       });
@@ -235,7 +266,7 @@ document.addEventListener("DOMContentLoaded", () => {
         removeBtn.style.color = "var(--forest-charcoal-muted, #677369)";
         removeBtn.style.borderColor = "var(--border-warm, #E5E1D8)";
       });
-      if (websiteUrlsContainer.querySelectorAll(".website-url-field").length >= 5 && btnAddUrlRow) {
+      if (websiteUrlsContainer.querySelectorAll(".website-url-field").length >= maxPagesCount && btnAddUrlRow) {
         btnAddUrlRow.style.display = "none";
       }
     });
@@ -255,7 +286,7 @@ document.addEventListener("DOMContentLoaded", () => {
       btnScrapeUrl.disabled = true;
       btnScrapeUrl.textContent = "Scraping...";
       scrapePreviewBox.style.display = "block";
-      scrapePreviewBox.style.background = "var(--surface-soft, #FAF8F5)";
+      scrapePreviewBox.style.background = "var(--surface-soft, #FAF7EE)";
       scrapePreviewBox.style.border = "1px solid var(--border-warm, #E5E1D8)";
       scrapePreviewBox.innerHTML = `
         <div style="display: flex; align-items: center; gap: 8px; color: var(--forest-charcoal-muted, #677369);">
@@ -413,7 +444,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (stagedFiles.length === 0) {
-        step1Error.textContent = "Please upload at least 1 brochure PDF (up to 3, max 4MB each).";
+        step1Error.textContent = `Please upload at least 1 brochure PDF (up to ${maxFilesCount}, max ${maxFileSizeMb}MB each).`;
         step1Error.style.display = "block";
         return;
       }
@@ -443,7 +474,7 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
 
-        btnGoToStep2.textContent = "Ingesting Brochures into Qdrant...";
+        btnGoToStep2.textContent = "Analyzing & Ingesting Brochures...";
         const formData = new FormData();
         formData.append("bot_id", tempBotId);
         stagedFiles.forEach((file) => formData.append("files", file));
@@ -456,6 +487,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!res.ok) throw new Error(uploadResult.detail || "Brochure ingestion failed.");
 
         extractedBrochuresText = uploadResult.extracted_brochures_text || "";
+        if (uploadResult.rag_indexed === false && uploadResult.warning) {
+          showToast(uploadResult.warning, "info");
+        }
         goToStep(1); // Step 2 (0-indexed 1)
         startArchitectInterview();
       } catch (err) {
@@ -715,10 +749,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!text) return "";
     let s = escapeHtml(text);
     // Headings
-    s = s.replace(/^### (.*$)/gim, '<h4 style="margin: 8px 0 4px; color: var(--forest-charcoal, #252923); font-size: 0.95rem;">$1</h4>');
-    s = s.replace(/^## (.*$)/gim, '<h3 style="margin: 10px 0 4px; color: var(--forest-charcoal, #252923); font-size: 1.05rem;">$1</h3>');
+    s = s.replace(/^### (.*$)/gim, '<h4 style="margin: 8px 0 4px; color: var(--forest-charcoal, #29352D); font-size: 0.95rem;">$1</h4>');
+    s = s.replace(/^## (.*$)/gim, '<h3 style="margin: 10px 0 4px; color: var(--forest-charcoal, #29352D); font-size: 1.05rem;">$1</h3>');
     // Bold & italic
-    s = s.replace(/\*\*(.*?)\*\*/g, '<strong style="color: var(--forest-charcoal, #252923);">$1</strong>');
+    s = s.replace(/\*\*(.*?)\*\*/g, '<strong style="color: var(--forest-charcoal, #29352D);">$1</strong>');
     s = s.replace(/\*(.*?)\*/g, '<em>$1</em>');
     // Bullet points
     s = s.replace(/^\s*[-•]\s+(.*$)/gim, '<li style="margin-left: 18px; margin-bottom: 3px;">$1</li>');
@@ -812,7 +846,32 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentSimRow = null;
   let currentSimRawText = "";
 
+  function showSimThinkingIndicator() {
+    removeSimThinkingIndicator();
+    const row = document.createElement("div");
+    row.className = "interview-msg architect";
+    row.id = "simThinkingIndicator";
+    row.innerHTML = `
+      <div class="interview-avatar">Bot</div>
+      <div class="reasoning-bubble" title="Reasoning...">
+        <div class="reasoning-dots">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </div>
+      </div>
+    `;
+    simMessages.appendChild(row);
+    simMessages.scrollTop = simMessages.scrollHeight;
+  }
+
+  function removeSimThinkingIndicator() {
+    const el = document.getElementById("simThinkingIndicator");
+    if (el) el.remove();
+  }
+
   function appendSimToken(token) {
+    removeSimThinkingIndicator();
     if (!currentSimRow) {
       currentSimRow = document.createElement("div");
       currentSimRow.className = "interview-msg architect";
@@ -830,6 +889,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function finalizeSimMessage() {
+    removeSimThinkingIndicator();
     currentSimRow = null;
     currentSimRawText = "";
     if (btnSendSim) btnSendSim.disabled = false;
@@ -837,15 +897,40 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function appendSimLeadAlert(lead) {
+    // Only display if user expressed high intent or provided personal contact info
+    if (!lead || (!lead.has_contact && !lead.is_high_intent)) return;
+
     const alertDiv = document.createElement("div");
-    alertDiv.style.padding = "8px 12px";
-    alertDiv.style.background = "rgba(57, 130, 99, 0.12)";
-    alertDiv.style.border = "1px solid rgba(57, 130, 99, 0.3)";
-    alertDiv.style.borderRadius = "8px";
+    alertDiv.className = "sim-lead-pill";
+    alertDiv.style.alignSelf = "center";
+    alertDiv.style.margin = "10px auto";
+    alertDiv.style.padding = "7px 16px";
+    alertDiv.style.background = "linear-gradient(135deg, rgba(163, 177, 138, 0.18), rgba(41, 53, 45, 0.04))";
+    alertDiv.style.border = "1px solid rgba(57, 130, 99, 0.35)";
+    alertDiv.style.borderRadius = "20px";
     alertDiv.style.fontSize = "0.78rem";
-    alertDiv.style.color = "var(--status-success, #398263)";
+    alertDiv.style.color = "#29352D";
     alertDiv.style.fontWeight = "600";
-    alertDiv.innerHTML = `✓ Lead Trigger Detected: Appointment inquiry logged for ${escapeHtml(lead.customer_name || "Customer")}`;
+    alertDiv.style.display = "inline-flex";
+    alertDiv.style.alignItems = "center";
+    alertDiv.style.gap = "8px";
+    alertDiv.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.04)";
+
+    const typeNames = {
+      "appointment": "Booking / Appointment Intent",
+      "callback_request": "Callback Request",
+      "purchase_intent": "Purchase / Order Intent",
+      "pricing_quote": "Formal Quotation Request",
+      "contact_lead": "Contact Details Captured",
+      "general_inquiry": "Customer Inquiry"
+    };
+    const intentLabel = typeNames[lead.inquiry_type] || "Customer Lead";
+    const contactNotice = lead.has_contact ? "Contact Info Captured" : "Awaiting User Contact";
+
+    alertDiv.innerHTML = `
+      <span style="font-size: 0.95rem;">🎯</span>
+      <span><strong>Lead Auto-Detected:</strong> ${escapeHtml(intentLabel)} (${contactNotice}) &bull; Synced to <a href="/admin-dashboard" target="_blank" style="color: #29352D; text-decoration: underline; font-weight: 700;">Inquiries &amp; Leads</a></span>
+    `;
     simMessages.appendChild(alertDiv);
     simMessages.scrollTop = simMessages.scrollHeight;
   }
@@ -864,6 +949,7 @@ document.addEventListener("DOMContentLoaded", () => {
     simMessages.scrollTop = simMessages.scrollHeight;
 
     currentSimRow = null;
+    showSimThinkingIndicator();
     simWs.send(JSON.stringify({ query }));
     simInput.value = "";
   }
@@ -905,17 +991,32 @@ document.addEventListener("DOMContentLoaded", () => {
         const result = await res.json();
         if (!res.ok) throw new Error(result.detail || "Deployment failed.");
 
+        try {
+          sessionStorage.removeItem("docuvortex.public_bots");
+          sessionStorage.removeItem("docuvortex.admin_bots");
+        } catch (e) {}
+
+        // Update deploy button state cleanly so it doesn't remain "Deploying..." or blurred
+        btnDeployBot.disabled = true;
+        btnDeployBot.textContent = "✓ Assistant Deployed Live";
+        btnDeployBot.style.background = "var(--status-success, #398263)";
+        btnDeployBot.style.borderColor = "var(--status-success, #398263)";
+        btnDeployBot.style.color = "#FFFFFF";
+        btnDeployBot.style.opacity = "1";
+        btnDeployBot.style.cursor = "default";
+        btnDeployBot.style.boxShadow = "0 2px 8px rgba(57, 130, 99, 0.3)";
+
         deployStatusAlert.style.display = "block";
         deployStatusAlert.style.background = "rgba(57, 130, 99, 0.12)";
         deployStatusAlert.style.border = "1px solid rgba(57, 130, 99, 0.3)";
         deployStatusAlert.style.color = "var(--status-success, #398263)";
         deployStatusAlert.innerHTML = `
-          <strong>🎉 Success! Assistant Deployed Live!</strong><br/>
-          Your assistant is now listed in the DocuVortex Assistant Directory.<br/>
-          <div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 10px;">
-            <a href="/bot/${tempBotId}" target="_blank" class="nav-link-primary" style="font-size: 0.82rem; padding: 6px 14px;">Open Live Chat &rarr;</a>
-            <a href="/" class="nav-link-ghost" style="font-size: 0.82rem; padding: 6px 14px;">&larr; Return to Directory</a>
-            <a href="/admin-dashboard" class="nav-link-ghost" style="font-size: 0.82rem; padding: 6px 14px;">Go to Admin Dashboard &rarr;</a>
+          <div style="font-size: 0.98rem; font-weight: 700; color: #29352D; margin-bottom: 4px;">🎉 Success! Assistant Deployed Live!</div>
+          <div style="font-size: 0.86rem; color: #29352D; margin-bottom: 12px;">Your assistant is now listed in the DocuVortex Assistant Directory.</div>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 12px;">
+            <a href="/" class="nav-link-ghost" style="font-size: 0.82rem; padding: 6px 16px;">&larr; Return to Directory</a>
+            <a href="/bot/${tempBotId}" target="_blank" class="nav-link-primary" style="font-size: 0.82rem; padding: 6px 18px; font-weight: 700;">Open Live Chat &rarr;</a>
+            <a href="/admin-dashboard" class="nav-link-ghost" style="font-size: 0.82rem; padding: 6px 16px;">Go to Admin Dashboard &rarr;</a>
           </div>
         `;
       } catch (err) {

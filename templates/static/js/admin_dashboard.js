@@ -154,6 +154,21 @@ document.addEventListener("DOMContentLoaded", () => {
       const initial = persona.slice(0, 1).toUpperCase();
       const escapedPersona = escapeHtml(persona).replace(/'/g, "\\'");
       const escapedBiz = escapeHtml(bizName).replace(/'/g, "\\'");
+      const isDraft = (bot.status || "active").toLowerCase() === "draft";
+      const statusBadge = isDraft
+        ? `<span class="dash-status-pill draft" title="Draft: Not listed on public landing page marketplace">Draft</span>`
+        : `<span class="dash-status-pill active" title="Live: Listed on public landing page marketplace">● Live</span>`;
+
+      const primaryActionHtml = isDraft
+        ? `<button type="button" class="btn-terracotta" onclick="publishBot('${botId}')" style="font-size: 0.82rem; padding: 7px 12px; flex: 1; text-align: center; cursor: pointer;" title="Publish this assistant to the public directory">
+             Publish Live &rarr;
+           </button>
+           <a href="/bot/${botId}" target="_blank" class="btn-forest-ghost" style="font-size: 0.82rem; padding: 7px 12px; text-align: center; text-decoration: none;" title="Test in sandbox">
+             Test
+           </a>`
+        : `<a href="/bot/${botId}" target="_blank" class="btn-terracotta" style="font-size: 0.82rem; padding: 7px 14px; flex: 1; text-align: center;">
+             Chat Live &rarr;
+           </a>`;
 
       html += `
         <div class="dash-card" id="botCard_${botId}">
@@ -161,9 +176,12 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="dash-card-header">
               <div class="dash-card-header-left">
                 <div class="dash-bot-avatar">${initial}</div>
-                <div>
-                  <h3 class="dash-card-title">${escapeHtml(persona)}</h3>
-                  <span class="dash-card-biz">${escapeHtml(bizName)}</span>
+                <div style="min-width: 0;">
+                  <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <h3 class="dash-card-title" style="margin: 0;">${escapeHtml(persona)}</h3>
+                    ${statusBadge}
+                  </div>
+                  <span class="dash-card-biz" style="display: block; margin-top: 4px;">${escapeHtml(bizName)}</span>
                 </div>
               </div>
               <button type="button" class="btn-card-delete" onclick="confirmDeleteBot('${botId}', '${escapedPersona}', '${escapedBiz}')" title="Delete Assistant" aria-label="Delete Assistant ${escapeHtml(persona)}">
@@ -178,9 +196,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <p class="dash-card-summary">${escapeHtml(summary)}</p>
           </div>
           <div class="dash-card-actions">
-            <a href="/bot/${botId}" target="_blank" class="btn-terracotta" style="font-size: 0.82rem; padding: 7px 14px; flex: 1; text-align: center;">
-              Chat Live &rarr;
-            </a>
+            ${primaryActionHtml}
             <button type="button" class="btn-forest-ghost" onclick="openEditModalForBot('${botId}')" style="font-size: 0.82rem; padding: 7px 14px; cursor: pointer;">
               Edit
             </button>
@@ -208,6 +224,37 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // One-Click Publish Live to Marketplace
+  window.publishBot = async function (botId) {
+    const cardEl = document.getElementById("botCard_" + botId);
+    const publishBtn = cardEl ? cardEl.querySelector(".btn-terracotta") : null;
+    if (publishBtn) {
+      publishBtn.disabled = true;
+      publishBtn.textContent = "Publishing...";
+    }
+    try {
+      const res = await fetch(`/api/business-bot/admin/bots/${botId}/publish`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to publish assistant.");
+
+      try {
+        sessionStorage.removeItem("docuvortex.public_bots");
+      } catch (e) {}
+
+      showToast("Assistant published live to directory!", false);
+      await loadAdminBots();
+    } catch (err) {
+      if (publishBtn) {
+        publishBtn.disabled = false;
+        publishBtn.textContent = "Publish Live →";
+      }
+      showToast("Publish failed: " + err.message, true);
+    }
+  };
+
   // Edit Modal Handlers - Normalized String comparison
   window.openEditModalForBot = function (botId) {
     const normalizedId = String(botId);
@@ -218,6 +265,10 @@ document.addEventListener("DOMContentLoaded", () => {
     editPersonaName.value = bot.persona_name || "";
     editBizName.value = bot.business_name || "";
     editWebsiteUrl.value = bot.website_url || "";
+    const editStatus = document.getElementById("editStatus");
+    if (editStatus) {
+      editStatus.value = (bot.status || "active").toLowerCase();
+    }
     editSummary.value = bot.business_summary || bot.summary || "";
     editSystemPrompt.value = bot.dynamic_prompt || bot.system_prompt || "";
     editBotError.style.display = "none";
@@ -271,6 +322,9 @@ document.addEventListener("DOMContentLoaded", () => {
           cardEl.remove();
           adminBots = adminBots.filter((b) => String(b.bot_id || b.id) !== deletedId);
           sessionStorage.setItem("docuvortex.admin_bots", JSON.stringify(adminBots));
+          try {
+            sessionStorage.removeItem("docuvortex.public_bots");
+          } catch (e) {}
           if (adminBots.length === 0) {
             renderAdminBotsList([]);
           }
@@ -278,6 +332,9 @@ document.addEventListener("DOMContentLoaded", () => {
       } else {
         adminBots = adminBots.filter((b) => String(b.bot_id || b.id) !== deletedId);
         sessionStorage.setItem("docuvortex.admin_bots", JSON.stringify(adminBots));
+        try {
+          sessionStorage.removeItem("docuvortex.public_bots");
+        } catch (e) {}
         if (adminBots.length === 0) {
           renderAdminBotsList([]);
         }
@@ -296,6 +353,9 @@ document.addEventListener("DOMContentLoaded", () => {
           const data = await res.json().catch(() => ({}));
           throw new Error(data.detail || "Server failed to delete assistant");
         }
+        try {
+          sessionStorage.removeItem("docuvortex.public_bots");
+        } catch (e) {}
       } catch (err) {
         // Rollback on network/server error
         showToast("Delete failed: " + err.message, true);
@@ -323,12 +383,14 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const botId = editBotId.value;
+      const editStatus = document.getElementById("editStatus");
       const payload = {
         persona_name: editPersonaName.value.trim(),
         business_name: editBizName.value.trim(),
         website_url: editWebsiteUrl.value.trim() || null,
         business_summary: editSummary.value.trim() || null,
         dynamic_prompt: editSystemPrompt.value.trim(),
+        status: editStatus ? editStatus.value : "active",
       };
 
       try {
@@ -341,7 +403,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Failed to update assistant configuration");
 
+        try {
+          sessionStorage.removeItem("docuvortex.public_bots");
+        } catch (e) {}
+
         closeEditModal();
+        showToast("Assistant configuration saved.", false);
         await loadAdminBots();
       } catch (err) {
         editBotError.textContent = err.message;

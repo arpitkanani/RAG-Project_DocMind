@@ -19,6 +19,7 @@ from src.graph.nodes_agentic import (
     classify_intent,
     fallback_response,
     grade_documents,
+    guardrail_response_node,
 )
 from src.graph.nodes.generate import finalize_node, generate_node
 from src.graph.nodes.retrieve import (
@@ -34,6 +35,8 @@ from src.graph.state import RAGState
 def route_after_intent(state: RAGState) -> str:
     """Route based on classify_intent result, query clarity, and summary detection."""
     intent = state.get("intent", "retrieval")
+    if intent == "guardrail":
+        return "guardrail_response"
     if intent in ("chitchat", "conversational"):
         return "chitchat"
     if intent == "clarify":
@@ -78,6 +81,7 @@ def build_rag_graph(checkpointer=None):
     builder.add_node("load_context", load_context_node)
     builder.add_node("classify_intent", classify_intent)
     builder.add_node("clarify_question", clarify_question)
+    builder.add_node("guardrail_response", guardrail_response_node)
     builder.add_node("chitchat", chitchat)
     builder.add_node("retrieve_qa", retrieve_qa_node)
     builder.add_node("retrieve_summary", retrieve_summary_node)
@@ -97,12 +101,16 @@ def build_rag_graph(checkpointer=None):
         "classify_intent",
         route_after_intent,
         {
+            "guardrail_response": "guardrail_response",
             "chitchat": "chitchat",
             "clarify_question": "clarify_question",
             "retrieve_qa": "retrieve_qa",
             "retrieve_summary": "retrieve_summary",
         },
     )
+
+    # Guardrail feedback → finalize → END
+    builder.add_edge("guardrail_response", "finalize")
 
     # Clarification feedback → finalize → END
     builder.add_edge("clarify_question", "finalize")

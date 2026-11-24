@@ -19,8 +19,9 @@ from src.exception import (
     KnowledgeBaseEmptyError,
 )
 from src.logger import logging
-from src.utils.helpers import aresolve_session_scope, normalize_collection_scope
+from src.utils.helpers import aresolve_session_scope, create_session_id, normalize_collection_scope
 from src.utils.query_manager import QueryManager
+import anyio
 
 router = APIRouter(tags=["WebSocket"])
 
@@ -157,7 +158,23 @@ async def chat_websocket_endpoint(websocket: WebSocket):
 
             # ── 4. Launch new query ──
             elif action == "query":
-                session_id = msg.get("session_id", "default")
+                session_id = (msg.get("session_id") or "").strip()
+                if not session_id or session_id == "default":
+                    session_id = create_session_id()
+
+                # Verify ownership: prevent cross-tenant hijacking
+                def _verify_session():
+                    with get_db_cursor(commit=False) as cur:
+                        cur.execute("SELECT user_id FROM sessions WHERE session_id = %s LIMIT 1;", (session_id,))
+                        row = cur.fetchone()
+                        if row and row.get("user_id") and str(row["user_id"]) != str(user_id):
+                            return False
+                        return True
+
+                is_valid = await anyio.to_thread.run_sync(_verify_session)
+                if not is_valid:
+                    session_id = create_session_id()
+
                 query_text = (msg.get("query") or "").strip()
                 requested_collections = msg.get("collection_names") or []
                 message_attachments = msg.get("message_attachments")

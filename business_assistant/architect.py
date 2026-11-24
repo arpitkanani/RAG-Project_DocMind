@@ -1,10 +1,20 @@
 import json
 import re
+import time
 from typing import Any, Dict, List
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        return decorator
+
 from business_assistant.prompts import MASTER_ARCHITECT_SYSTEM_PROMPT, get_azure_or_fallback_llm
-from src.logger import logging
+from src.logger import logging, log_latency
+
 
 ALL_VECTORS = [
     "CORE_PRODUCT",
@@ -76,6 +86,14 @@ class MasterArchitectInterview:
         try:
             return json.loads(text)
         except json.JSONDecodeError as err:
+            # Secondary defensive attempt: strip trailing commas and unescaped control whitespace
+            try:
+                cleaned = re.sub(r",\s*([\]}])", r"\1", text)
+                cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f]", lambda m: "\n" if m.group(0) == "\n" else " ", cleaned)
+                return json.loads(cleaned)
+            except Exception:
+                pass
+
             logging.warning("[Master Architect] JSON parse error: %s (Raw: %r)", err, text[:200])
             # Fallback structure preserving counters
             return {
@@ -150,6 +168,7 @@ class MasterArchitectInterview:
 
         return blueprint
 
+    @traceable(name="MasterArchitect.start_turn", run_type="chain")
     async def start(self) -> Dict[str, Any]:
         """Triggers the opening turn of the interview (Question 1)."""
         self.turn_count = 1
@@ -178,7 +197,16 @@ class MasterArchitectInterview:
         self.messages.append(HumanMessage(content=prompt))
 
         logging.info("[Master Architect] Starting interview for '%s'...", self.business_name)
-        response = await self.llm.ainvoke(self.messages)
+        t_arch0 = time.perf_counter()
+        run_config = {
+            "run_name": f"MasterArchitect.start: {self.business_name}",
+            "tags": ["master_architect", "interview", f"biz:{self.business_name}"],
+            "metadata": {"business_name": self.business_name, "turn": self.turn_count},
+        }
+        response = await self.llm.ainvoke(self.messages, config=run_config)
+        arch_ms = (time.perf_counter() - t_arch0) * 1000.0
+        log_latency("ARCHITECT_INTERVIEW", f"Biz: '{self.business_name}' | Turn 1 (start) | Latency: {arch_ms:.1f}ms")
+
         content = response.content if hasattr(response, "content") else str(response)
         self.messages.append(AIMessage(content=content))
 
@@ -190,6 +218,7 @@ class MasterArchitectInterview:
         parsed["is_clarification"] = False
         return parsed
 
+    @traceable(name="MasterArchitect.step_turn", run_type="chain")
     async def step(self, user_answer: str) -> Dict[str, Any]:
         """Processes the business owner's response and yields the next question or completion."""
         self.turn_count += 1
@@ -203,7 +232,16 @@ class MasterArchitectInterview:
             len(user_answer),
         )
 
-        response = await self.llm.ainvoke(self.messages)
+        t_step0 = time.perf_counter()
+        run_config = {
+            "run_name": f"MasterArchitect.step (Q{self.question_count}): {self.business_name}",
+            "tags": ["master_architect", "interview", f"biz:{self.business_name}"],
+            "metadata": {"business_name": self.business_name, "turn": self.turn_count, "question": self.question_count},
+        }
+        response = await self.llm.ainvoke(self.messages, config=run_config)
+        step_ms = (time.perf_counter() - t_step0) * 1000.0
+        log_latency("ARCHITECT_INTERVIEW", f"Biz: '{self.business_name}' | Turn {self.turn_count} (Q{self.question_count}) | Latency: {step_ms:.1f}ms")
+
         content = response.content if hasattr(response, "content") else str(response)
         self.messages.append(AIMessage(content=content))
 

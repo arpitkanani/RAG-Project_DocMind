@@ -1,11 +1,21 @@
 import asyncio
 import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from bs4 import BeautifulSoup
 import httpx
+import yaml
 
 from src.logger import logging
+
+
+def get_scraper_config() -> Dict[str, Any]:
+    try:
+        with open("config/config.yaml", "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get("business_bot", {}).get("website", {})
+    except Exception:
+        return {}
 
 
 async def scrape_single_url(url: str, timeout: float = 15.0) -> Dict[str, Any]:
@@ -165,11 +175,15 @@ async def scrape_single_url(url: str, timeout: float = 15.0) -> Dict[str, Any]:
     }
 
 
-async def scrape_multiple_urls(urls: List[str], timeout: float = 15.0) -> Dict[str, Any]:
+async def scrape_multiple_urls(urls: List[str], timeout: Optional[float] = None, max_pages: Optional[int] = None) -> Dict[str, Any]:
     """
-    Scrapes multiple URLs concurrently (up to 5 pages), aggregating extracted text,
+    Scrapes multiple URLs concurrently (up to max_pages), aggregating extracted text,
     pricing, contact points, and returning granular per-page health diagnostics.
     """
+    web_cfg = get_scraper_config()
+    actual_timeout = timeout if timeout is not None else float(web_cfg.get("scrape_timeout_seconds", 15.0))
+    limit = max_pages if max_pages is not None else int(web_cfg.get("max_pages_count", 5))
+
     cleaned_urls: List[str] = []
     for u in urls:
         if isinstance(u, str) and u.strip():
@@ -179,7 +193,7 @@ async def scrape_multiple_urls(urls: List[str], timeout: float = 15.0) -> Dict[s
                 if clean and clean not in cleaned_urls:
                     cleaned_urls.append(clean)
 
-    cleaned_urls = cleaned_urls[:5]  # Limit to 5 pages to respect timeout and rate limits
+    cleaned_urls = cleaned_urls[:limit]  # Respect dynamic max pages limit
     if not cleaned_urls:
         return {
             "success": False,
@@ -196,7 +210,7 @@ async def scrape_multiple_urls(urls: List[str], timeout: float = 15.0) -> Dict[s
             "diagnostic_message": "Please enter at least one valid website URL to scrape.",
         }
 
-    tasks = [scrape_single_url(u, timeout=timeout) for u in cleaned_urls]
+    tasks = [scrape_single_url(u, timeout=actual_timeout) for u in cleaned_urls]
     pages: List[Dict[str, Any]] = await asyncio.gather(*tasks)
 
     total_chars = sum(p.get("char_count", 0) for p in pages)

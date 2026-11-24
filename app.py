@@ -60,6 +60,12 @@ from business_assistant.router import router as business_assistant_router
 
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+import psycopg
+from psycopg import generators
+if getattr(generators, "_connect", None):
+    # Fix psycopg-binary 3.3.8 Cython C-extension signature mismatch on Windows where
+    # connect() takes only (conninfo) and rejects timeout=timeout keyword argument.
+    generators.connect = generators._connect
 import yaml
 
 

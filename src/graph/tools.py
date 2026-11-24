@@ -1,11 +1,15 @@
 from datetime import datetime
+import json
 import os
 import re
 import sys
 from typing import Any, List, Optional
+import urllib.parse
+import urllib.request
 import warnings
 import xml.etree.ElementTree as ET
 
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import httpx
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -310,6 +314,107 @@ async def _fetch_open_meteo_weather_async(location: str) -> Optional[str]:
         return None
 
 
+def _fetch_duckduckgo_html(query: str, max_results: int = 6) -> Optional[str]:
+    """Scrape DuckDuckGo HTML/Lite endpoints directly using standard library urllib.
+    Bypasses VQD/JSON API 202 rate limits and Cloudflare TLS fingerprinting blocks."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+    # Attempt 1: Standard DuckDuckGo HTML endpoint
+    try:
+        encoded_query = urllib.parse.quote_plus(query)
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=7) as resp:
+            if resp.getcode() == 200:
+                html_data = resp.read().decode("utf-8", errors="ignore")
+                soup = BeautifulSoup(html_data, "html.parser")
+                results = []
+                for result in soup.find_all("div", class_="result"):
+                    a_title = result.find("a", class_="result__a")
+                    a_snippet = result.find("a", class_="result__snippet")
+                    if not a_title:
+                        continue
+                    title = a_title.get_text(strip=True)
+                    snippet = a_snippet.get_text(strip=True) if a_snippet else ""
+                    href = a_title.get("href", "")
+                    if not title or title.lower() in ("no title", "error"):
+                        continue
+                    entry = f"• {title}: {snippet}" if snippet else f"• {title}"
+                    if href:
+                        entry += f" (Source: {href})"
+                    results.append(entry)
+                    if len(results) >= max_results:
+                        break
+                if results:
+                    logging.info("_fetch_duckduckgo_html retrieved %d results from html.duckduckgo.com", len(results))
+                    return "\n\n".join(results)
+    except Exception as e_html:
+        logging.debug("_fetch_duckduckgo_html (html endpoint) error: %s", e_html)
+
+    # Attempt 2: DuckDuckGo Lite endpoint fallback (POST method)
+    try:
+        post_data = urllib.parse.urlencode({"q": query}).encode("utf-8")
+        req_lite = urllib.request.Request("https://lite.duckduckgo.com/lite/", data=post_data, headers=headers)
+        with urllib.request.urlopen(req_lite, timeout=7) as resp:
+            if resp.getcode() == 200:
+                html_lite = resp.read().decode("utf-8", errors="ignore")
+                soup_lite = BeautifulSoup(html_lite, "html.parser")
+                results = []
+                links = soup_lite.find_all("a", class_="result-link")
+                snippets = soup_lite.find_all("td", class_="result-snippet")
+                for link_tag, snippet_tag in zip(links, snippets):
+                    title = link_tag.get_text(strip=True)
+                    snippet = snippet_tag.get_text(strip=True)
+                    href = link_tag.get("href", "")
+                    if title:
+                        entry = f"• {title}: {snippet}" if snippet else f"• {title}"
+                        if href:
+                            entry += f" (Source: {href})"
+                        results.append(entry)
+                    if len(results) >= max_results:
+                        break
+                if results:
+                    logging.info("_fetch_duckduckgo_html retrieved %d results from lite.duckduckgo.com", len(results))
+                    return "\n\n".join(results)
+    except Exception as e_lite:
+        logging.debug("_fetch_duckduckgo_html (lite endpoint) error: %s", e_lite)
+
+    return None
+
+
+def _fetch_wikipedia_search(query: str, max_results: int = 3) -> Optional[str]:
+    """Search Wikipedia using the MediaWiki action=query API instead of exact title matching."""
+    try:
+        encoded_query = urllib.parse.quote_plus(query)
+        api_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={encoded_query}&utf8=&format=json"
+        headers = {"User-Agent": "DocuVortex-AI/2.0 (assistant@docuvortex.local)"}
+        req = urllib.request.Request(api_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            if resp.getcode() == 200:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                search_items = data.get("query", {}).get("search", [])
+                if search_items:
+                    results = []
+                    for item in search_items[:max_results]:
+                        title = item.get("title", "")
+                        raw_snippet = item.get("snippet", "")
+                        clean_snippet = BeautifulSoup(raw_snippet, "html.parser").get_text(strip=True)
+                        page_url = f"https://en.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
+                        results.append(f"• Wikipedia ({title}): {clean_snippet} (Source: {page_url})")
+                    if results:
+                        logging.info("_fetch_wikipedia_search retrieved %d results for %r", len(results), query)
+                        return "\n\n".join(results)
+    except Exception as e:
+        logging.debug("_fetch_wikipedia_search failed: %s", e)
+    return None
+
+
 # 1. Search tool for live web information and current events
 @tool
 @traceable(name="search_tool")
@@ -330,7 +435,15 @@ def search_tool(query: str) -> str:
         if live_w:
             return live_w
 
-    # Strategy 1: Try ddgs / duckduckgo_search library directly
+    # Strategy 1: Direct DuckDuckGo HTML / Lite scraping (bypasses 202 rate-limit blocks)
+    try:
+        html_results = _fetch_duckduckgo_html(q, max_results=6)
+        if html_results:
+            return html_results
+    except Exception as e_html:
+        logging.debug("search_tool: direct DuckDuckGo HTML scraper failed: %s", e_html)
+
+    # Strategy 2: Official ddgs library (text & news search)
     try:
         try:
             from ddgs import DDGS
@@ -338,7 +451,6 @@ def search_tool(query: str) -> str:
             from duckduckgo_search import DDGS
 
         with DDGS() as ddgs:
-            # Try text search with modern backend fallbacks ('auto', 'html', 'lite')
             results = None
             for backend in ("auto", "html", "lite"):
                 try:
@@ -346,26 +458,32 @@ def search_tool(query: str) -> str:
                     if results:
                         break
                 except Exception as b_err:
-                    logging.debug("DDGS backend %s failed: %s", backend, b_err)
+                    logging.debug("DDGS text backend %s failed: %s", backend, b_err)
                     continue
+
+            if not results:
+                try:
+                    results = list(ddgs.news(q, max_results=5))
+                except Exception as n_err:
+                    logging.debug("DDGS news search failed: %s", n_err)
 
             if results:
                 formatted_snippets = []
                 for r in results:
                     title = r.get("title", "").strip()
                     body = r.get("body", "") or r.get("snippet", "")
-                    href = r.get("href", "") or r.get("link", "")
-                    entry = f"• {title}: {body}"
+                    href = r.get("href", "") or r.get("url", "") or r.get("link", "")
+                    entry = f"• {title}: {body}" if body else f"• {title}"
                     if href:
                         entry += f" (Source: {href})"
                     formatted_snippets.append(entry)
                 out = "\n\n".join(formatted_snippets)
-                logging.info("search_tool returned %d results via duckduckgo_search", len(results))
+                logging.info("search_tool returned %d results via ddgs library", len(results))
                 return out
     except Exception as e1:
-        logging.warning("search_tool: duckduckgo_search direct lookup failed: %s", e1)
+        logging.warning("search_tool: ddgs direct lookup failed: %s", e1)
 
-    # Strategy 2: Fallback to langchain_community DuckDuckGoSearchResults / DuckDuckGoSearchRun
+    # Strategy 3: Fallback to langchain_community DuckDuckGoSearchResults / DuckDuckGoSearchRun
     try:
         from langchain_community.tools import DuckDuckGoSearchResults, DuckDuckGoSearchRun
         try:
@@ -383,20 +501,13 @@ def search_tool(query: str) -> str:
     except Exception as e2:
         logging.warning("search_tool: langchain DuckDuckGo fallback failed: %s", e2)
 
-    # Strategy 3: Fast Wikipedia summary API fallback for encyclopedic/factual queries
+    # Strategy 4: Wikipedia OpenSearch API fallback
     try:
-        wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{requests.utils.quote(q)}"
-        headers = {"User-Agent": "DocuVortex-AI/2.0 (assistant@docuvortex.local)"}
-        resp = requests.get(wiki_url, headers=headers, timeout=6)
-        if resp.status_code == 200:
-            wdata = resp.json()
-            extract = wdata.get("extract")
-            if extract:
-                title = wdata.get("title", q)
-                logging.info("search_tool: retrieved Wikipedia summary for %s", title)
-                return f"Summary from Wikipedia ({title}): {extract}"
+        wiki_results = _fetch_wikipedia_search(q, max_results=3)
+        if wiki_results:
+            return wiki_results
     except Exception as e3:
-        logging.debug("search_tool: Wikipedia fallback error: %s", e3)
+        logging.debug("search_tool: Wikipedia search fallback error: %s", e3)
 
     return f"Live search could not locate specific real-time results for '{q}'. Please proceed based on your knowledge base."
 

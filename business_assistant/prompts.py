@@ -1,7 +1,18 @@
 import os
 import re
+import time
 from typing import Any, Dict
-from src.logger import logging
+
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        return decorator
+
+from src.logger import logging, log_latency
+
 
 MASTER_ARCHITECT_SYSTEM_PROMPT = """You are the Master Architect of an Enterprise AI Agent onboarding flow. Your single goal is to interview a business owner over a live WebSocket to gather deep parameters required to synthesize a flawless custom AI System Prompt.
 
@@ -201,8 +212,16 @@ MANDATORY SECTIONS TO INCLUDE IN THE GENERATED PROMPT:
 Format the output as a clean, ready-to-use system prompt in markdown format. Do not add introductory conversational remarks (like 'Here is the prompt:'). Begin immediately with '# System Prompt: {persona_name}'."""
 
     logging.info("[Prompts Engine] Synthesizing dynamic system prompt for '%s'...", business_name)
-    response = await llm.ainvoke(synthesis_prompt)
+    t_syn0 = time.perf_counter()
+    run_config = {
+        "run_name": f"MasterArchitect.generate_prompt: {business_name}",
+        "tags": ["master_architect", "prompt_synthesis", f"biz:{business_name}"],
+        "metadata": {"business_name": business_name, "persona_name": persona_name},
+    }
+    response = await llm.ainvoke(synthesis_prompt, config=run_config)
+    prompt_ms = (time.perf_counter() - t_syn0) * 1000.0
     prompt_text = response.content if hasattr(response, "content") else str(response)
     clean_prompt = prompt_text.strip()
-    logging.info("[Prompts Engine] Successfully synthesized prompt (%d chars)", len(clean_prompt))
+    log_latency("DYNAMIC_PROMPT", f"Biz: '{business_name}' | Synthesized prompt ({len(clean_prompt)} chars) in {prompt_ms:.1f}ms")
+    logging.info("[Prompts Engine] Successfully synthesized prompt (%d chars in %.1fms)", len(clean_prompt), prompt_ms)
     return clean_prompt

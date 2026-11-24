@@ -26,9 +26,12 @@ from src.logger import logging
 from src.utils.helpers import (
     aresolve_session_scope,
     build_error_response,
+    create_session_id,
     extract_text,
     normalize_collection_scope,
 )
+from src.database.db import get_db_cursor
+import anyio
 from src.schemas import QueryRequest
 from src.utils.query_manager import QueryManager
 from src.utils.rate_limiter import LLMRateLimitError
@@ -43,7 +46,23 @@ async def query(
     user_id: str = Depends(get_current_user),
 ):
     try:
-        session_id = request.session_id or "default"
+        session_id = (request.session_id or "").strip()
+        if not session_id or session_id == "default":
+            session_id = create_session_id()
+
+        # Strict session ownership verification: prevent cross-tenant hijacking
+        def _verify_session_ownership():
+            with get_db_cursor(commit=False) as cur:
+                cur.execute("SELECT user_id FROM sessions WHERE session_id = %s LIMIT 1;", (session_id,))
+                row = cur.fetchone()
+                if row and row.get("user_id") and str(row["user_id"]) != str(user_id):
+                    return False
+                return True
+
+        is_owner = await anyio.to_thread.run_sync(_verify_session_ownership)
+        if not is_owner:
+            # Reassign to a fresh user session
+            session_id = create_session_id()
         logging.info(
             ">>> [LIVE USER QUERY] user: %s | session: %s | collections: %s\nQuery: %s",
             user_id,

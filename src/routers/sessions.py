@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -126,32 +127,52 @@ async def bootstrap_workspace(
                     "last_active_label": last_active.strftime("%b %d, %H:%M") if hasattr(last_active, "strftime") else str(last_active),
                 })
 
-            # 3. Active session candidate: preferred session if valid, else first session in list, else 'default'
+            # 3. Active session candidate: preferred session if valid for this user, else first session in list
             active_session_id = None
             if preferred_session_id and any(s["session_id"] == preferred_session_id for s in sessions):
                 active_session_id = preferred_session_id
             elif sessions:
                 active_session_id = sessions[0]["session_id"]
             else:
-                active_session_id = "default"
+                # User has zero sessions. Generate a fresh, isolated session ID for this user.
+                new_sid = create_session_id()
+                active_session_id = new_sid
+                # Persist the new empty session for this user so it belongs strictly to them
+                cur.execute(
+                    """
+                    INSERT INTO sessions (session_id, user_id, title, created_at, updated_at)
+                    VALUES (%s, %s, 'New Chat', now(), now())
+                    ON CONFLICT (session_id) DO NOTHING;
+                    """,
+                    (active_session_id, user_id),
+                )
+                sessions.append({
+                    "session_id": active_session_id,
+                    "title": "New Chat",
+                    "message_count": 0,
+                    "attachment_count": 0,
+                    "last_active": datetime.now(timezone.utc).isoformat(),
+                    "last_active_label": datetime.now(timezone.utc).strftime("%b %d, %H:%M"),
+                })
 
-            # Fetch active session record
+            # Fetch active session record ensuring strict user ownership
             cur.execute(
                 "SELECT title, created_at, updated_at FROM sessions WHERE session_id = %s AND user_id = %s LIMIT 1;",
                 (active_session_id, user_id),
             )
             s_row = cur.fetchone() or {}
 
-            # Fetch active session messages
+            # Fetch active session messages joining sessions to guarantee strict user isolation
             cur.execute(
                 """
-                SELECT role, content, attachments, created_at
-                FROM messages
-                WHERE session_id = %s
-                ORDER BY created_at ASC
+                SELECT m.role, m.content, m.attachments, m.created_at
+                FROM messages m
+                JOIN sessions s ON s.session_id = m.session_id
+                WHERE m.session_id = %s AND s.user_id = %s
+                ORDER BY m.created_at ASC
                 LIMIT 100;
                 """,
-                (active_session_id,),
+                (active_session_id, user_id),
             )
             msg_rows = cur.fetchall()
             messages = []
@@ -163,18 +184,19 @@ async def bootstrap_workspace(
                     "timestamp": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"]),
                 })
 
-            # Fetch active session attachments
+            # Fetch active session attachments joining sessions
             cur.execute(
                 """
-                SELECT name, collection, source_type AS type,
-                       COALESCE(embedding_model, 'text-embedding-3-small') AS embedding_model,
-                       COALESCE(vector_dim, 1536) AS vector_dim,
-                       extra, created_at
-                FROM attachments
-                WHERE session_id = %s
-                ORDER BY created_at ASC;
+                SELECT a.name, a.collection, a.source_type AS type,
+                       COALESCE(a.embedding_model, 'text-embedding-3-small') AS embedding_model,
+                       COALESCE(a.vector_dim, 1536) AS vector_dim,
+                       a.extra, a.created_at
+                FROM attachments a
+                JOIN sessions s ON s.session_id = a.session_id
+                WHERE a.session_id = %s AND s.user_id = %s
+                ORDER BY a.created_at ASC;
                 """,
-                (active_session_id,),
+                (active_session_id, user_id),
             )
             att_rows = cur.fetchall()
             attachments = []
@@ -262,6 +284,16 @@ async def delete_all_sessions(user_id: str = Depends(get_current_user)):
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str, user_id: str = Depends(get_current_user)):
     try:
+        # Strict user ownership verification: session must belong to user_id
+        def _check_ownership():
+            with get_db_cursor(commit=False) as cur:
+                cur.execute("SELECT 1 FROM sessions WHERE session_id = %s AND user_id = %s LIMIT 1;", (session_id, user_id))
+                return cur.fetchone() is not None
+
+        is_owner = await anyio.to_thread.run_sync(_check_ownership)
+        if not is_owner:
+            raise HTTPException(status_code=404, detail="Chat session not found or unauthorized.")
+
         cache_key = (user_id, session_id)
         now = time.monotonic()
         if cache_key in _SESSION_DETAILS_CACHE:
@@ -275,6 +307,8 @@ async def get_session(session_id: str, user_id: str = Depends(get_current_user))
         details = await memory.aget_session_details(valid_collections=None)
         _SESSION_DETAILS_CACHE[cache_key] = (now, details)
         return details
+    except HTTPException:
+        raise
     except Exception as exc:
         logging.exception("Failed to fetch session %s", session_id)
         raise HTTPException(status_code=500, detail=str(exc))

@@ -253,7 +253,7 @@ class VectorStore:
     def add_documents(
         self,
         chunks: Iterable[Document],
-        batch_size: int = 250,
+        batch_size: int = 50,
         progress_callback=None,
         on_retry=None,
     ) -> QdrantVectorStore:
@@ -295,7 +295,28 @@ class VectorStore:
                     collection_name=self.collection_name,
                     embedding=self.document_embedding_model,
                 )
-                store.add_documents(batch)
+
+                # Retry loop with exponential backoff for cloud embedding rate limits (HTTP 429 / TPM)
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        store.add_documents(batch)
+                        break
+                    except Exception as emb_err:
+                        err_str = str(emb_err).lower()
+                        if any(k in err_str for k in ("429", "rate limit", "tpm", "rpm", "too many requests")) and attempt < max_retries:
+                            wait_s = 2 ** attempt
+                            logging.warning(
+                                "Embedding rate limit encountered (attempt %d/%d). Backing off %ds before retry: %s",
+                                attempt,
+                                max_retries,
+                                wait_s,
+                                emb_err,
+                            )
+                            import time
+                            time.sleep(wait_s)
+                        else:
+                            raise
                 return store
 
             def _store_batch_with_fallback(batch: List[Document]) -> QdrantVectorStore:
@@ -334,6 +355,21 @@ class VectorStore:
             raise
         except Exception as e:
             raise CustomException(e, sys)
+
+    def store_documents(
+        self,
+        chunks: Iterable[Document],
+        batch_size: int = 250,
+        progress_callback=None,
+        on_retry=None,
+    ) -> QdrantVectorStore:
+        """Alias for add_documents for backward and cross-module compatibility."""
+        return self.add_documents(
+            chunks=chunks,
+            batch_size=batch_size,
+            progress_callback=progress_callback,
+            on_retry=on_retry,
+        )
 
     def get_all_documents(self) -> List[Document]:
         return asyncio.run(self.aget_all_documents())

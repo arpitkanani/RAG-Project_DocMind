@@ -258,6 +258,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
   if (closeAuthModalBtn) closeAuthModalBtn.addEventListener("click", closeAuthModal);
+  const cancelSignInUserBtn = document.getElementById("cancelSignInUserBtn");
+  const cancelSignInAdminBtn = document.getElementById("cancelSignInAdminBtn");
+  const cancelAdminRegisterBtn = document.getElementById("cancelAdminRegisterBtn");
+  [cancelSignInUserBtn, cancelSignInAdminBtn, cancelAdminRegisterBtn].forEach((btn) => {
+    if (btn) btn.addEventListener("click", closeAuthModal);
+  });
+
+  const linkToAdminSignUpFromUser = document.getElementById("linkToAdminSignUpFromUser");
+  const linkToAdminSignUpFromAdmin = document.getElementById("linkToAdminSignUpFromAdmin");
+  [linkToAdminSignUpFromUser, linkToAdminSignUpFromAdmin].forEach((btn) => {
+    if (btn) btn.addEventListener("click", () => switchTab("admin-signup"));
+  });
+
+  const linkToSignInFromAdminSignUp = document.getElementById("linkToSignInFromAdminSignUp");
+  if (linkToSignInFromAdminSignUp) {
+    linkToSignInFromAdminSignUp.addEventListener("click", () => {
+      switchTab("signin");
+      if (subToggleAdminLogin) subToggleAdminLogin.click();
+    });
+  }
+
   if (authBackdrop) {
     authBackdrop.addEventListener("click", (e) => {
       if (e.target === authBackdrop) closeAuthModal();

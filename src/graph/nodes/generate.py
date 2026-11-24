@@ -94,8 +94,8 @@ async def finalize_node(state: RAGState, config: RunnableConfig = None) -> Dict[
         user_id = state["user_id"]
         intent = state.get("intent", "")
 
-        # Guard: Chitchat, conversational, and clarification responses must NEVER be sanitized with document refusal rules
-        if intent in ("chitchat", "conversational", "clarify"):
+        # Guard: Chitchat, conversational, clarification, and guardrail responses must NEVER be sanitized with document refusal rules
+        if intent in ("chitchat", "conversational", "clarify", "guardrail"):
             final_answer = raw_answer or extract_text(state.get("generation", ""))
             if not final_answer:
                 final_answer = "I'm here to help! Feel free to ask a question or upload a document."
@@ -111,7 +111,7 @@ async def finalize_node(state: RAGState, config: RunnableConfig = None) -> Dict[
                     pass
             memory = MemoryManager(session_id=session_id, user_id=user_id)
             await memory.asave_message("ai", db_save_text)
-            logging.info("Chitchat/conversational answer finalized for session %s", session_id)
+            logging.info("Non-retrieval answer (intent=%s) finalized for session %s", intent, session_id)
             return {
                 "clean_answer": final_answer,
                 "final_answer": final_answer,

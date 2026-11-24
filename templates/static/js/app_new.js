@@ -253,6 +253,8 @@ async function bootApp() {
     }
 
     if (res.status === 401) {
+      _sessionCache.clear();
+      localStorage.removeItem(SESSION_KEY);
       window.location.replace("/");
       return;
     }
@@ -704,9 +706,9 @@ function bindUI() {
 async function createNewSession() {
   try {
     const data = await apiFetch(API.sessions, { method: "POST" });
-    workspaceState.sessionId = data?.session_id || "default";
+    workspaceState.sessionId = data?.session_id || ("sess_" + Math.random().toString(36).substring(2, 10));
   } catch {
-    workspaceState.sessionId = "default";
+    workspaceState.sessionId = "sess_" + Math.random().toString(36).substring(2, 10);
   }
   workspaceState.sources = [];
   localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
@@ -1192,7 +1194,9 @@ async function uploadFile(file) {
   try {
     const form = new FormData();
     form.append("file", file);
-    form.append("session_id", workspaceState.sessionId || "default");
+    if (workspaceState.sessionId) {
+      form.append("session_id", workspaceState.sessionId);
+    }
 
     const data = await apiFetch(API.upload, { method: "POST", body: form });
 
@@ -2969,8 +2973,10 @@ async function saveSettingsModal() {
       showToast(res.message || `Settings updated. Provider: ${selectedProvider}.`, "success");
       closeSettingsModal();
       // Reload current session details to refresh 'needs_reindex' flags on active chips/sources
-      const sessId = workspaceState.sessionId || localStorage.getItem(SESSION_KEY) || "default";
-      await restoreSession(sessId);
+      const sessId = workspaceState.sessionId || localStorage.getItem(SESSION_KEY) || "";
+      if (sessId) {
+        await restoreSession(sessId);
+      }
       renderComposerChips();
       renderSourcesPanel();
       updateSendButton();
