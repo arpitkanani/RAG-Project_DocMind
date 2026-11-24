@@ -153,26 +153,54 @@
     .chat-messages {
       flex: 1;
       overflow-y: auto;
+      overflow-x: hidden;
       padding: 4.6rem 2rem 6.5rem;
       display: flex;
       flex-direction: column;
       gap: 16px;
-      max-width: 1200px;
+      max-width: 100%;
       width: 100%;
-      margin: 0 auto;
+      margin: 0;
       box-sizing: border-box;
+      scroll-behavior: smooth;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(41, 53, 45, 0.22) transparent;
+    }
+    .chat-messages::-webkit-scrollbar {
+      width: 8px;
+    }
+    .chat-messages::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .chat-messages::-webkit-scrollbar-thumb {
+      background: rgba(41, 53, 45, 0.22);
+      border-radius: 999px;
+    }
+    .chat-messages::-webkit-scrollbar-thumb:hover {
+      background: rgba(41, 53, 45, 0.38);
     }
     .chat-row {
       display: flex;
       gap: 12px;
-      max-width: 88%;
+      max-width: 960px;
+      width: 100%;
+      margin: 0 auto;
+      box-sizing: border-box;
     }
     .chat-row.bot {
-      align-self: flex-start;
+      align-self: center;
+      justify-content: flex-start;
     }
     .chat-row.user {
-      align-self: flex-end;
+      align-self: center;
+      justify-content: flex-end;
       flex-direction: row-reverse;
+    }
+    .lead-captured-notice {
+      max-width: 960px;
+      width: 100%;
+      margin: 0 auto;
+      box-sizing: border-box;
     }
     .row-avatar {
       width: 36px;
@@ -199,6 +227,7 @@
       font-size: 0.94rem;
       line-height: 1.55;
       word-break: break-word;
+      max-width: min(780px, 88%);
     }
     .chat-row.bot .chat-bubble {
       background: var(--surface-white);
@@ -460,7 +489,8 @@
         padding: 4.5rem 1.5rem 6.5rem;
       }
       .chat-row {
-        max-width: 86%;
+        max-width: 90%;
+        margin: 0 auto;
       }
       .composer-floating-wrapper {
         padding: 0 1.5rem 1.25rem;
@@ -501,8 +531,9 @@
         gap: 12px;
       }
       .chat-row {
-        max-width: 94%;
+        max-width: 96%;
         gap: 8px;
+        margin: 0 auto;
       }
       .row-avatar {
         width: 28px;

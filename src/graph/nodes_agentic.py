@@ -58,13 +58,16 @@ def _get_gemini_flash():
                             api_key=groq_api_key,
                             groq_api_key=groq_api_key,
                             max_tokens=1024,
+                            request_timeout=5.0,
+                            max_retries=0,
+                            streaming=True,
                         )
                     )
                 except Exception:
                     pass
 
         if google_api_key and not google_api_key.startswith("AQ."):
-            for m in ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]:
+            for m in ["gemini-2.5-flash", "gemini-1.5-flash"]:
                 try:
                     instances.append(
                         ChatGoogleGenerativeAI(
@@ -72,6 +75,8 @@ def _get_gemini_flash():
                             temperature=0,
                             google_api_key=google_api_key,
                             max_output_tokens=1024,
+                            timeout=2.5,
+                            max_retries=0,
                         )
                     )
                 except Exception:

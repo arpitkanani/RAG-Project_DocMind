@@ -71,6 +71,8 @@ async def generate_node(state: RAGState, config: RunnableConfig = None) -> Dict[
             )
             raw_answer = extract_text(raw_answer)
             logging.info("generate_node: raw_answer received (len=%d): %s", len(raw_answer), raw_answer[:200])
+            if raw_answer and not any(raw_answer.rstrip().endswith(ch) for ch in (".", "!", "?", "```", "$", ")", "]", "*", '"')):
+                logging.warning("generate_node: raw_answer appears to end without terminal punctuation (possible token truncation): %r", raw_answer[-60:])
         except Exception as e:
             raise_as_rate_limit_error(e)
 

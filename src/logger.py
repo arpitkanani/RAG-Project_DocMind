@@ -78,12 +78,20 @@ def log_latency(flow: str, message: str, **kwargs) -> None:
     Unified latency logging utility across all application flows.
     Writes structured latency records directly to logs/latency.log
     as well as the active session dated log file (logs/<date_month_year>+<time>.log).
+    Automatically masks any emails or phone numbers to preserve privacy.
     """
+    try:
+        from src.utils.perf import mask_pii
+        safe_msg = mask_pii(message)
+    except Exception:
+        safe_msg = message
+
     prefix = f"[{flow.upper()}]" if flow else "[LATENCY]"
-    formatted_msg = f"{prefix} {message}"
+    formatted_msg = f"{prefix} {safe_msg}"
     if kwargs:
         extra_parts = [f"{k}={v}" for k, v in kwargs.items()]
         formatted_msg = f"{formatted_msg} | " + " | ".join(extra_parts)
     latency_logger.info(formatted_msg)
+
 
 

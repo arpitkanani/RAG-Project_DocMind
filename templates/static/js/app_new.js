@@ -804,13 +804,27 @@ function _applySessionData(sessionId, data) {
   if (!msgs.length) {
     renderWelcomeOnly();
   } else {
+    const container = el("messages");
     msgs.forEach((m) =>
       appendMessage(
         m.content,
         m.role === "human" ? "user" : "ai",
-        m.role === "human" && Array.isArray(m.attachments) ? m.attachments : []
+        m.role === "human" && Array.isArray(m.attachments) ? m.attachments : [],
+        false // Do not scroll per-message during batch restoration
       )
     );
+    // Single smooth auto-scroll from first query to last query on switch/open
+    if (container) {
+      container.scrollTop = 0;
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          container.scrollTo({
+            top: container.scrollHeight,
+            behavior: "smooth",
+          });
+        }, 40);
+      });
+    }
   }
 
   // 7-day expiration alert if chat is older than 7 days or attachments are expired
@@ -857,6 +871,68 @@ function _applySessionData(sessionId, data) {
   updateSidebarGeneratingBadges();
 }
 
+function _syncSessionSourcesAndState(sessionId, data) {
+  workspaceState.sessionId = sessionId;
+  localStorage.setItem(SESSION_KEY, sessionId);
+
+  const msgs = Array.isArray(data.messages) ? data.messages : [];
+  const alreadyQueriedCollections = new Set();
+  msgs.forEach((m) => {
+    if (m.role === "human" && Array.isArray(m.attachments)) {
+      m.attachments.forEach((att) => {
+        if (typeof att === "string") {
+          alreadyQueriedCollections.add(att);
+        } else if (att && att.collection) {
+          alreadyQueriedCollections.add(att.collection);
+        }
+      });
+    }
+  });
+
+  workspaceState.sources = (data.attachments || []).map((a) => {
+    const isAlreadyQueried = Boolean(a.collection && alreadyQueriedCollections.has(a.collection));
+    const isExpired = Boolean(a.expired || data.is_older_than_7_days);
+    return {
+      localId: uid(),
+      name: a.name,
+      collection: a.collection,
+      type: a.type || "doc",
+      status: "ready",
+      isNew: !isAlreadyQueried && !isExpired,
+      active: !a.needs_reindex && !isExpired,
+      needs_reindex: Boolean(a.needs_reindex),
+      expired: isExpired,
+      embedding_model: a.embedding_model,
+      vector_dim: a.vector_dim,
+    };
+  });
+
+  renderComposerChips();
+  renderSourcesPanel();
+  updateSendButton();
+  updateSidebarActiveItem(sessionId);
+  updateSidebarGeneratingBadges();
+}
+
+function _areSessionMessagesEqual(cachedData, freshData) {
+  if (!cachedData || !freshData) return false;
+  const cMsgs = Array.isArray(cachedData.messages) ? cachedData.messages : [];
+  const fMsgs = Array.isArray(freshData.messages) ? freshData.messages : [];
+  if (cMsgs.length !== fMsgs.length) return false;
+  if (cMsgs.length > 0) {
+    const lastC = cMsgs[cMsgs.length - 1];
+    const lastF = fMsgs[fMsgs.length - 1];
+    if (lastC.content !== lastF.content || lastC.role !== lastF.role) return false;
+    const firstC = cMsgs[0];
+    const firstF = fMsgs[0];
+    if (firstC.content !== firstF.content || firstC.role !== firstF.role) return false;
+  }
+  const cAtts = Array.isArray(cachedData.attachments) ? cachedData.attachments : [];
+  const fAtts = Array.isArray(freshData.attachments) ? freshData.attachments : [];
+  if (cAtts.length !== fAtts.length) return false;
+  return true;
+}
+
 /**
  * Load a session from the backend and restore full workspace state.
  * Uses stale-while-revalidate client caching for instantaneous switching.
@@ -864,8 +940,10 @@ function _applySessionData(sessionId, data) {
  */
 async function restoreSession(sessionId) {
   // 1. Instant render from memory cache if available (0ms perceived latency)
-  if (_sessionCache.has(sessionId)) {
-    _applySessionData(sessionId, _sessionCache.get(sessionId));
+  const isCached = _sessionCache.has(sessionId);
+  const cachedData = isCached ? _sessionCache.get(sessionId) : null;
+  if (isCached && cachedData) {
+    _applySessionData(sessionId, cachedData);
   }
 
   // 2. Fresh fetch from server
@@ -873,12 +951,19 @@ async function restoreSession(sessionId) {
     `${API.sessions}/${encodeURIComponent(sessionId)}`
   );
   if (!data || data.error_code) {
-    if (!_sessionCache.has(sessionId)) return false;
+    if (!isCached) return false;
     return true;
   }
 
   _sessionCache.set(sessionId, data);
-  _applySessionData(sessionId, data);
+
+  // If already rendered from cache and fresh server data matches identical messages,
+  // do not wipe DOM or trigger a duplicate auto-scroll.
+  if (!isCached || !_areSessionMessagesEqual(cachedData, data)) {
+    _applySessionData(sessionId, data);
+  } else {
+    _syncSessionSourcesAndState(sessionId, data);
+  }
   return true;
 }
 
@@ -2236,8 +2321,9 @@ function toggleSourcesPopover() {
  * @param {string} content
  * @param {'user'|'ai'} role
  * @param {Array} attachments  — only populated on user messages when new files were added
+ * @param {boolean} autoScroll — whether to scroll to the bottom immediately
  */
-function appendMessage(content, role, attachments = []) {
+function appendMessage(content, role, attachments = [], autoScroll = true) {
   const container = el("messages");
   const row = document.createElement("div");
   row.className = `msg-row ${role}`;
@@ -2274,7 +2360,9 @@ function appendMessage(content, role, attachments = []) {
     btn.addEventListener("click", () => removeSource(btn.dataset.collection));
   });
 
-  container.scrollTop = container.scrollHeight;
+  if (autoScroll) {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 function cleanSourceName(name) {

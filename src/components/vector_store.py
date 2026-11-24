@@ -3,6 +3,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 from typing import Any, Iterable, List, Optional
 
@@ -27,6 +28,8 @@ with open("config/config.yaml") as f:
 
 
 _QDRANT_UP_CACHE: dict[str, tuple[float, bool]] = {}
+_COLLECTION_DIM_CACHE: dict[str, tuple[int, float]] = {}
+DIM_CACHE_TTL_SEC = 3600.0  # Vector dimensions are immutable once collection is created
 
 
 def _is_remote_qdrant_up(url: str, api_key: str | None = None, timeout: float = 3.0) -> bool:
@@ -192,21 +195,31 @@ class VectorStore:
         return AsyncQdrantClient(path=os.path.abspath("data/qdrant_storage"))
 
     def get_collection_vector_dimension(self, collection_name: str) -> Optional[int]:
-        """Inspects Qdrant collection configuration to get the exact vector dimension."""
+        """Inspects Qdrant collection configuration to get the exact vector dimension with TTL caching."""
+        now = time.time()
+        if collection_name in _COLLECTION_DIM_CACHE:
+            dim, ts = _COLLECTION_DIM_CACHE[collection_name]
+            if now - ts < DIM_CACHE_TTL_SEC:
+                return dim
+
         client = self._client()
         try:
             info = client.get_collection(collection_name=collection_name)
             params = info.config.params.vectors
+            dim = None
             if hasattr(params, "size"):
-                return params.size
-            if isinstance(params, dict) and "size" in params:
-                return params["size"]
-            if hasattr(params, "values"):
+                dim = params.size
+            elif isinstance(params, dict) and "size" in params:
+                dim = params["size"]
+            elif hasattr(params, "values"):
                 # Named vectors case
                 for v in params.values():
                     if hasattr(v, "size"):
-                        return v.size
-            return None
+                        dim = v.size
+                        break
+            if dim is not None:
+                _COLLECTION_DIM_CACHE[collection_name] = (dim, now)
+            return dim
         except Exception as e:
             logging.debug("Could not inspect collection %s dimension: %s", collection_name, e)
             return None

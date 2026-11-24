@@ -17,6 +17,12 @@ document.addEventListener("DOMContentLoaded", () => {
   let chatWs = null;
   let currentBotRow = null;
 
+  const isPerfActive = window.location.search.includes("perf=1") || window.location.search.includes("debug=1");
+  let perfClickTime = 0;
+  let perfSentTime = 0;
+  let perfFirstStatusTime = 0;
+  let perfFirstTokenTime = 0;
+
   function showToast(message, type = "success", durationMs = 3800) {
     let stack = document.getElementById("toastStack");
     if (!stack) {
@@ -168,7 +174,16 @@ document.addEventListener("DOMContentLoaded", () => {
               `;
               chatMessages.appendChild(row);
             });
-            scrollToBottom(true);
+            // Auto scroll from first query to last query on start
+            chatMessages.scrollTop = 0;
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                chatMessages.scrollTo({
+                  top: chatMessages.scrollHeight,
+                  behavior: "smooth",
+                });
+              }, 50);
+            });
           }
         } else if (data.type === "greeting") {
           dismissLoader();
@@ -184,8 +199,21 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast("Previous conversation expired after 72 hours of inactivity. Starting a new session.", "warn", 5000);
           }
         } else if (data.type === "tool_status") {
+          if (!perfFirstStatusTime) {
+            perfFirstStatusTime = performance.now();
+            if (isPerfActive && perfClickTime > 0) {
+              console.log(`[PERF_FRONTEND] first_status_event_ms=${(perfFirstStatusTime - perfClickTime).toFixed(1)}`);
+            }
+          }
           // Intentionally keep the three-dots thinking indicator active; do not render any tool status badge
         } else if (data.type === "token") {
+          if (!perfFirstTokenTime) {
+            perfFirstTokenTime = performance.now();
+            if (isPerfActive && perfClickTime > 0) {
+              const browserTTFT = (perfFirstTokenTime - perfClickTime).toFixed(1);
+              console.log(`[PERF_FRONTEND] first_token_painted_ms=${browserTTFT} (browser_ttft_ms=${browserTTFT})`);
+            }
+          }
           removeThinkingIndicator();
           appendBotToken(data.token);
         } else if (data.type === "lead_alert") {
@@ -194,6 +222,14 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast("Inquiry recorded! Our team will be in touch shortly.", "success", 4000);
           }
         } else if (data.type === "done") {
+          const perfDoneTime = performance.now();
+          if (isPerfActive && perfClickTime > 0) {
+            const totalMs = (perfDoneTime - perfClickTime).toFixed(1);
+            const clickToSent = (perfSentTime - perfClickTime).toFixed(1);
+            const statusMs = perfFirstStatusTime ? (perfFirstStatusTime - perfClickTime).toFixed(1) : "n/a";
+            const ttftMs = perfFirstTokenTime ? (perfFirstTokenTime - perfClickTime).toFixed(1) : "n/a";
+            console.log(`[PERF_FRONTEND] DONE: click_to_sent=${clickToSent}ms | first_status=${statusMs}ms | browser_ttft=${ttftMs}ms | total=${totalMs}ms`);
+          }
           removeThinkingIndicator();
           if (data.latency) {
             console.info("[Bot Latency]", data.latency);
@@ -326,8 +362,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function showLeadCapturedNotice(lead) {
     const notice = document.createElement("div");
-    notice.style.alignSelf = "flex-start";
-    notice.style.marginLeft = "48px";
+    notice.className = "lead-captured-notice";
+    notice.style.alignSelf = "center";
     notice.style.padding = "10px 16px";
     notice.style.background = "rgba(57, 130, 99, 0.12)";
     notice.style.border = "1px solid rgba(57, 130, 99, 0.35)";
@@ -357,6 +393,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const text = (queryText || customerQueryInput.value).trim();
     if (!text || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
 
+    perfClickTime = performance.now();
+    perfFirstStatusTime = 0;
+    perfFirstTokenTime = 0;
+
     // Permanently remove initial suggestion chips on first user message
     const initialSuggestions = document.getElementById("initialSuggestions");
     if (initialSuggestions) {
@@ -381,6 +421,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     currentBotRow = null;
     showThinkingIndicator();
+    perfSentTime = performance.now();
+    if (isPerfActive) {
+      console.log(`[PERF_FRONTEND] click_to_request_sent_ms=${(perfSentTime - perfClickTime).toFixed(1)}`);
+    }
     chatWs.send(JSON.stringify({ query: text }));
   }
 

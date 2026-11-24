@@ -103,11 +103,11 @@ async def aresolve_session_scope(
     memory = MemoryManager(session_id=session_id, user_id=user_id)
 
     if requested_scope is not None:
-        if available_collections:
-            await memory.acleanup_attachments(available_collections)
         user_collections = set(await memory.aget_attachment_collections())
         owned = [c for c in requested_scope if c in user_collections]
         if not owned:
+            if available_collections:
+                await memory.acleanup_attachments(available_collections)
             from src.exception import CollectionNotFoundError
             raise CollectionNotFoundError(requested_scope)
         return owned
@@ -154,7 +154,7 @@ def resolve_session_scope(
 
 # In-memory TTL cache for available collections (reduces redundant Qdrant socket checks)
 _collections_cache = {"data": None, "expires": 0.0}
-_CACHE_TTL = 30.0  # seconds
+_CACHE_TTL = 300.0  # seconds (5-minute TTL, invalidated on document upload/delete)
 
 
 def invalidate_collections_cache():

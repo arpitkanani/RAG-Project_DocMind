@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import random
 import sys
 from typing import Any, List, Optional
 
@@ -44,16 +45,23 @@ class MemoryManager:
                     import uuid
                     self.session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
+        clean_title = title.strip()[:60] if (title and title.strip()) else None
+
         cur.execute(
             """
             INSERT INTO sessions (session_id, user_id, title, created_at, updated_at)
-            VALUES (%s, %s, COALESCE(%s, 'New Chat'), now(), now())
+            VALUES (%s, %s, COALESCE(NULLIF(TRIM(%s), ''), 'New Chat'), now(), now())
             ON CONFLICT (session_id) DO UPDATE
-                SET title = COALESCE(%s, sessions.title),
+                SET title = CASE
+                        WHEN (sessions.title IS NULL OR TRIM(sessions.title) = '' OR TRIM(sessions.title) = 'New Chat')
+                             AND %s IS NOT NULL AND TRIM(%s) != ''
+                        THEN TRIM(%s)
+                        ELSE sessions.title
+                    END,
                     updated_at = now()
             WHERE sessions.user_id = EXCLUDED.user_id;
             """,
-            (self.session_id, self.user_id, title, title),
+            (self.session_id, self.user_id, clean_title, clean_title, clean_title, clean_title),
         )
 
     def save_message(
@@ -63,7 +71,6 @@ class MemoryManager:
         attachments: Optional[List[dict[str, Any]]] = None,
     ):
         try:
-            title = content.strip()[:60] if (role == "human" and content.strip()) else None
             attachments_json = (
                 Json([item for item in attachments if isinstance(item, dict)])
                 if attachments and role == "human"
@@ -71,6 +78,19 @@ class MemoryManager:
             )
 
             with get_db_cursor() as cur:
+                # Only the very first human message of a session defines the session title
+                cur.execute(
+                    "SELECT 1 FROM messages WHERE session_id = %s AND role = 'human' LIMIT 1;",
+                    (self.session_id,),
+                )
+                has_prior_human = cur.fetchone() is not None
+
+                title = (
+                    content.strip()[:60]
+                    if (role == "human" and not has_prior_human and content.strip())
+                    else None
+                )
+
                 self._ensure_session(cur, title=title)
                 cur.execute(
                     """
@@ -79,7 +99,9 @@ class MemoryManager:
                     """,
                     (self.session_id, role, content, attachments_json),
                 )
-                self._prune_expired(cur)
+                # Sample pruning 1-in-10 message turns to remove synchronous DELETE latency from the user query path
+                if random.random() < 0.1:
+                    self._prune_expired(cur)
 
             logging.info("Message saved | role: %s | session: %s", role, self.session_id)
         except Exception as e:

@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import threading
+import time
 from typing import Optional
 
 import yaml
@@ -30,15 +31,31 @@ class ResilientAzureEmbeddings(Embeddings):
         self._inner = inner_client
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        t0 = time.perf_counter()
         try:
-            return self._inner.embed_documents(texts)
+            res = self._inner.embed_documents(texts)
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            try:
+                from src.utils.perf import record_rag_embedding
+                record_rag_embedding(dt_ms, len(texts), "azure", "text-embedding-3-small", 1 if len(texts) > 1 else 0)
+            except Exception:
+                pass
+            return res
         except Exception as e:
             logging.error("Azure OpenAI embed_documents failed: %s", e)
             raise EmbeddingUnavailableError("The embedding model is unavailable. You can switch the embedding model in Settings.") from e
 
     def embed_query(self, text: str) -> list[float]:
+        t0 = time.perf_counter()
         try:
-            return self._inner.embed_query(text)
+            res = self._inner.embed_query(text)
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            try:
+                from src.utils.perf import record_rag_embedding
+                record_rag_embedding(dt_ms, 1, "azure", "text-embedding-3-small", 0)
+            except Exception:
+                pass
+            return res
         except Exception as e:
             logging.error("Azure OpenAI embed_query failed: %s", e)
             raise EmbeddingUnavailableError("The embedding model is unavailable. You can switch the embedding model in Settings.") from e

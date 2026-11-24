@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from typing import Any, Dict
 
@@ -35,8 +36,11 @@ async def load_context_node(state: RAGState, config: RunnableConfig = None) -> D
         attachments = state.get("message_attachments")
 
         memory = MemoryManager(session_id=session_id, user_id=user_id)
-        chat_history = await memory.aget_history()
-        await memory.asave_message("human", question, attachments=attachments)
+        # Concurrent history retrieval and human message persistence
+        chat_history, _ = await asyncio.gather(
+            memory.aget_history(),
+            memory.asave_message("human", question, attachments=attachments),
+        )
 
         is_summary = is_summary_request(question)
         return {

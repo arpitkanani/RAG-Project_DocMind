@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import time
@@ -17,6 +18,7 @@ from business_assistant.tools.rag_tool import get_brochure_rag_tool
 from src.chains.qa_chain import _build_llm
 from src.database.db import get_db_cursor
 from src.logger import logging, log_latency
+from src.utils.perf import log_perf_kv, mask_pii
 
 
 EMAIL_REGEX = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
@@ -412,10 +414,10 @@ class BusinessBotChatSession:
                 "persona_name": self.bot_data.get("persona_name", ""),
                 "session_id": self.session_id,
                 "customer_username": self.customer_username,
-                "user_query": user_message[:120],
+                "user_query": mask_pii(user_message[:120]),
                 "channel": "customer_chat_websocket",
             },
-            "run_name": f"Custom Bot [{self.bot_data.get('business_name', 'Biz')}]: {user_message[:35]}",
+            "run_name": f"Custom Bot [{self.bot_data.get('business_name', 'Biz')}]: {mask_pii(user_message[:35])}",
             "tags": [
                 "custom_bot",
                 "business_assistant",
@@ -425,12 +427,16 @@ class BusinessBotChatSession:
             ],
         }
 
+        t_first_event: Optional[float] = None
+
         # Step 1: Lead capture
         t_lead_start = time.perf_counter()
         lead_info = _extract_and_log_lead(self.bot_id, self.session_id, self.customer_username, user_message)
         lead_ms = (time.perf_counter() - t_lead_start) * 1000.0
 
         if lead_info:
+            if t_first_event is None:
+                t_first_event = time.perf_counter()
             yield {
                 "type": "lead_alert",
                 "lead_captured": True,
@@ -441,66 +447,113 @@ class BusinessBotChatSession:
                 "is_high_intent": lead_info.get("is_high_intent", False),
             }
 
-        # Step 2: Save user message to PostgreSQL
-        t_db_u_start = time.perf_counter()
-        try:
-            with get_db_cursor(commit=True) as cur:
-                cur.execute(
-                    """
-                    INSERT INTO bot_chat_sessions (session_id, bot_id, customer_id, customer_name, turn_count, updated_at)
-                    VALUES (%s, %s, %s, %s, 1, now())
-                    ON CONFLICT (session_id) DO UPDATE
-                    SET turn_count = bot_chat_sessions.turn_count + 1, updated_at = now();
-                    """,
-                    (self.session_id, self.bot_id, self.customer_id, self.customer_username),
-                )
-                cur.execute(
-                    """
-                    INSERT INTO bot_messages (session_id, role, content)
-                    VALUES (%s, 'human', %s);
-                    """,
-                    (self.session_id, user_message),
-                )
-        except Exception as e:
-            logging.warning("[Business Agent] Failed saving human message: %s", e)
-        db_user_ms = (time.perf_counter() - t_db_u_start) * 1000.0
+        # Fix 6: Immediate perceived speed event (< 20ms)
+        if t_first_event is None:
+            t_first_event = time.perf_counter()
+        yield {"type": "tool_status", "status": "searching", "message": "Searching brochures..."}
 
-        # Step 3: Brochure lookup with RAG tool
-        tool_context = ""
-        rag_ms = 0.0
-        try:
-            t_rag_start = time.perf_counter()
-            tool_context = await self.rag_tool.ainvoke(user_message, config=run_config)
-            rag_ms = (time.perf_counter() - t_rag_start) * 1000.0
+        # Step 2, 3, 4: Concurrent Execution of DB User Insert, Brochure RAG, and History Retrieval (Fix 3)
+        t_concurrent_start = time.perf_counter()
 
-            if tool_context and "No brochures available" not in tool_context and "Collection not found" not in tool_context:
-                logging.info("[Business Agent] Retrieved %d chars of brochure context in %.1fms", len(tool_context), rag_ms)
-        except Exception as e:
-            logging.warning("[Business Agent] Tool invocation note: %s", e)
+        async def _fetch_rag():
+            try:
+                return await self.rag_tool.ainvoke(user_message, config=run_config)
+            except Exception as e:
+                logging.warning("[Business Agent] Tool invocation note: %s", e)
+                return ""
 
-        # Step 4: Retrieve conversation history (sliding-window 10 recent + older summary)
-        t_hist_start = time.perf_counter()
-        prior_summary, history_messages = await self._get_history_and_summary(run_config=run_config)
-        history_ms = (time.perf_counter() - t_hist_start) * 1000.0
+        async def _fetch_history():
+            try:
+                return await self._get_history_and_summary(run_config=run_config)
+            except Exception as e:
+                logging.warning("[Business Agent] History retrieval note: %s", e)
+                return "", []
+
+        async def _save_user_db():
+            t0 = time.perf_counter()
+            try:
+                def _sync_insert():
+                    with get_db_cursor(commit=True) as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO bot_chat_sessions (session_id, bot_id, customer_id, customer_name, turn_count, updated_at)
+                            VALUES (%s, %s, %s, %s, 1, now())
+                            ON CONFLICT (session_id) DO UPDATE
+                            SET turn_count = bot_chat_sessions.turn_count + 1, updated_at = now();
+                            """,
+                            (self.session_id, self.bot_id, self.customer_id, self.customer_username),
+                        )
+                        cur.execute(
+                            """
+                            INSERT INTO bot_messages (session_id, role, content)
+                            VALUES (%s, 'human', %s);
+                            """,
+                            (self.session_id, user_message),
+                        )
+                await asyncio.to_thread(_sync_insert)
+            except Exception as e:
+                logging.warning("[Business Agent] Failed saving human message: %s", e)
+            return (time.perf_counter() - t0) * 1000.0
+
+        rag_task = asyncio.create_task(_fetch_rag())
+        hist_task = asyncio.create_task(_fetch_history())
+        db_u_task = asyncio.create_task(_save_user_db())
+
+        tool_context, (prior_summary, history_messages), db_user_ms = await asyncio.gather(
+            rag_task, hist_task, db_u_task
+        )
+        t_rag_done = time.perf_counter()
+        rag_ms = (t_rag_done - t_concurrent_start) * 1000.0
+        history_ms = 0.0
+
+        if tool_context and "No brochures available" not in tool_context and "Collection not found" not in tool_context:
+            logging.info("[Business Agent] Retrieved %d chars of brochure context in %.1fms", len(tool_context), rag_ms)
+
+        # Prevent duplicate user turn if DB insert completed before history query
+        if history_messages and isinstance(history_messages[-1], HumanMessage) and history_messages[-1].content.strip() == user_message.strip():
+            history_messages.pop()
+
+        # Fix 1 & Fix 5: Token Capping & Prompt Budget Protection
+        # Prevents provider TPM rate-limit stalls (429s) and accelerates LLM TTFT (< 1.5s)
+        if tool_context and len(tool_context) > 2000:
+            tool_context = tool_context[:2000].rstrip() + "\n\n[Brochure context capped for brevity]"
+        if len(history_messages) > 4:
+            history_messages = history_messages[-4:]
+
+        # Dynamic prompt budget protection: if stored prompt is oversized (> 3200 chars),
+        # compress to preserve persona identity, voice, and guardrails without blowing up token limit
+        base_prompt = self.bot_data.get("dynamic_prompt") or f"You are {self.bot_data.get('persona_name')} representing {self.bot_data.get('business_name')}."
+        if len(base_prompt) > 3200:
+            base_prompt = base_prompt[:2200].rstrip() + "\n\n[... Note: Core product specs are retrieved dynamically from verified brochure context ...]\n\n" + base_prompt[-800:].lstrip()
 
         # Build prompt messages
-        system_content = self.bot_data.get("dynamic_prompt") or f"You are {self.bot_data.get('persona_name')} representing {self.bot_data.get('business_name')}."
+        system_content = base_prompt
         if tool_context and "No brochures available" not in tool_context and "Collection not found" not in tool_context:
             system_content += f"\n\n### VERIFIED BROCHURE KNOWLEDGE:\n{tool_context}"
 
         if prior_summary:
-            system_content += f"\n\n### PRIOR CONVERSATION SUMMARY (Earlier Turns):\n{prior_summary}"
+            system_content += f"\n\n### PRIOR CONVERSATION SUMMARY (Earlier Turns):\n{prior_summary[:400]}"
 
-        system_content += (
-            "\n\n### CRITICAL CONVERSATION FLOW RULES:\n"
-            "1. NO REPEATED GREETINGS: The initial greeting was already delivered on turn 1. NEVER start responses with 'Hello', 'Hi', 'Welcome to...', or re-introduce yourself. Jump straight into answering the user's specific query.\n"
-            "2. ANTI-LOOP RULE: Never repeat the same question or menu of options you asked in previous turns. If the customer mentions an interest or selects a product, immediately provide specific facts, instructions, benefits, and pricing from the verified knowledge.\n"
-            "3. DIRECT ANSWERS & CLEAN STRUCTURE: Answer questions clearly and definitively with well-structured Markdown. Use clean headings (###), bold key terms, and bullet points (-). NEVER output raw HTML tags like <br>, <br/>, or <p> - always use clean Markdown formatting with double newlines between paragraphs.\n"
-            "4. NO TOOL CALLS: Answer directly using the verified knowledge provided. Do NOT output any XML or JSON tool call tags.\n"
-            "5. CLOSING RULE: Only provide a closing or goodbye message if the customer explicitly says goodbye or thank you.\n"
-            "6. PRIVACY SHIELD FOR CONTACT INFO: If the customer provides their phone number, email address, or contact details, acknowledge receipt politely (e.g. 'Thank you [Customer Name], our team has noted your contact details and will follow up shortly.'). STRICT MANDATORY RULE: NEVER repeat, echo, quote, or display their raw phone number or email address back in your response.\n"
-            "7. OUT-OF-KNOWLEDGE BOUNDARY: If the customer asks questions outside your verified brochure knowledge and business offerings, do NOT invent or guess details. Follow your configured out-of-scope policy: explain politely that this is outside your verified scope, and invite them to leave their contact details or consult official business channels."
-        )
+        if "CRITICAL CONVERSATION FLOW RULES" not in system_content and "ANTI-LOOP" not in system_content:
+            system_content += (
+                "\n\n### CONVERSATION RULES:\n"
+                "1. NO REPEATED GREETINGS: The initial greeting was already delivered on turn 1. NEVER start responses with 'Hello', 'Hi', or introductions. Jump straight into answering.\n"
+                "2. DIRECT ANSWERS & CLEAN STRUCTURE: Answer questions clearly with structured Markdown (headings, bullet points). NEVER output raw HTML tags.\n"
+                "3. PRIVACY SHIELD FOR CONTACT INFO: If the customer provides phone/email, acknowledge receipt politely, but NEVER repeat, echo, or quote their raw contact details back.\n"
+                "4. OUT-OF-KNOWLEDGE BOUNDARY: If queried outside verified brochure knowledge, politely decline and offer to take contact details for team follow-up."
+            )
+
+        # Prompt size calculations
+        sys_chars = len(system_content)
+        sys_tokens = sys_chars // 4
+        rag_chars = len(tool_context) if tool_context else 0
+        rag_tokens = rag_chars // 4
+        hist_chars = sum(len(m.content) for m in history_messages) + len(prior_summary or "")
+        hist_tokens = hist_chars // 4
+        user_chars = len(user_message)
+        user_tokens = user_chars // 4
+        total_input_chars = sys_chars + hist_chars + user_chars
+        total_input_tokens = total_input_chars // 4
 
         messages = [
             SystemMessage(content=system_content),
@@ -511,7 +564,8 @@ class BusinessBotChatSession:
         # Step 5: Stream tokens from LLM and measure TTFT
         full_reply = ""
         first_token_time = None
-        ttft_ms = 0.0
+        turn_ttft_ms = 0.0
+        llm_ttft_ms = 0.0
         token_count = 0
         t_llm_start = time.perf_counter()
 
@@ -521,7 +575,10 @@ class BusinessBotChatSession:
                 if text_chunk:
                     if first_token_time is None:
                         first_token_time = time.perf_counter()
-                        ttft_ms = (first_token_time - t_turn_start) * 1000.0
+                        llm_ttft_ms = (first_token_time - t_llm_start) * 1000.0
+                        turn_ttft_ms = (first_token_time - t_turn_start) * 1000.0
+                        if t_first_event is None:
+                            t_first_event = first_token_time
                     token_count += 1
                     full_reply += text_chunk
                     yield {"type": "token", "token": text_chunk, "chunk": text_chunk}
@@ -532,7 +589,9 @@ class BusinessBotChatSession:
 
         llm_stream_ms = (time.perf_counter() - t_llm_start) * 1000.0
         if first_token_time is None:
-            ttft_ms = llm_stream_ms
+            llm_ttft_ms = llm_stream_ms
+            turn_ttft_ms = (time.perf_counter() - t_turn_start) * 1000.0
+        stream_ms = (time.perf_counter() - first_token_time) * 1000.0 if first_token_time else 0.0
 
         # Step 6: Save AI reply to PostgreSQL (with defensive privacy redaction)
         t_db_ai_start = time.perf_counter()
@@ -560,13 +619,69 @@ class BusinessBotChatSession:
         t_turn_end = time.perf_counter()
         total_duration_ms = (t_turn_end - t_turn_start) * 1000.0
         total_db_ms = db_user_ms + db_ai_ms
-        tokens_per_sec = (token_count / (llm_stream_ms / 1000.0)) if llm_stream_ms > 0 else 0.0
+        tokens_per_sec = (token_count / (stream_ms / 1000.0)) if stream_ms > 0 else 0.0
+
+        first_event_ms = (t_first_event - t_turn_start) * 1000.0 if t_first_event else 0.0
+        rag_done_rel_ms = (t_rag_done - t_turn_start) * 1000.0
+        llm_sent_rel_ms = (t_llm_start - t_turn_start) * 1000.0
+        first_token_rel_ms = (first_token_time - t_turn_start) * 1000.0 if first_token_time else 0.0
+
+        # Phase 1 Key=Value PERF telemetry
+        log_perf_kv(
+            "chat_turn",
+            bot_id=self.bot_id,
+            turn_ttft_ms=round(turn_ttft_ms, 1),
+            llm_ttft_ms=round(llm_ttft_ms, 1),
+            rag_ms=round(rag_ms, 1),
+            llm_ms=round(llm_stream_ms, 1),
+            stream_ms=round(stream_ms, 1),
+            history_ms=round(history_ms, 1),
+            db_user_ms=round(db_user_ms, 1),
+            db_ai_ms=round(db_ai_ms, 1),
+            total_ms=round(total_duration_ms, 1),
+            tokens=token_count,
+            tok_sec=round(tokens_per_sec, 1),
+        )
+        log_perf_kv(
+            "prompt_breakdown",
+            sys_chars=sys_chars,
+            sys_tokens=sys_tokens,
+            rag_chars=rag_chars,
+            rag_tokens=rag_tokens,
+            hist_chars=hist_chars,
+            hist_tokens=hist_tokens,
+            user_chars=user_chars,
+            user_tokens=user_tokens,
+            total_input_chars=total_input_chars,
+            total_input_tokens=total_input_tokens,
+        )
+        log_perf_kv(
+            "timeline",
+            t_request=0.0,
+            t_first_event_ms=round(first_event_ms, 1),
+            t_rag_done_ms=round(rag_done_rel_ms, 1),
+            t_llm_sent_ms=round(llm_sent_rel_ms, 1),
+            t_first_token_ms=round(first_token_rel_ms, 1),
+            t_done_ms=round(total_duration_ms, 1),
+        )
+        log_perf_kv(
+            "db",
+            lead_ms=round(lead_ms, 1),
+            user_insert_ms=round(db_user_ms, 1),
+            hist_load_ms=round(history_ms, 1),
+            ai_insert_ms=round(db_ai_ms, 1),
+            cached=0,
+            concurrent_with_rag=1,
+        )
 
         latency_stats = {
             "total_ms": round(total_duration_ms, 1),
-            "ttft_ms": round(ttft_ms, 1),
+            "ttft_ms": round(turn_ttft_ms, 1),
+            "turn_ttft_ms": round(turn_ttft_ms, 1),
+            "llm_ttft_ms": round(llm_ttft_ms, 1),
             "rag_ms": round(rag_ms, 1),
             "llm_ms": round(llm_stream_ms, 1),
+            "stream_ms": round(stream_ms, 1),
             "history_ms": round(history_ms, 1),
             "db_ms": round(total_db_ms, 1),
             "tokens": token_count,
@@ -577,7 +692,7 @@ class BusinessBotChatSession:
         log_latency(
             "CUSTOM_BOT",
             f"Bot: '{self.bot_id}' | Business: '{self.bot_data.get('business_name', '')}' | Session: '{self.session_id}' | "
-            f"Total: {total_duration_ms:.1f}ms | TTFT: {ttft_ms:.1f}ms | RAG: {rag_ms:.1f}ms | "
+            f"Total: {total_duration_ms:.1f}ms | TTFT: {turn_ttft_ms:.1f}ms (LLM TTFT: {llm_ttft_ms:.1f}ms) | RAG: {rag_ms:.1f}ms | "
             f"LLM: {llm_stream_ms:.1f}ms ({token_count} chunks @ {tokens_per_sec:.1f} tok/s) | "
             f"History: {history_ms:.1f}ms | DB: {total_db_ms:.1f}ms"
         )

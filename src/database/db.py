@@ -179,6 +179,18 @@ def init_db(sql_path: str = "database/init.sql") -> None:
         _safe_exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT DEFAULT 'New Chat';")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);")
         _safe_exec("CREATE INDEX IF NOT EXISTS idx_sessions_user_updated ON sessions(user_id, updated_at DESC);")
+        _safe_exec("""
+            UPDATE sessions s
+            SET title = sub.first_query
+            FROM (
+                SELECT DISTINCT ON (session_id) session_id, LEFT(TRIM(content), 60) AS first_query
+                FROM messages
+                WHERE role = 'human' AND TRIM(content) != ''
+                ORDER BY session_id, created_at ASC
+            ) sub
+            WHERE s.session_id = sub.session_id
+              AND (s.title IS NULL OR s.title = 'New Chat' OR s.title != sub.first_query);
+        """)
 
         _safe_exec("""
             CREATE TABLE IF NOT EXISTS messages (

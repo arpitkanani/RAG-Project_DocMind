@@ -14,6 +14,7 @@ except ImportError:
 
 from business_assistant.prompts import MASTER_ARCHITECT_SYSTEM_PROMPT, get_azure_or_fallback_llm
 from src.logger import logging, log_latency
+from src.utils.perf import log_perf_kv
 
 
 ALL_VECTORS = [
@@ -208,6 +209,28 @@ class MasterArchitectInterview:
         log_latency("ARCHITECT_INTERVIEW", f"Biz: '{self.business_name}' | Turn 1 (start) | Latency: {arch_ms:.1f}ms")
 
         content = response.content if hasattr(response, "content") else str(response)
+
+        # Telemetry for architect turn 1
+        input_chars = sum(len(m.content) for m in self.messages)
+        resp_meta = getattr(response, "response_metadata", {}) or {}
+        token_usage = resp_meta.get("token_usage", {}) or {}
+        input_tokens = token_usage.get("prompt_tokens") or (input_chars // 4)
+        output_tokens = token_usage.get("completion_tokens") or (len(content) // 4)
+        model_name = getattr(self.llm, "model_name", None) or getattr(self.llm, "model", None) or getattr(self.llm, "azure_deployment", None) or "azure/gpt-5.4-nano"
+        log_perf_kv(
+            "architect",
+            biz=self.business_name,
+            turn=self.turn_count,
+            question=self.question_count,
+            input_chars=input_chars,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            llm_ttft_ms=round(arch_ms, 1),
+            llm_total_ms=round(arch_ms, 1),
+            model=model_name,
+            retries=0,
+        )
+
         self.messages.append(AIMessage(content=content))
 
         parsed = self._clean_json_response(content)
@@ -222,14 +245,45 @@ class MasterArchitectInterview:
     async def step(self, user_answer: str) -> Dict[str, Any]:
         """Processes the business owner's response and yields the next question or completion."""
         self.turn_count += 1
-        self.messages.append(HumanMessage(content=user_answer))
+
+        # Fix 4: Architect Sliding State Trimming
+        # Prevent transcript explosion and linear latency growth (4s -> 14s)
+        # LLM receives: System prompt + compact vector JSON + previous Q + user answer
+        system_msg = self.messages[0]
+
+        last_question_text = ""
+        for m in reversed(self.messages):
+            if isinstance(m, AIMessage):
+                try:
+                    q_json = self._clean_json_response(m.content)
+                    last_question_text = q_json.get("stream_question") or m.content[:300]
+                except Exception:
+                    last_question_text = m.content[:300]
+                break
+
+        covered_summary = {k: v.get("value", "")[:120] for k, v in self.vector_states.items()}
+        state_context = (
+            f"CURRENT INTERVIEW PROGRESS:\n"
+            f"- Substantive Question: {self.question_count} of 10\n"
+            f"- Parameters Already Covered: {list(self.vector_states.keys())}\n"
+            f"- Current Extracted Vector Values: {json.dumps(covered_summary)}\n"
+            f"- Remaining Target Vectors to Probe: {[v for v in ALL_VECTORS if v not in self.vector_states]}\n\n"
+            f"PREVIOUS QUESTION ASKED TO OWNER:\n{last_question_text}\n\n"
+            f"BUSINESS OWNER ANSWER:\n{user_answer}"
+        )
+
+        step_messages = [
+            system_msg,
+            HumanMessage(content=state_context),
+        ]
 
         logging.info(
-            "[Master Architect] Processing turn %d (Q%d) for '%s' | Input length: %d chars",
+            "[Master Architect] Processing turn %d (Q%d) for '%s' | Input length: %d chars (compact prompt: %d chars)",
             self.turn_count,
             self.question_count,
             self.business_name,
             len(user_answer),
+            len(state_context),
         )
 
         t_step0 = time.perf_counter()
@@ -238,11 +292,33 @@ class MasterArchitectInterview:
             "tags": ["master_architect", "interview", f"biz:{self.business_name}"],
             "metadata": {"business_name": self.business_name, "turn": self.turn_count, "question": self.question_count},
         }
-        response = await self.llm.ainvoke(self.messages, config=run_config)
+        response = await self.llm.ainvoke(step_messages, config=run_config)
         step_ms = (time.perf_counter() - t_step0) * 1000.0
         log_latency("ARCHITECT_INTERVIEW", f"Biz: '{self.business_name}' | Turn {self.turn_count} (Q{self.question_count}) | Latency: {step_ms:.1f}ms")
 
         content = response.content if hasattr(response, "content") else str(response)
+
+        # Telemetry for architect step
+        input_chars = sum(len(m.content) for m in step_messages)
+        resp_meta = getattr(response, "response_metadata", {}) or {}
+        token_usage = resp_meta.get("token_usage", {}) or {}
+        input_tokens = token_usage.get("prompt_tokens") or (input_chars // 4)
+        output_tokens = token_usage.get("completion_tokens") or (len(content) // 4)
+        model_name = getattr(self.llm, "model_name", None) or getattr(self.llm, "model", None) or getattr(self.llm, "azure_deployment", None) or "azure/gpt-5.4-nano"
+        log_perf_kv(
+            "architect",
+            biz=self.business_name,
+            turn=self.turn_count,
+            question=self.question_count,
+            input_chars=input_chars,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            llm_ttft_ms=round(step_ms, 1),
+            llm_total_ms=round(step_ms, 1),
+            model=model_name,
+            retries=0,
+        )
+
         self.messages.append(AIMessage(content=content))
 
         parsed = self._clean_json_response(content)
