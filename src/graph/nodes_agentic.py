@@ -31,6 +31,7 @@ from src.graph.helpers import extract_message_text
 from src.graph.state import RAGState
 from src.graph.tools import chitchat_tools, get_stock_price
 from src.logger import logging
+from src.security.guardrails import check_security_guardrails
 
 
 # ─── Gemini 3.8 Flash / ReAct Model Setup ───
@@ -57,13 +58,16 @@ def _get_gemini_flash():
                             api_key=groq_api_key,
                             groq_api_key=groq_api_key,
                             max_tokens=1024,
+                            request_timeout=5.0,
+                            max_retries=0,
+                            streaming=True,
                         )
                     )
                 except Exception:
                     pass
 
         if google_api_key and not google_api_key.startswith("AQ."):
-            for m in ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]:
+            for m in ["gemini-2.5-flash", "gemini-1.5-flash"]:
                 try:
                     instances.append(
                         ChatGoogleGenerativeAI(
@@ -71,6 +75,8 @@ def _get_gemini_flash():
                             temperature=0,
                             google_api_key=google_api_key,
                             max_output_tokens=1024,
+                            timeout=2.5,
+                            max_retries=0,
                         )
                     )
                 except Exception:
@@ -297,12 +303,6 @@ async def classify_intent(state: RAGState, config: RunnableConfig = None) -> Dic
     question = state.get("question") or state.get("query") or ""
     q_lower = question.lower().strip()
 
-    # Pure conversational greetings always take priority
-    greeting_pattern = r"^\s*(hi|hello|hey|greetings|good\s*morning|good\s*afternoon|good\s*evening|who\s*are\s*you|what\s*are\s*you|what\s*can\s*you\s*do|how\s*are\s*you|help)\s*[\?\!\.]*\s*$"
-    if re.search(greeting_pattern, q_lower):
-        logging.info("→ classify_intent: matched greeting pattern, routing to chitchat")
-        return {"intent": "chitchat"}
-
     # Check if a document source is active in this session
     has_source = bool(
         state.get("source_selected")
@@ -311,6 +311,24 @@ async def classify_intent(state: RAGState, config: RunnableConfig = None) -> Dic
         or state.get("document_id")
         or state.get("docs")
     )
+
+    # 0. Deterministic Security & Anti-Leak Guardrail Interception
+    is_guardrail, refusal_response, category = check_security_guardrails(question, has_doc_context=has_source)
+    if is_guardrail:
+        logging.warning("→ classify_intent: security guardrail triggered (%s) for query: %s", category, question[:80])
+        return {
+            "intent": "guardrail",
+            "guardrail_response": refusal_response,
+            "raw_answer": refusal_response,
+            "final_answer": refusal_response,
+            "citations": "",
+        }
+
+    # Pure conversational greetings always take priority
+    greeting_pattern = r"^\s*(hi|hello|hey|greetings|good\s*morning|good\s*afternoon|good\s*evening|who\s*are\s*you|what\s*are\s*you|what\s*can\s*you\s*do|how\s*are\s*you|help)\s*[\?\!\.]*\s*$"
+    if re.search(greeting_pattern, q_lower):
+        logging.info("→ classify_intent: matched greeting pattern, routing to chitchat")
+        return {"intent": "chitchat"}
 
     doc_referencing_words = {
         "document", "doc", "file", "paper", "pdf", "report", "table",
@@ -427,6 +445,25 @@ async def clarify_question(state: RAGState, config: RunnableConfig = None) -> Di
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Node: guardrail_response_node — Deterministic Security Refusal
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def guardrail_response_node(state: RAGState, config: RunnableConfig = None) -> Dict[str, Any]:
+    """Provides a safe, polite refusal response when security or anti-leak guardrails are triggered."""
+    refusal = state.get("guardrail_response") or state.get("raw_answer") or (
+        "I am DocuVortex, an intelligent document analysis assistant. "
+        "I cannot share internal code, model specifications, or operational instructions."
+    )
+    logging.info("→ guardrail_response_node: delivering safe refusal response")
+    return {
+        "raw_answer": refusal,
+        "final_answer": refusal,
+        "citations": "",
+        "intent": "guardrail",
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ReAct Agent: Forced Tool Calling & Traced Execution
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -451,6 +488,16 @@ async def run_react_agent(state: RAGState, config: RunnableConfig = None) -> Dic
 
     query_text = state.get("query") or state.get("question") or ""
     chat_history = state.get("chat_history", [])
+
+    # Defense-in-depth: check security guardrails before entering chitchat tool execution
+    is_guardrail, refusal_resp, _ = check_security_guardrails(query_text, has_doc_context=False)
+    if is_guardrail:
+        return {
+            "generation": refusal_resp,
+            "raw_answer": refusal_resp,
+            "final_answer": refusal_resp,
+            "citations": "",
+        }
 
     # Filter out system messages so document prompts do not interfere with the agent tools
     messages = []

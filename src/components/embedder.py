@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import threading
+import time
 from typing import Optional
 
 import yaml
@@ -30,15 +31,31 @@ class ResilientAzureEmbeddings(Embeddings):
         self._inner = inner_client
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        t0 = time.perf_counter()
         try:
-            return self._inner.embed_documents(texts)
+            res = self._inner.embed_documents(texts)
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            try:
+                from src.utils.perf import record_rag_embedding
+                record_rag_embedding(dt_ms, len(texts), "azure", "text-embedding-3-small", 1 if len(texts) > 1 else 0)
+            except Exception:
+                pass
+            return res
         except Exception as e:
             logging.error("Azure OpenAI embed_documents failed: %s", e)
             raise EmbeddingUnavailableError("The embedding model is unavailable. You can switch the embedding model in Settings.") from e
 
     def embed_query(self, text: str) -> list[float]:
+        t0 = time.perf_counter()
         try:
-            return self._inner.embed_query(text)
+            res = self._inner.embed_query(text)
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            try:
+                from src.utils.perf import record_rag_embedding
+                record_rag_embedding(dt_ms, 1, "azure", "text-embedding-3-small", 0)
+            except Exception:
+                pass
+            return res
         except Exception as e:
             logging.error("Azure OpenAI embed_query failed: %s", e)
             raise EmbeddingUnavailableError("The embedding model is unavailable. You can switch the embedding model in Settings.") from e
@@ -57,6 +74,7 @@ class Embedder:
     _bge_model = None
     _azure_lock = threading.Lock()
     _bge_lock = threading.Lock()
+    _provider_cache: dict[str, tuple[float, str]] = {}
 
     def __init__(self, provider: Optional[str] = None, user_id: Optional[str] = None):
         try:
@@ -71,22 +89,33 @@ class Embedder:
 
     @classmethod
     def get_active_provider(cls, user_id: Optional[str] = None) -> str:
-        """Determines the active embedding provider, checking user_settings in DB first, then config/env."""
+        """Determines the active embedding provider with in-memory TTL caching."""
+        import time
+        now = time.monotonic()
         if user_id:
+            cached = cls._provider_cache.get(user_id)
+            if cached and (now - cached[0]) < 60.0:
+                return cached[1]
+
             try:
                 from src.database.db import get_db_cursor
                 with get_db_cursor(commit=False) as cur:
                     cur.execute("SELECT active_embedding_provider FROM user_settings WHERE user_id = %s LIMIT 1;", (user_id,))
                     row = cur.fetchone()
                     if row and row.get("active_embedding_provider"):
-                        return row["active_embedding_provider"].strip().lower()
+                        provider = row["active_embedding_provider"].strip().lower()
+                        cls._provider_cache[user_id] = (now, provider)
+                        return provider
             except Exception as e:
                 logging.debug("Could not read user_settings provider: %s", e)
 
-        return os.getenv(
+        default_provider = os.getenv(
             "EMBEDDING_PROVIDER",
             config.get("embedding", {}).get("provider", "azure")
         ).strip().lower()
+        if user_id:
+            cls._provider_cache[user_id] = (now, default_provider)
+        return default_provider
 
     @classmethod
     def get_model_specs(cls, provider: Optional[str] = None) -> dict:

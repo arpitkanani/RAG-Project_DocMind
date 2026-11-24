@@ -3,6 +3,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 from typing import Any, Iterable, List, Optional
 
@@ -18,6 +19,7 @@ from src.exception import (
     CustomException,
     EmbeddingUnavailableError,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.logger import logging
 
@@ -25,28 +27,46 @@ with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
 
-def _is_remote_qdrant_up(url: str, api_key: str | None = None, timeout: float = 5.0) -> bool:
-    """Check whether remote Qdrant is listening and reachable (supports local HTTP and Cloud HTTPS)."""
+_QDRANT_UP_CACHE: dict[str, tuple[float, bool]] = {}
+_COLLECTION_DIM_CACHE: dict[str, tuple[int, float]] = {}
+DIM_CACHE_TTL_SEC = 3600.0  # Vector dimensions are immutable once collection is created
+
+
+def _is_remote_qdrant_up(url: str, api_key: str | None = None, timeout: float = 3.0) -> bool:
+    """Check whether remote Qdrant is listening and reachable with 60s TTL caching."""
     if not url:
         return False
+    import time
+    now = time.monotonic()
+    cached = _QDRANT_UP_CACHE.get(url)
+    if cached and (now - cached[0]) < 60.0:
+        return cached[1]
+
     try:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme == "https":
             client = QdrantClient(url=url, api_key=api_key, timeout=timeout, check_compatibility=False)
             client.get_collections()
+            _QDRANT_UP_CACHE[url] = (now, True)
             return True
         else:
             host = parsed.hostname or "localhost"
             port = parsed.port or 6333
             with socket.create_connection((host, port), timeout=timeout):
+                _QDRANT_UP_CACHE[url] = (now, True)
                 return True
     except Exception as e:
         logging.warning("Remote Qdrant check failed for %s: %s", url, e)
+        _QDRANT_UP_CACHE[url] = (now, False)
         return False
 
 
 _local_client = None
 _local_client_lock = threading.Lock()
+_remote_client = None
+_remote_client_lock = threading.Lock()
+_async_client = None
+_async_client_lock = threading.Lock()
 
 
 def _get_local_client(storage_path: str = "data/qdrant_storage") -> QdrantClient:
@@ -59,6 +79,71 @@ def _get_local_client(storage_path: str = "data/qdrant_storage") -> QdrantClient
                 _local_client = QdrantClient(path=abs_path)
                 logging.info("Initialized local disk QdrantClient at: %s", abs_path)
     return _local_client
+
+
+def _get_remote_client(url: str, api_key: str | None) -> QdrantClient:
+    global _remote_client
+    if _remote_client is None:
+        with _remote_client_lock:
+            if _remote_client is None:
+                _remote_client = QdrantClient(
+                    url=url,
+                    api_key=api_key,
+                    timeout=35.0,
+                    check_compatibility=False,
+                )
+    return _remote_client
+
+
+def _is_async_client_closed(client: Optional[AsyncQdrantClient]) -> bool:
+    if client is None:
+        return True
+    try:
+        remote = getattr(client, "_client", None)
+        if remote is not None:
+            if getattr(remote, "closed", False) or getattr(remote, "_closed", False):
+                return True
+            openapi = getattr(remote, "openapi_client", None)
+            if openapi is not None:
+                http_c = getattr(openapi, "_client", None)
+                if http_c is not None and getattr(http_c, "is_closed", False):
+                    return True
+        if getattr(client, "closed", False) or getattr(client, "_closed", False):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _get_remote_async_client(url: str, api_key: str | None) -> AsyncQdrantClient:
+    global _async_client
+    with _async_client_lock:
+        if _async_client is not None and _is_async_client_closed(_async_client):
+            logging.info("Detected closed remote AsyncQdrantClient; re-instantiating client.")
+            _async_client = None
+
+        if _async_client is None:
+            _async_client = AsyncQdrantClient(
+                url=url,
+                api_key=api_key,
+                timeout=35.0,
+                check_compatibility=False,
+            )
+    return _async_client
+
+
+async def close_async_client():
+    """Graceful process shutdown of shared AsyncQdrantClient singleton."""
+    global _async_client
+    with _async_client_lock:
+        if _async_client is not None:
+            try:
+                await _async_client.close()
+                logging.info("Closed AsyncQdrantClient singleton on shutdown.")
+            except Exception as e:
+                logging.debug("AsyncQdrantClient shutdown close note: %s", e)
+            finally:
+                _async_client = None
 
 
 class VectorStore:
@@ -74,6 +159,11 @@ class VectorStore:
             self.qdrant_api_key = os.environ.get("QDRANT_API_KEY")
             self.default_collection = config.get("vectorstore", {}).get("collection_name", "docmind")
             self.collection_name = collection_name or self.default_collection
+            self.is_cloud_configured = bool(
+                self.qdrant_api_key
+                or (self.qdrant_url and "qdrant.io" in self.qdrant_url)
+                or (self.qdrant_url and self.qdrant_url.startswith("https://"))
+            )
             self.is_remote = _is_remote_qdrant_up(self.qdrant_url, api_key=self.qdrant_api_key)
 
             embedder = Embedder(provider=provider, user_id=user_id)
@@ -81,49 +171,55 @@ class VectorStore:
             self.embedding_model = embedder.get_embedding_model(for_query=True)
             self.document_embedding_model = embedder.get_embedding_model(for_query=False)
             self.active_specs = Embedder.get_model_specs(embedder.provider)
-        except EmbeddingUnavailableError:
+        except (EmbeddingUnavailableError, VectorStoreUnavailableError):
             raise
         except Exception as e:
             raise CustomException(e, sys)
 
     def _client(self) -> QdrantClient:
-        if self.is_remote:
+        if self.is_remote or self.is_cloud_configured:
             try:
-                return QdrantClient(
-                    url=self.qdrant_url,
-                    api_key=self.qdrant_api_key,
-                    timeout=35.0,
-                    check_compatibility=False,
-                )
+                return _get_remote_client(self.qdrant_url, self.qdrant_api_key)
             except Exception as e:
-                logging.warning("Remote Qdrant connection to %s failed: %s. Using local disk fallback.", self.qdrant_url, e)
+                logging.warning("Remote Qdrant connection to %s failed: %s", self.qdrant_url, e)
+                if self.is_cloud_configured:
+                    raise VectorStoreUnavailableError(
+                        f"Could not connect to Qdrant Cloud on {self.qdrant_url}: {e}"
+                    )
                 self.is_remote = False
         return _get_local_client()
 
     def _async_client(self) -> AsyncQdrantClient:
-        return AsyncQdrantClient(
-            url=self.qdrant_url,
-            api_key=self.qdrant_api_key,
-            timeout=35.0,
-            check_compatibility=False,
-        )
+        if self.is_remote or self.is_cloud_configured:
+            return _get_remote_async_client(self.qdrant_url, self.qdrant_api_key)
+        return AsyncQdrantClient(path=os.path.abspath("data/qdrant_storage"))
 
     def get_collection_vector_dimension(self, collection_name: str) -> Optional[int]:
-        """Inspects Qdrant collection configuration to get the exact vector dimension."""
+        """Inspects Qdrant collection configuration to get the exact vector dimension with TTL caching."""
+        now = time.time()
+        if collection_name in _COLLECTION_DIM_CACHE:
+            dim, ts = _COLLECTION_DIM_CACHE[collection_name]
+            if now - ts < DIM_CACHE_TTL_SEC:
+                return dim
+
         client = self._client()
         try:
             info = client.get_collection(collection_name=collection_name)
             params = info.config.params.vectors
+            dim = None
             if hasattr(params, "size"):
-                return params.size
-            if isinstance(params, dict) and "size" in params:
-                return params["size"]
-            if hasattr(params, "values"):
+                dim = params.size
+            elif isinstance(params, dict) and "size" in params:
+                dim = params["size"]
+            elif hasattr(params, "values"):
                 # Named vectors case
                 for v in params.values():
                     if hasattr(v, "size"):
-                        return v.size
-            return None
+                        dim = v.size
+                        break
+            if dim is not None:
+                _COLLECTION_DIM_CACHE[collection_name] = (dim, now)
+            return dim
         except Exception as e:
             logging.debug("Could not inspect collection %s dimension: %s", collection_name, e)
             return None
@@ -170,7 +266,7 @@ class VectorStore:
     def add_documents(
         self,
         chunks: Iterable[Document],
-        batch_size: int = 250,
+        batch_size: int = 50,
         progress_callback=None,
         on_retry=None,
     ) -> QdrantVectorStore:
@@ -212,7 +308,28 @@ class VectorStore:
                     collection_name=self.collection_name,
                     embedding=self.document_embedding_model,
                 )
-                store.add_documents(batch)
+
+                # Retry loop with exponential backoff for cloud embedding rate limits (HTTP 429 / TPM)
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        store.add_documents(batch)
+                        break
+                    except Exception as emb_err:
+                        err_str = str(emb_err).lower()
+                        if any(k in err_str for k in ("429", "rate limit", "tpm", "rpm", "too many requests")) and attempt < max_retries:
+                            wait_s = 2 ** attempt
+                            logging.warning(
+                                "Embedding rate limit encountered (attempt %d/%d). Backing off %ds before retry: %s",
+                                attempt,
+                                max_retries,
+                                wait_s,
+                                emb_err,
+                            )
+                            import time
+                            time.sleep(wait_s)
+                        else:
+                            raise
                 return store
 
             def _store_batch_with_fallback(batch: List[Document]) -> QdrantVectorStore:
@@ -252,12 +369,27 @@ class VectorStore:
         except Exception as e:
             raise CustomException(e, sys)
 
+    def store_documents(
+        self,
+        chunks: Iterable[Document],
+        batch_size: int = 250,
+        progress_callback=None,
+        on_retry=None,
+    ) -> QdrantVectorStore:
+        """Alias for add_documents for backward and cross-module compatibility."""
+        return self.add_documents(
+            chunks=chunks,
+            batch_size=batch_size,
+            progress_callback=progress_callback,
+            on_retry=on_retry,
+        )
+
     def get_all_documents(self) -> List[Document]:
         return asyncio.run(self.aget_all_documents())
 
     async def aget_all_documents(self) -> List[Document]:
         try:
-            if self.is_remote:
+            if self.is_remote or self.is_cloud_configured:
                 client = self._async_client()
                 try:
                     all_collections = await self.alist_collections()
@@ -292,13 +424,12 @@ class VectorStore:
 
                     return docs
                 except Exception as rem_err:
-                    logging.warning("Remote aget_all_documents failed: %s. Trying local fallback.", rem_err)
+                    logging.warning("Remote aget_all_documents failed: %s", rem_err)
+                    if self.is_cloud_configured:
+                        raise VectorStoreUnavailableError(
+                            f"Remote vector database query failed on {self.qdrant_url}: {rem_err}"
+                        )
                     self.is_remote = False
-                finally:
-                    try:
-                        await client.close()
-                    except Exception:
-                        pass
 
             client = self._client()
             def _sync_scroll():
@@ -331,6 +462,8 @@ class VectorStore:
                             break
                 return local_docs
             return await asyncio.to_thread(_sync_scroll)
+        except VectorStoreUnavailableError:
+            raise
         except Exception as e:
             raise CustomException(e, sys)
 
@@ -346,6 +479,10 @@ class VectorStore:
             return [c.name for c in client.get_collections().collections]
         except Exception as e:
             logging.warning("Could not list collections via client: %s", e)
+            if self.is_cloud_configured:
+                raise VectorStoreUnavailableError(
+                    f"Could not reach remote vector database (Qdrant Cloud) on {self.qdrant_url}: {e}"
+                )
             try:
                 local_client = _get_local_client()
                 return [c.name for c in local_client.get_collections().collections]
@@ -353,24 +490,23 @@ class VectorStore:
                 return []
 
     async def alist_collections(self) -> List[str]:
-        if self.is_remote:
+        if self.is_remote or self.is_cloud_configured:
             client = self._async_client()
             try:
                 colls = await client.get_collections()
                 return [c.name for c in colls.collections]
             except Exception as e:
                 logging.warning("Could not reach remote Qdrant on %s: %s", self.qdrant_url, e)
+                if self.is_cloud_configured:
+                    raise VectorStoreUnavailableError(
+                        f"Could not reach remote vector database (Qdrant Cloud) on {self.qdrant_url}: {e}"
+                    )
                 try:
                     local_client = _get_local_client()
                     colls = await asyncio.to_thread(local_client.get_collections)
                     return [c.name for c in colls.collections]
                 except Exception:
                     return []
-            finally:
-                try:
-                    await client.close()
-                except Exception:
-                    pass
         else:
             try:
                 local_client = self._client()
@@ -392,10 +528,14 @@ class VectorStore:
             return True
         except Exception as e:
             logging.warning("Failed to delete collection %s: %s", self.collection_name, e)
+            if self.is_cloud_configured:
+                raise VectorStoreUnavailableError(
+                    f"Could not reach remote vector database (Qdrant Cloud) on {self.qdrant_url}: {e}"
+                )
             return False
 
     async def adelete_collection(self) -> bool:
-        if self.is_remote:
+        if self.is_remote or self.is_cloud_configured:
             client = self._async_client()
             try:
                 colls = await client.get_collections()
@@ -408,12 +548,11 @@ class VectorStore:
                 return True
             except Exception as e:
                 logging.warning("Failed to delete remote collection %s: %s", self.collection_name, e)
+                if self.is_cloud_configured:
+                    raise VectorStoreUnavailableError(
+                        f"Could not reach remote vector database (Qdrant Cloud) on {self.qdrant_url}: {e}"
+                    )
                 return False
-            finally:
-                try:
-                    await client.close()
-                except Exception:
-                    pass
         else:
             try:
                 client = self._client()

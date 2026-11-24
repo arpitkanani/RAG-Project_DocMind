@@ -2,7 +2,8 @@ import asyncio
 from collections import Counter
 import re
 import sys
-from typing import List, Tuple
+import time
+from typing import List, Tuple, Optional, Any, Dict
 
 import httpx
 import yaml
@@ -18,6 +19,7 @@ from src.exception import (
     CollectionNotFoundError,
     CustomException,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.logger import logging
 
@@ -25,10 +27,13 @@ with open("config/config.yaml") as f:
     config = yaml.safe_load(f)
 
 _qdrant_db_cache: dict[str, QdrantVectorStore] = {}
+_COLLECTION_EXISTS_CACHE: dict[str, float] = {}
+COLLECTION_CACHE_TTL_SEC = 600.0
 
 
 def invalidate_cached_db(collection_name: str):
     _qdrant_db_cache.pop(collection_name, None)
+    _COLLECTION_EXISTS_CACHE.pop(collection_name, None)
 
 
 STOP_WORDS = {
@@ -88,11 +93,24 @@ class Retriever:
         """Retrieve the best chunks with final rank and semantic confidence asynchronously."""
         try:
             logging.info("Async Retrieving for: %s...", query[:50])
+            t_check0 = time.perf_counter()
             target_collections = await self._resolve_target_collections()
+            coll_check_ms = (time.perf_counter() - t_check0) * 1000.0
+
             if not target_collections:
                 logging.info("retrieve_ranked: no target collections to search (session has no documents)")
+                try:
+                    from src.utils.perf import get_rag_perf
+                    perf_col = get_rag_perf()
+                    if perf_col:
+                        perf_col["collection_exists_check_ms"] = round(coll_check_ms, 1)
+                except Exception:
+                    pass
                 return []
+
+            t_var0 = time.perf_counter()
             query_variants = self._build_query_variants(query)
+            var_build_ms = (time.perf_counter() - t_var0) * 1000.0
 
             tasks = [
                 self._search_collection(coll, query, query_variants)
@@ -104,7 +122,20 @@ class Retriever:
             for doc_list in results:
                 collected_docs.extend(doc_list)
 
+            t_rerank0 = time.perf_counter()
             ranked_docs = self._rerank_documents(query, collected_docs)
+            rerank_ms = (time.perf_counter() - t_rerank0) * 1000.0
+
+            try:
+                from src.utils.perf import get_rag_perf
+                perf_col = get_rag_perf()
+                if perf_col:
+                    perf_col["collection_exists_check_ms"] = round(coll_check_ms, 1)
+                    perf_col["query_variants_build_ms"] = round(var_build_ms, 1)
+                    perf_col["rerank_ms"] = round(rerank_ms, 1)
+            except Exception:
+                pass
+
             filtered = [
                 item for item in ranked_docs
                 if item[2] >= self.score_threshold or item[1] >= 12.0
@@ -163,18 +194,40 @@ class Retriever:
                 len(target_collections),
             )
             return docs
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError):
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
             raise
         except Exception as e:
             raise CustomException(e, sys)
 
     async def _resolve_target_collections(self) -> List[str]:
+        now = time.time()
         # If caller explicitly provided collection_names (even if empty):
         if self.explicit_scope:
             if not self.collection_names:
                 # No collections attached to this session -> return empty immediately without global leak
                 return []
+
+            # Fast path: check in-memory collection existence cache (saves 500-800ms Qdrant network call)
+            try:
+                from src.utils.helpers import _collections_cache
+                known_available = _collections_cache.get("data", [])
+                for name in self.collection_names:
+                    if name in known_available:
+                        _COLLECTION_EXISTS_CACHE[name] = now
+            except Exception:
+                pass
+
+            all_cached = all(
+                (now - _COLLECTION_EXISTS_CACHE.get(name, 0.0)) < COLLECTION_CACHE_TTL_SEC
+                for name in self.collection_names
+            )
+            if all_cached:
+                return self.collection_names
+
             available = await self.vs.alist_collections()
+            for coll in available:
+                _COLLECTION_EXISTS_CACHE[coll] = now
+
             missing = [name for name in self.collection_names if name not in available]
             if missing:
                 raise CollectionNotFoundError(missing)
@@ -182,6 +235,8 @@ class Retriever:
 
         # Unscoped / global fallback (e.g. CLI tools or background workers)
         available = await self.vs.alist_collections()
+        for coll in available:
+            _COLLECTION_EXISTS_CACHE[coll] = now
         if not available:
             raise KnowledgeBaseEmptyError(
                 "No documents found. Please upload a document first."
@@ -212,7 +267,27 @@ class Retriever:
                 )
             raise
 
-        async def _search_one_variant(variant: str) -> List[Tuple[Document, float]]:
+        # Fix 2: Batched embedding of all query variants in ONE single HTTP request (saves 1.5 - 2.5s)
+        variant_vectors = None
+        if self.search_type != "mmr":
+            try:
+                t_emb0 = time.perf_counter()
+                variant_vectors = await self.vs.embedding_model.aembed_documents(query_variants)
+                emb_dur = (time.perf_counter() - t_emb0) * 1000.0
+                try:
+                    from src.utils.perf import get_rag_perf
+                    rp = get_rag_perf()
+                    if rp:
+                        rp["emb_calls"] = 1
+                        rp["emb_batched"] = 1
+                        rp["emb_ms"] = [round(emb_dur, 1)]
+                except Exception:
+                    pass
+            except Exception as emb_err:
+                logging.warning("Batched embedding failed, falling back to sequential: %s", emb_err)
+                variant_vectors = None
+
+        async def _search_one_variant(variant: str, vec: Optional[List[float]] = None) -> List[Tuple[Document, float]]:
             v_docs: List[Tuple[Document, float]] = []
             try:
                 if self.search_type == "mmr":
@@ -246,8 +321,11 @@ class Retriever:
                     )
                 else:
                     sim_res = None
+                    t_q0 = time.perf_counter()
                     try:
-                        if self.vs.is_remote:
+                        if vec is not None and hasattr(db, "similarity_search_with_score_by_vector"):
+                            sim_res = await asyncio.to_thread(db.similarity_search_with_score_by_vector, vec, k=self.fetch_k)
+                        elif self.vs.is_remote:
                             sim_res = await db.asimilarity_search_with_score(variant, k=self.fetch_k)
                         else:
                             sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
@@ -255,10 +333,20 @@ class Retriever:
                         logging.warning("Qdrant search timeout/network glitch on variant %r: %s. Retrying once...", variant[:30], net_err)
                         await asyncio.sleep(1.0)
                         try:
-                            sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
+                            if vec is not None and hasattr(db, "similarity_search_with_score_by_vector"):
+                                sim_res = await asyncio.to_thread(db.similarity_search_with_score_by_vector, vec, k=self.fetch_k)
+                            else:
+                                sim_res = await asyncio.to_thread(db.similarity_search_with_score, variant, k=self.fetch_k)
                         except Exception as retry_err:
                             logging.error("Qdrant retry search also failed: %s", retry_err)
                             sim_res = []
+
+                    q_dur_ms = (time.perf_counter() - t_q0) * 1000.0
+                    try:
+                        from src.utils.perf import record_rag_qdrant
+                        record_rag_qdrant(q_dur_ms)
+                    except Exception:
+                        pass
 
                     if sim_res:
                         v_docs.extend(
@@ -286,7 +374,10 @@ class Retriever:
                 return []
             return v_docs
 
-        variant_results = await asyncio.gather(*[_search_one_variant(v) for v in query_variants])
+        if variant_vectors and len(variant_vectors) == len(query_variants):
+            variant_results = await asyncio.gather(*[_search_one_variant(v, vec=vec) for v, vec in zip(query_variants, variant_vectors)])
+        else:
+            variant_results = await asyncio.gather(*[_search_one_variant(v) for v in query_variants])
         docs: List[Tuple[Document, float]] = []
         for v_res in variant_results:
             docs.extend(v_res)
@@ -302,15 +393,17 @@ class Retriever:
         return meaningful_docs or docs
 
     def _get_cached_db(self, collection_name: str) -> QdrantVectorStore:
-        # Enforce dimension compatibility check before returning or constructing vector store
+        if collection_name in _qdrant_db_cache:
+            return _qdrant_db_cache[collection_name]
+
+        # Enforce dimension compatibility check before constructing vector store
         self.vs.verify_collection_compatibility(collection_name)
-        if collection_name not in _qdrant_db_cache:
-            client = self.vs._client()
-            _qdrant_db_cache[collection_name] = QdrantVectorStore(
-                client=client,
-                collection_name=collection_name,
-                embedding=self.vs.embedding_model,
-            )
+        client = self.vs._client()
+        _qdrant_db_cache[collection_name] = QdrantVectorStore(
+            client=client,
+            collection_name=collection_name,
+            embedding=self.vs.embedding_model,
+        )
         return _qdrant_db_cache[collection_name]
 
     def _rerank_documents(
@@ -560,7 +653,7 @@ class Retriever:
                 total_chars += doc_len
 
             return selected
-        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError):
+        except (CollectionNotFoundError, KnowledgeBaseEmptyError, CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
             raise
         except Exception as e:
             raise CustomException(e, sys)

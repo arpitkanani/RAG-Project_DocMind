@@ -15,9 +15,15 @@ from pydantic import BaseModel
 from src.auth import (
     create_access_token,
     decode_access_token,
+    authenticate_admin,
+    authenticate_customer,
+    register_admin,
+    register_customer,
+    get_current_user_optional,
     SESSION_MAX_DAYS,
 )
 from src.database.db import get_db_cursor
+from src.utils.perf import perf_step
 from src.logger import logging
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -30,6 +36,27 @@ class VerifyKeyRequest(BaseModel):
 class CreateKeyRequest(BaseModel):
     username: Optional[str] = None
     force_rotate: Optional[bool] = False
+
+
+class RegisterAdminRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+
+
+class RegisterCustomerRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginAdminRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginCustomerRequest(BaseModel):
+    username: str
+    password: str
 
 
 def _get_candidate_usernames(username_clean: str) -> list[str]:
@@ -341,7 +368,7 @@ async def session_status(request: Request):
         return {"authenticated": False}
 
     try:
-        with get_db_cursor(commit=True) as cur:
+        with get_db_cursor(commit=False) as cur:
             cur.execute(
                 "SELECT username, email FROM users WHERE id = %s LIMIT 1",
                 (user_id,),
@@ -351,27 +378,7 @@ async def session_status(request: Request):
                 username = row.get("username") or username
                 email = row.get("email") or email
 
-            # Defensive session migration for returning users
-            try:
-                user_candidates = _get_candidate_usernames(username)
-                user_candidate_emails = [f"{c}@docuvortex.local" for c in user_candidates]
-                cur.execute(
-                    """
-                    UPDATE sessions
-                    SET user_id = %s
-                    WHERE user_id = '00000000-0000-0000-0000-000000000001'
-                       OR user_id IN (
-                           SELECT id FROM users
-                           WHERE (lower(username) = ANY(%s) OR lower(email) = ANY(%s))
-                             AND id != %s
-                       );
-                    """,
-                    (user_id, user_candidates, user_candidate_emails, user_id),
-                )
-            except Exception:
-                pass
-
-            # Find the user's most recently active chat session
+            # Find the user's most recently active chat session using indexed lookup
             cur.execute(
                 """
                 SELECT s.session_id
@@ -403,6 +410,8 @@ async def session_status(request: Request):
 async def logout(request: Request, response: Response):
     token = request.cookies.get("access_token")
     if token:
+        from src.auth import invalidate_token_cache
+        invalidate_token_cache(token)
         payload = decode_access_token(token)
         if payload and payload.get("session_id"):
             try:
@@ -411,5 +420,203 @@ async def logout(request: Request, response: Response):
             except Exception as e:
                 logging.debug("Logout session cleanup note: %s", e)
 
-    response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="access_token", path="/", httponly=True, samesite="lax")
+    response.set_cookie(
+        key="access_token",
+        value="",
+        max_age=0,
+        expires="Thu, 01 Jan 1970 00:00:00 GMT",
+        path="/",
+        httponly=True,
+        samesite="lax",
+    )
     return {"success": True, "message": "Logged out successfully", "redirect": "/"}
+
+
+@router.post("/register-admin")
+async def api_register_admin(body: RegisterAdminRequest, response: Response):
+    try:
+        data = register_admin(body.username, body.email, body.password)
+        with perf_step("cookie_set"):
+            response.set_cookie(
+                key="access_token",
+                value=data["token"],
+                max_age=SESSION_MAX_DAYS * 86400,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        return {
+            "success": True,
+            "message": "Admin registered successfully",
+            "user": {
+                "id": data["user_id"],
+                "username": data["username"],
+                "email": data["email"],
+                "role": "admin",
+            },
+            "token": data["token"],
+            "api_key": data.get("api_key"),
+        }
+    except ValueError as e:
+        err_msg = str(e)
+        status_code = 409 if "already exists" in err_msg.lower() else 400
+        raise HTTPException(status_code=status_code, detail=err_msg)
+    except Exception as e:
+        logging.exception("Failed to register admin")
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
+
+
+@router.post("/register-customer")
+async def api_register_customer(body: RegisterCustomerRequest, response: Response):
+    try:
+        data = register_customer(body.username, body.password)
+        with perf_step("cookie_set"):
+            response.set_cookie(
+                key="access_token",
+                value=data["token"],
+                max_age=SESSION_MAX_DAYS * 86400,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+        return {
+            "success": True,
+            "message": "User registered successfully",
+            "user": {
+                "id": data["user_id"],
+                "username": data["username"],
+                "email": data["email"],
+                "role": "user",
+            },
+            "token": data["token"],
+            "api_key": data.get("api_key"),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.exception("Failed to register user")
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
+
+
+@router.post("/login-admin")
+async def api_login_admin(body: LoginAdminRequest, response: Response):
+    data = authenticate_admin(body.email, body.password)
+    if not data:
+        raise HTTPException(status_code=401, detail="Invalid admin email or password.")
+    with perf_step("cookie_set"):
+        response.set_cookie(
+            key="access_token",
+            value=data["token"],
+            max_age=SESSION_MAX_DAYS * 86400,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+    return {
+        "success": True,
+        "message": "Admin authenticated successfully",
+        "user": {
+            "id": data["user_id"],
+            "username": data["username"],
+            "email": data["email"],
+            "role": "admin",
+        },
+        "token": data["token"],
+        "api_key": data.get("api_key"),
+    }
+
+
+@router.post("/login-customer")
+async def api_login_customer(body: LoginCustomerRequest, response: Response):
+    data = authenticate_customer(body.username, body.password)
+    if not data:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    with perf_step("cookie_set"):
+        response.set_cookie(
+            key="access_token",
+            value=data["token"],
+            max_age=SESSION_MAX_DAYS * 86400,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+    return {
+        "success": True,
+        "message": "User authenticated successfully",
+        "user": {
+            "id": data["user_id"],
+            "username": data["username"],
+            "email": data["email"],
+            "role": data.get("role", "user"),
+        },
+        "token": data["token"],
+        "api_key": data.get("api_key"),
+        "is_new": data.get("is_new", False),
+    }
+
+
+@router.get("/me")
+async def api_get_current_user(request: Request, response: Response):
+    """Returns active authenticated user details for instant auto-resume."""
+    user = await get_current_user_optional(request)
+    if not user:
+        return {"authenticated": False, "user": None}
+
+    user_id = str(user["id"])
+    role = user.get("role") or "user"
+    username = user.get("username") or "User"
+    email = user.get("email") or ""
+
+    # Token stability: only refresh cookie if missing or nearing expiration (< 2 days remaining)
+    existing_token = request.cookies.get("access_token")
+    need_refresh = True
+    if existing_token:
+        payload = decode_access_token(existing_token)
+        if payload and payload.get("exp"):
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            remaining_secs = payload["exp"] - now_ts
+            if remaining_secs > 2 * 86400:
+                need_refresh = False
+
+    if need_refresh:
+        from src.auth import _TOKEN_USER_CACHE, _TOKEN_USER_DICT_CACHE
+        session_id = str(uuid.uuid4())
+        token = create_access_token(user_id=user_id, session_id=session_id, email=email, username=username, role=role)
+        now_m = time.monotonic()
+        _TOKEN_USER_CACHE[token] = (now_m, user_id)
+        _TOKEN_USER_DICT_CACHE[token] = (now_m, user)
+        response.set_cookie(
+            key="access_token",
+            value=token,
+            max_age=SESSION_MAX_DAYS * 86400,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+
+    last_session_id = None
+    workspace_key = None
+    try:
+        with get_db_cursor(commit=False) as cur:
+            cur.execute(
+                "SELECT session_id FROM sessions WHERE user_id = %s ORDER BY updated_at DESC LIMIT 1",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                last_session_id = row["session_id"]
+            
+            # Maintain active API key if provided by client
+            header_key = (request.headers.get("X-API-Key") or request.query_params.get("api_key") or "").strip()
+            if header_key and header_key.startswith("dk_live_"):
+                workspace_key = header_key
+    except Exception as e:
+        logging.debug("api_get_current_user session fetch note: %s", e)
+
+    return {
+        "authenticated": True,
+        "user": user,
+        "last_session_id": last_session_id,
+        "api_key": workspace_key,
+    }

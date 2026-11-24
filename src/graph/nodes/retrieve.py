@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from typing import Any, Dict
 
@@ -16,6 +17,7 @@ from src.exception import (
     CollectionNotFoundError,
     CustomException,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.graph.state import RAGState
 from src.logger import logging
@@ -34,8 +36,11 @@ async def load_context_node(state: RAGState, config: RunnableConfig = None) -> D
         attachments = state.get("message_attachments")
 
         memory = MemoryManager(session_id=session_id, user_id=user_id)
-        chat_history = await memory.aget_history()
-        await memory.asave_message("human", question, attachments=attachments)
+        # Concurrent history retrieval and human message persistence
+        chat_history, _ = await asyncio.gather(
+            memory.aget_history(),
+            memory.asave_message("human", question, attachments=attachments),
+        )
 
         is_summary = is_summary_request(question)
         return {
@@ -67,7 +72,7 @@ async def retrieve_qa_node(state: RAGState, config: RunnableConfig = None) -> Di
         return {
             "docs": docs,
         }
-    except CollectionEmbeddingMismatchError:
+    except (CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
         raise
     except (CollectionNotFoundError, KnowledgeBaseEmptyError) as e:
         logging.warning("Knowledge base empty or collection missing in retrieve_qa_node: %s", e)
@@ -104,7 +109,7 @@ async def retrieve_summary_node(state: RAGState, run_config: RunnableConfig = No
         return {
             "docs": docs,
         }
-    except CollectionEmbeddingMismatchError:
+    except (CollectionEmbeddingMismatchError, VectorStoreUnavailableError):
         raise
     except (CollectionNotFoundError, KnowledgeBaseEmptyError) as e:
         logging.warning("Knowledge base empty or collection missing in retrieve_summary_node: %s", e)

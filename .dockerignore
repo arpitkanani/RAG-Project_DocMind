@@ -33,6 +33,10 @@ database/
 
 # ─── Test & evaluation artefacts ─────────────────────────────────────────────
 tests/
+node_modules/
+playwright-report/
+scratch/
+test-results/
 evaluation_results.csv
 endpoint_regression_check.py
 

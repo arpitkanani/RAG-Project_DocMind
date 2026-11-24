@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocuVortex – AI Assistant Architect &amp; Builder Wizard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/css/main.css?v=8" />
+  <link rel="stylesheet" href="/static/css/landing.css?v=27" />
+  <style>
+    body {
+      background: var(--bg-ivory, #F5F2EA);
+      color: var(--text-primary, #252923);
+      font-family: var(--font-body, 'Plus Jakarta Sans', sans-serif);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .builder-nav {
+      background: #35443A;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 1rem 2.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(14px);
+    }
+    .wizard-steps {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .step-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #A3A79E;
+    }
+    .step-item.active {
+      color: var(--terracotta, #BC704F);
+      font-weight: 700;
+    }
+    .step-item.completed {
+      color: var(--status-success, #398263);
+    }
+    .step-num {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      color: #FAF8F3;
+      display: grid;
+      place-items: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+    .step-item.active .step-num {
+      background: var(--terracotta, #BC704F);
+      color: #fff;
+    }
+    .step-item.completed .step-num {
+      background: var(--status-success, #398263);
+      color: #fff;
+    }
+    .builder-container {
+      max-width: 960px;
+      margin: 2.5rem auto;
+      padding: 0 1.5rem;
+      width: 100%;
+      flex: 1;
+    }
+    .card-panel {
+      background: var(--surface-white, #FFFFFF);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      border-radius: var(--radius-xl, 20px);
+      padding: 2.2rem;
+      box-shadow: var(--shadow-subtle, 0 8px 24px rgba(41, 53, 45, 0.05));
+    }
+    .panel-title {
+      font-family: var(--font-heading, 'Lora', serif);
+      font-size: clamp(1.25rem, 3.5vw, 1.55rem);
+      font-weight: 600;
+      color: var(--forest-charcoal, #29352D);
+      margin-bottom: 0.5rem;
+      line-height: 1.25;
+    }
+    .panel-subtitle {
+      font-size: clamp(0.82rem, 1.5vw, 0.92rem);
+      color: var(--text-muted, #77796F);
+      margin-bottom: 1.8rem;
+      line-height: 1.5;
+    }
+    .form-group {
+      margin-bottom: 1.4rem;
+    }
+    .form-label {
+      display: block;
+      font-size: 0.84rem;
+      font-weight: 700;
+      color: var(--forest-charcoal, #29352D);
+      margin-bottom: 0.4rem;
+    }
+    .form-input {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      min-height: 42px;
+      background: var(--surface-white, #FFFFFF);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      border-radius: 12px;
+      padding: 0.75rem 1rem;
+      color: var(--text-primary, #252923);
+      font-size: 0.92rem;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .form-input:focus {
+      border-color: var(--terracotta, #BC704F);
+      box-shadow: 0 0 0 3px rgba(188, 112, 79, 0.15);
+    }
+    .file-drop-area {
+      border: 2px dashed rgba(188, 112, 79, 0.35);
+      border-radius: 14px;
+      padding: 2.2rem;
+      text-align: center;
+      background: var(--surface-soft, #FAF8F3);
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .file-drop-area:hover {
+      background: var(--terracotta-soft, #fbf1ec);
+      border-color: var(--terracotta, #BC704F);
+    }
+    .file-list {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .file-badge {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface-soft, #FAF8F3);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      padding: 8px 14px;
+      border-radius: 10px;
+      font-size: 0.84rem;
+      color: var(--forest-charcoal, #29352D);
+    }
+    /* Add URL Row Button */
+    .btn-add-url-row {
+      background: #FFFFFF;
+      border: 1.5px solid var(--forest-charcoal, #29352D);
+      border-radius: 999px;
+      color: var(--forest-charcoal, #29352D);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 5px 14px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.25s ease;
+      box-shadow: 0 1px 3px rgba(41, 53, 45, 0.06);
+    }
+    .btn-add-url-row:hover {
+      background: var(--forest-charcoal, #29352D);
+      color: #FFFFFF !important;
+      border-color: var(--forest-charcoal, #29352D);
+      box-shadow: 0 3px 8px rgba(41, 53, 45, 0.16);
+      transform: translateY(-1px);
+    }
+    .btn-add-url-row svg {
+      transition: stroke 0.25s ease;
+    }
+    .btn-add-url-row:hover svg {
+      stroke: #FFFFFF;
+    }
+
+    .btn-next {
+      position: relative;
+      overflow: hidden;
+      z-index: 1;
+      background: var(--terracotta, #BC704F);
+      color: #fff;
+      font-weight: 700;
+      padding: 0.8rem 1.8rem;
+      border-radius: var(--radius-pill, 999px);
+      border: none;
+      cursor: pointer;
+      font-size: 0.9rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(188, 112, 79, 0.25);
+      transition: color 0.3s ease, border-color 0.3s ease, box-shadow 0.25s ease, transform 0.2s ease;
+    }
+    .btn-next > * {
+      position: relative;
+      z-index: 1;
+    }
+    .btn-next::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 0%;
+      height: 100%;
+      background-color: var(--forest-charcoal, #29352D);
+      z-index: -1;
+      transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      border-radius: inherit;
+    }
+    .btn-next:hover::before {
+      width: 100%;
+    }
+    .btn-next:hover {
+      color: #FFFFFF !important;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 16px rgba(41, 53, 45, 0.32);
+    }
+    .btn-next:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .btn-next:disabled::before {
+      display: none;
+    }
+    /* Vector Progress Badges */
+    .vectors-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 1.5rem;
+      padding: 12px;
+      background: var(--surface-soft, #FAF8F3);
+      border-radius: 14px;
+      border: 1px solid var(--border-warm, #E5E1D8);
+    }
+    .vector-pill {
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--surface-white, #FFFFFF);
+      color: var(--text-muted, #77796F);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      transition: all 0.3s;
+    }
+    .vector-pill.active {
+      background: var(--terracotta-soft, #fbf1ec);
+      color: var(--terracotta, #BC704F);
+      border-color: rgba(188, 112, 79, 0.4);
+    }
+    .vector-pill.done {
+      background: rgba(57, 130, 99, 0.12);
+      color: var(--status-success, #398263);
+      border-color: rgba(57, 130, 99, 0.35);
+    }
+    /* Architect Chat Stream Area */
+    .interview-chat-box {
+      height: 380px;
+      overflow-y: auto;
+      background: var(--surface-soft, #FAF8F3);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      border-radius: 14px;
+      padding: 1.2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 1.2rem;
+    }
+    .interview-msg {
+      display: flex;
+      gap: 10px;
+      max-width: 85%;
+    }
+    .interview-msg.architect {
+      align-self: flex-start;
+    }
+    .interview-msg.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+    .interview-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: var(--forest-charcoal, #29352D);
+      color: #FAF8F3;
+      display: grid;
+      place-items: center;
+      font-size: 0.75rem;
+      font-weight: 800;
+      flex-shrink: 0;
+    }
+    .interview-msg.user .interview-avatar {
+      background: var(--terracotta, #BC704F);
+      color: #fff;
+    }
+    .interview-bubble {
+      padding: 10px 16px;
+      border-radius: 14px;
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+    .interview-msg.architect .interview-bubble {
+      background: var(--surface-white, #FFFFFF);
+      color: var(--text-primary, #252923);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .architect-header {
+      display: inline-block;
+      color: var(--forest-charcoal, #29352D);
+      font-weight: 700;
+      margin-top: 6px;
+      margin-bottom: 2px;
+    }
+    .interview-msg.user .interview-bubble {
+      background: var(--terracotta, #BC704F);
+      color: #fff;
+    }
+    .prompt-preview-textarea {
+      width: 100%;
+      height: 340px;
+      background: var(--surface-soft, #FAF8F3);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      border-radius: 12px;
+      padding: 1rem;
+      font-family: var(--font-mono, 'JetBrains Mono', monospace);
+      font-size: 0.84rem;
+      color: var(--forest-charcoal, #29352D);
+      line-height: 1.55;
+      resize: vertical;
+    }
+    /* Reasoning Indicator Bubble ("Three Dot One Up At A Time") */
+    .reasoning-bubble {
+      background: var(--surface-white, #FFFFFF);
+      border: 1px solid var(--border-warm, #E5E1D8);
+      border-radius: 16px;
+      padding: 10px 16px;
+      display: inline-flex;
+      align-items: center;
+      box-shadow: 0 4px 16px rgba(41, 53, 45, 0.05);
+    }
+    .reasoning-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 16px;
+    }
+    .reasoning-dots .dot {
+      width: 7px;
+      height: 7px;
+      background: var(--terracotta, #BC704F);
+      border-radius: 50%;
+      display: inline-block;
+      animation: dotUp 1.2s infinite ease-in-out;
+    }
+    .reasoning-dots .dot:nth-child(1) {
+      animation-delay: 0s;
+    }
+    .reasoning-dots .dot:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    .reasoning-dots .dot:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+    @keyframes dotUp {
+      0%, 60%, 100% {
+        transform: translateY(0);
+        opacity: 0.35;
+      }
+      30% {
+        transform: translateY(-6px);
+        opacity: 1;
+      }
+    }
+
+    /* Simulator Drawer */
+    .simulator-box {
+      border: 1px solid var(--border-warm, #E5E1D8);
+      border-radius: 16px;
+      background: var(--surface-soft, #FAF8F3);
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+    }
+    .simulator-header {
+      background: var(--surface-white, #FFFFFF);
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-warm, #E5E1D8);
+    }
+    .simulator-messages {
+      height: 260px;
+      overflow-y: auto;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .simulator-input-row {
+      display: flex;
+      padding: 10px 14px;
+      background: var(--surface-white, #FFFFFF);
+      border-top: 1px solid var(--border-warm, #E5E1D8);
+      gap: 8px;
+    }
+    .interview-input-row {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .interview-input-row input,
+    .simulator-input-row input {
+      flex: 1;
+      min-width: 0;
+    }
+    .interview-input-row button,
+    .simulator-input-row button {
+      flex-shrink: 0;
+    }
+
+    /* Animated Three-Dot Reasoning Indicator in Terracotta */
+    .typing-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 10px;
+    }
+    .typing-indicator span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--terracotta, #BC704F);
+      animation: typingBounce 1.4s infinite ease-in-out both;
+    }
+    .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+    .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes typingBounce {
+      0%, 80%, 100% { transform: scale(0); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    .nav-return-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #FAF8F3;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-decoration: none;
+      transition: all 0.2s ease;
+    }
+    .builder-nav .nav-link-ghost {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      background: rgba(255, 255, 255, 0.08) !important;
+      color: #FAF8F3 !important;
+      border: 1px solid rgba(255, 255, 255, 0.25) !important;
+      padding: 6px 14px;
+      height: auto;
+      font-size: 0.82rem;
+      font-weight: 600;
+      transition: all 0.25s ease;
+    }
+    .builder-nav .nav-link-ghost svg {
+      flex-shrink: 0;
+      transition: stroke 0.25s ease;
+    }
+    .builder-nav .nav-link-ghost:hover {
+      background: var(--terracotta, #BC704F) !important;
+      border-color: var(--terracotta, #BC704F) !important;
+      color: #FFFFFF !important;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(188, 112, 79, 0.25);
+    }
+    .builder-nav .nav-link-ghost:hover svg {
+      stroke: #FFFFFF;
+    }
+    .nav-return-pill:hover {
+      background: rgba(255, 255, 255, 0.16);
+      color: #FFFFFF;
+      transform: translateX(-2px);
+    }
+    .builder-breadcrumbs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 8px;
+      font-size: clamp(0.74rem, 1.8vw, 0.82rem);
+      margin-bottom: 1.4rem;
+      color: var(--text-muted, #77796F);
+      word-break: break-word;
+    }
+    .builder-breadcrumbs a {
+      color: var(--forest-charcoal, #29352D);
+      text-decoration: none;
+      font-weight: 600;
+      transition: color 0.15s;
+    }
+    .builder-breadcrumbs a:hover {
+      color: var(--terracotta, #BC704F);
+    }
+    .builder-breadcrumbs .sep {
+      color: var(--border-strong, #D5D0C5);
+    }
+    .builder-breadcrumbs .current {
+      color: var(--terracotta, #BC704F);
+      font-weight: 700;
+    }
+    .btn-cancel-exit {
+      color: var(--text-muted, #77796F);
+      text-decoration: none;
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      transition: all 0.18s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-cancel-exit:hover {
+      color: var(--status-error, #C6534E);
+      background: rgba(198, 83, 78, 0.08);
+      border-color: rgba(198, 83, 78, 0.25);
+    }
+
+    /* Form & Action Rows */
+    .builder-form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .scrape-input-row {
+      display: flex;
+      gap: 10px;
+    }
+    .step-actions-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 1.5rem;
+    }
+
+    /* Local Textarea Stepper Arrow Suppression */
+    .prompt-preview-textarea,
+    textarea.form-input {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .prompt-preview-textarea::-webkit-scrollbar,
+    .prompt-preview-textarea::-webkit-scrollbar-button,
+    textarea.form-input::-webkit-scrollbar,
+    textarea.form-input::-webkit-scrollbar-button {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+    }
+
+    /* ══════════════════════ RESPONSIVE BREAKPOINTS ══════════════════════ */
+    @media (max-width: 1024px) {
+      .step-item span:not(.step-num) {
+        display: none;
+      }
+      .step-item.active span:not(.step-num) {
+        display: inline;
+      }
+      .builder-container {
+        padding: 0 1.25rem;
+      }
+      .card-panel {
+        padding: 1.8rem;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .builder-nav {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+        gap: 12px 0;
+        padding: 0.85rem 1.2rem;
+      }
+      .builder-nav > div:first-child {
+        grid-column: 1 / 2;
+        grid-row: 1 / 2;
+        justify-self: start;
+      }
+      .builder-nav > div:last-child {
+        grid-column: 2 / 3;
+        grid-row: 1 / 2;
+        justify-self: end;
+      }
+      .builder-nav .wizard-steps {
+        grid-column: 1 / 3;
+        grid-row: 2 / 2;
+        justify-self: center;
+        width: 100%;
+        justify-content: center;
+        gap: 12px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .step-item span:not(.step-num) {
+        display: none !important;
+      }
+      .step-item {
+        gap: 4px;
+      }
+      .step-num {
+        width: 28px;
+        height: 28px;
+        font-size: 0.8rem;
+      }
+      .builder-container {
+        margin: 1.2rem auto;
+        padding: 0 1rem;
+      }
+      .card-panel {
+        padding: 1.5rem 1.2rem;
+        border-radius: 16px;
+      }
+      .panel-title {
+        font-size: clamp(1.2rem, 3.5vw, 1.35rem);
+      }
+      .panel-subtitle {
+        font-size: 0.85rem;
+        margin-bottom: 1.2rem;
+      }
+      .builder-form-row {
+        grid-template-columns: 1fr !important;
+        gap: 12px;
+      }
+      .scrape-input-row {
+        flex-direction: column;
+        gap: 8px;
+      }
+      .scrape-input-row button {
+        width: 100%;
+        justify-content: center;
+        min-height: 42px;
+      }
+      .interview-chat-box {
+        height: 320px;
+        padding: 1rem;
+      }
+      .interview-msg {
+        max-width: 94%;
+      }
+      .interview-bubble {
+        font-size: 0.86rem;
+        padding: 8px 12px;
+      }
+      .vectors-grid {
+        gap: 6px;
+        padding: 8px;
+      }
+      .vector-pill {
+        font-size: 0.68rem;
+        padding: 3px 8px;
+      }
+      .prompt-preview-textarea {
+        height: 250px;
+        font-size: 0.8rem;
+      }
+      .simulator-messages {
+        height: 220px;
+      }
+      .step-actions-row {
+        flex-direction: column-reverse;
+        gap: 12px;
+        align-items: stretch !important;
+      }
+      .step-actions-row > * {
+        width: 100%;
+        justify-content: center;
+        text-align: center;
+      }
+      .step-actions-row > div {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        gap: 8px !important;
+      }
+      .step-actions-row > div > * {
+        width: 100%;
+        justify-content: center;
+        text-align: center;
+      }
+      .step-actions-row .btn-next,
+      .step-actions-row .btn-forest-ghost,
+      .step-actions-row .btn-cancel-exit {
+        width: 100%;
+        justify-content: center;
+        box-sizing: border-box;
+        min-height: 44px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .builder-nav {
+        padding: 0.75rem 0.85rem;
+        gap: 8px 0;
+      }
+      .builder-nav .logo-mark {
+        width: 28px;
+        height: 28px;
+        font-size: 0.75rem;
+      }
+      .builder-nav a[title="DocuVortex Home"] {
+        font-size: 0.95rem;
+      }
+      .builder-nav .nav-link-ghost {
+        padding: 5px 10px;
+        font-size: 0.78rem;
+      }
+      .wizard-steps {
+        gap: 8px;
+      }
+      .step-num {
+        width: 26px;
+        height: 26px;
+        font-size: 0.75rem;
+      }
+      .builder-container {
+        padding: 0 0.75rem;
+        margin: 1rem auto;
+      }
+      .card-panel {
+        padding: 1.2rem 1rem;
+      }
+      .panel-title {
+        font-size: 1.15rem;
+      }
+      .file-drop-area {
+        padding: 1.4rem 1rem;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .builder-nav {
+        padding: 0.65rem 0.65rem;
+      }
+      .builder-container {
+        padding: 0 0.5rem;
+      }
+      .card-panel {
+        padding: 1rem 0.75rem;
+      }
+      .wizard-steps {
+        gap: 6px;
+      }
+      .step-num {
+        width: 24px;
+        height: 24px;
+        font-size: 0.72rem;
+      }
+      .panel-title {
+        font-size: 1.05rem;
+      }
+      .step-actions-row .btn-next,
+      .step-actions-row .btn-forest-ghost,
+      .step-actions-row .btn-cancel-exit {
+        font-size: 0.8rem;
+        padding: 0.5rem 0.8rem;
+        min-height: 42px;
+      }
+      .interview-input-row {
+        gap: 6px;
+      }
+      .interview-input-row button {
+        padding: 0 1rem !important;
+        font-size: 0.82rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Wizard Navigation -->
+  <header class="builder-nav">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <a href="/" style="text-decoration: none; display: flex; align-items: center; gap: 8px; color: #FAF8F3; font-weight: 700;" title="DocuVortex Home">
+        <span class="logo-mark" style="background: var(--terracotta); border-color: transparent;">DV</span> DocuVortex
+      </a>
+    </div>
+
+    <!-- Step Progress Indicator -->
+    <div class="wizard-steps">
+      <div class="step-item active" id="stepIndicator1">
+        <span class="step-num">1</span>
+        <span>Identity &amp; Assets</span>
+      </div>
+      <div class="step-item" id="stepIndicator2">
+        <span class="step-num">2</span>
+        <span>Architect Interview</span>
+      </div>
+      <div class="step-item" id="stepIndicator3">
+        <span class="step-num">3</span>
+        <span>Prompt Synthesis</span>
+      </div>
+      <div class="step-item" id="stepIndicator4">
+        <span class="step-num">4</span>
+        <span>Test &amp; Deploy</span>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <a href="/admin-dashboard" class="nav-link-ghost" style="color: #FAF8F3; border-color: rgba(255,255,255,0.2); font-size: 0.82rem;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect width="7" height="9" x="3" y="3" rx="1"></rect>
+          <rect width="7" height="5" x="14" y="3" rx="1"></rect>
+          <rect width="7" height="9" x="14" y="12" rx="1"></rect>
+          <rect width="7" height="5" x="3" y="16" rx="1"></rect>
+        </svg>
+        <span>Dashboard</span>
+      </a>
+    </div>
+  </header>
+
+  <main class="builder-container">
+    <div class="builder-breadcrumbs">
+      <a href="/" title="Return to Assistant Directory">&larr; Assistant Directory</a>
+      <span class="sep">/</span>
+      <a href="/admin-dashboard">Admin Dashboard</a>
+      <span class="sep">/</span>
+      <span class="current">Assistant Architect Wizard</span>
+    </div>
+
+    <!-- ══════════════════════ STEP 1: BUSINESS IDENTITY & ASSETS ══════════════════════ -->
+    <section class="card-panel" id="wizardStep1">
+      <h2 class="panel-title">Step 1: Assistant Identity &amp; Knowledge Assets</h2>
+      <p class="panel-subtitle">Provide your company details, brochure PDFs, and official website to ground your custom AI assistant.</p>
+
+      <div class="builder-form-row">
+        <div class="form-group">
+          <label class="form-label" for="bizName">Business / Company Name *</label>
+          <input type="text" id="bizName" class="form-input" placeholder="e.g. Apex Health Clinic" required />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="personaName">Assistant Persona Name *</label>
+          <input type="text" id="personaName" class="form-input" placeholder="e.g. Dr. Sarah / Apex Care Assistant" required />
+        </div>
+      </div>
+
+      <!-- Website URL Ingestion -->
+      <div class="form-group">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+          <label class="form-label" for="websiteUrl" style="margin-bottom: 0;">Official Website URLs (Up to <span class="dyn-max-pages">5</span> Pages)</label>
+          <span style="font-size: 0.76rem; color: var(--forest-charcoal-muted, #77796F);">e.g. Overview, /services, /pricing</span>
+        </div>
+        <div id="websiteUrlsContainer" style="display: flex; flex-direction: column; gap: 8px;">
+          <div class="scrape-input-row" style="display: flex; gap: 10px;">
+            <input type="url" id="websiteUrl" class="form-input website-url-field" placeholder="https://example.com/about-us" />
+            <button type="button" id="btnScrapeUrl" class="btn-forest-ghost" style="white-space: nowrap; padding: 0.6rem 1.2rem; font-size: 0.84rem;">
+              Scrape &amp; Preview
+            </button>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; flex-wrap: wrap; gap: 6px;">
+          <button type="button" id="btnAddUrlRow" class="btn-add-url-row">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span>Add Another Page URL (e.g. /pricing, /faq)</span>
+          </button>
+          <span style="font-size: 0.76rem; color: var(--forest-charcoal-muted, #77796F);">
+            Strict non-crawling • Max <span class="dyn-max-pages">5</span> pages
+          </span>
+        </div>
+        <div id="scrapePreviewBox" style="display: none; margin-top: 10px; padding: 14px 16px; background: var(--surface-soft); border-radius: 12px; border: 1px solid var(--border-warm); font-size: 0.82rem; color: var(--forest-charcoal, #29352D);"></div>
+      </div>
+
+      <!-- About Business Field -->
+      <div class="form-group">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+          <label class="form-label" for="aboutBusiness" style="margin-bottom: 0;">About Business (Products, Services &amp; Descriptions)</label>
+          <span style="font-size: 0.76rem; color: var(--terracotta, #BC704F); font-weight: 600;">Direct Knowledge Safety Net</span>
+        </div>
+        <textarea id="aboutBusiness" class="form-input" style="height: 105px; resize: vertical;" placeholder="Write product or service descriptions, pricing, FAQ, or special business terms here. (If your website is behind a login, uses client-side JavaScript tables, or blocks scrapers, paste your details directly here)."></textarea>
+        <span style="font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; display: block;">
+          Provide product catalog descriptions, business overview, or unique selling points to give your assistant rich background context.
+        </span>
+      </div>
+
+      <!-- Brochure PDF Upload (1 to dynamic max_files, <= dynamic max_size_mb each) -->
+      <div class="form-group">
+        <label class="form-label">Company Brochures &amp; Catalogs (1 to <span class="dyn-max-files">5</span> PDFs, &le; <span class="dyn-max-size">30</span> MB each) *</label>
+        <div class="file-drop-area" id="pdfDropZone">
+          <div style="font-size: 1.8rem; margin-bottom: 6px;">📄</div>
+          <p style="margin: 0; font-weight: 600; color: var(--forest-charcoal, #29352D);">Drag and drop PDF, or click to browse</p>
+          <input type="file" id="pdfFileInput" multiple accept=".pdf" style="display: none;" />
+        </div>
+        <div class="file-list" id="stagedPdfList"></div>
+
+        <!-- Pro-Tip Note for website print to PDF -->
+        <div class="pdf-instruction-note" style="margin-top: 10px; padding: 11px 15px; background: rgba(57, 130, 99, 0.08); border-left: 3px solid var(--status-success, #398263); border-radius: 6px; font-size: 0.82rem; color: var(--forest-charcoal, #29352D); line-height: 1.45;">
+          <strong>💡 Note:</strong> If you do not have existing PDF brochures or catalogs, open your company website in your browser, press <kbd style="background: #FFFFFF; border: 1px solid #D6D1C7; border-radius: 4px; padding: 2px 6px; font-weight: 700; font-family: inherit; font-size: 0.78rem;">Ctrl + P</kbd> (or <kbd style="background: #FFFFFF; border: 1px solid #D6D1C7; border-radius: 4px; padding: 2px 6px; font-weight: 700; font-family: inherit; font-size: 0.78rem;">Cmd + P</kbd> on Mac), choose <em>"Save as PDF"</em>, and upload up to <span class="dyn-max-files">5</span> important page PDFs (e.g. Home, Services, Pricing/FAQ) here as per instructions.
+        </div>
+      </div>
+
+      <div id="step1Error" style="display: none; color: var(--status-error); font-size: 0.85rem; margin-bottom: 14px;"></div>
+
+      <div class="step-actions-row">
+        <a href="/" class="btn-cancel-exit">&larr; Cancel &amp; Return to Directory</a>
+        <button type="button" id="btnGoToStep2" class="btn-next">
+          Next: Start AI Architect Interview &rarr;
+        </button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════ STEP 2: LIVE ARCHITECT INTERVIEW ══════════════════════ -->
+    <section class="card-panel" id="wizardStep2" style="display: none;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+        <h2 class="panel-title" style="margin: 0;">Step 2: Live Master Architect Interview</h2>
+        <span id="interviewTurnBadge" style="font-size: 0.78rem; font-weight: 700; color: var(--terracotta); background: var(--terracotta-soft); padding: 4px 12px; border-radius: 999px; border: 1px solid rgba(188, 112, 79, 0.25);">Question 1 of 10</span>
+      </div>
+      <p class="panel-subtitle">
+        Our Azure OpenAI Architect conducts a focused interview probing your core product, target audience, pricing boundaries, and handoff triggers.
+      </p>
+
+      <!-- 10 Vectors Badge Tracking -->
+      <div class="vectors-grid" id="vectorsTracker">
+        <span class="vector-pill" id="vec_CORE_PRODUCT">1. CORE PRODUCT</span>
+        <span class="vector-pill" id="vec_TARGET_AUDIENCE">2. TARGET AUDIENCE</span>
+        <span class="vector-pill" id="vec_BOT_OBJECTIVE">3. BOT OBJECTIVE</span>
+        <span class="vector-pill" id="vec_TONE_VOICE">4. TONE &amp; VOICE</span>
+        <span class="vector-pill" id="vec_GUARDRAILS">5. GUARDRAILS</span>
+        <span class="vector-pill" id="vec_KNOWLEDGE_BOUNDARIES">6. BOUNDARIES</span>
+        <span class="vector-pill" id="vec_HANDOFF_TRIGGERS">7. HANDOFF TRIGGERS</span>
+        <span class="vector-pill" id="vec_DATA_PRIVACY">8. DATA PRIVACY</span>
+        <span class="vector-pill" id="vec_FALLBACK_STRATEGY">9. FALLBACK</span>
+        <span class="vector-pill" id="vec_GREETING_CLOSING">10. GREETING/CLOSING</span>
+      </div>
+
+      <!-- Live WebSocket Chat Box -->
+      <div class="interview-chat-box" id="interviewChatContainer">
+        <div class="interview-msg architect">
+          <div class="interview-avatar">AI</div>
+          <div class="interview-bubble">
+            Connecting to Azure Master Architect over secure WebSocket...
+          </div>
+        </div>
+      </div>
+
+      <!-- Input Row -->
+      <div class="interview-input-row">
+        <input type="text" id="interviewInput" class="form-input" placeholder="Type your answer to the Architect..." />
+        <button type="button" id="btnSendInterviewAnswer" class="btn-next" style="padding: 0 1.5rem;">
+          Send
+        </button>
+      </div>
+
+      <div class="step-actions-row">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button type="button" id="btnBackToStep1" class="btn-forest-ghost" style="padding: 0.6rem 1.2rem; font-size: 0.84rem;">
+            &larr; Back
+          </button>
+          <button type="button" id="btnFinishInterviewEarly" class="btn-forest-ghost" style="padding: 0.6rem 1.2rem; font-size: 0.84rem; color: var(--terracotta); border-color: rgba(188, 112, 79, 0.35);" title="Finish interview now with verified information and safe fallbacks">
+            Finish Early &amp; Synthesize
+          </button>
+        </div>
+        <button type="button" id="btnGoToStep3" class="btn-next" disabled>
+          Next: Review &amp; Synthesize Prompt &rarr;
+        </button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════ STEP 3: PROMPT SYNTHESIS ══════════════════════ -->
+    <section class="card-panel" id="wizardStep3" style="display: none;">
+      <h2 class="panel-title">Step 3: Dynamic Master Prompt Synthesis</h2>
+      <p class="panel-subtitle">
+        Azure OpenAI synthesized the system prompt incorporating your verified knowledge boundaries, contact info, and anti-leak shields.
+      </p>
+
+      <div class="form-group">
+        <label class="form-label" for="generatedPromptArea">Synthesized AI System Prompt (Editable)</label>
+        <textarea id="generatedPromptArea" class="prompt-preview-textarea"></textarea>
+
+        <!-- Two-Step Verification Note -->
+        <div class="prompt-verification-note" style="margin-top: 10px; padding: 12px 16px; background: rgba(188, 112, 79, 0.08); border: 1px solid rgba(188, 112, 79, 0.28); border-left: 3px solid var(--terracotta, #BC704F); border-radius: 8px; font-size: 0.83rem; color: var(--forest-charcoal, #29352D); line-height: 1.5;">
+          <div style="display: flex; align-items: center; gap: 7px; font-weight: 700; color: var(--terracotta, #BC704F); margin-bottom: 4px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span>Note: Verify with LLM Applications (Two-Step Verification)</span>
+          </div>
+          Please review and verify this generated system prompt. Before final deployment, you can use external LLM applications for two-step verification to test and validate safety boundaries, tone adherence, and accurate knowledge grounding.
+        </div>
+      </div>
+
+      <div class="step-actions-row">
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button type="button" id="btnBackToStep2" class="btn-forest-ghost" style="padding: 0.6rem 1.2rem; font-size: 0.84rem;">
+            &larr; Back to Interview
+          </button>
+          <a href="/" class="btn-cancel-exit">&larr; Return to Directory</a>
+        </div>
+        <button type="button" id="btnGoToStep4" class="btn-next">
+          Next: Test Drive &amp; Deploy &rarr;
+        </button>
+      </div>
+    </section>
+
+    <!-- ══════════════════════ STEP 4: TEST-DRIVE SIMULATOR & DEPLOY ══════════════════════ -->
+    <section class="card-panel" id="wizardStep4" style="display: none;">
+      <h2 class="panel-title">Step 4: Live Test-Drive Simulator &amp; Directory Deployment</h2>
+      <p class="panel-subtitle">
+        Verify your assistant's responses, brochure RAG lookups, and booking guidance in real time before publishing.
+      </p>
+
+      <!-- Simulator Drawer -->
+      <div class="simulator-box">
+        <div class="simulator-header">
+          <div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-success);"></span>
+              <span style="font-size: 0.88rem; font-weight: 700; color: var(--forest-charcoal, #29352D);" id="simBotTitle">Test-Drive Simulator</span>
+            </div>
+            <a id="simWebsiteLink" href="#" target="_blank" rel="noopener noreferrer" style="display: none; align-items: center; gap: 4px; font-size: 0.78rem; color: var(--terracotta); text-decoration: none; margin-top: 3px; font-weight: 600; cursor: pointer;">
+              <span>👉</span> <span id="simWebsiteText">Visit Official Website</span>
+            </a>
+          </div>
+          <span style="font-size: 0.76rem; color: var(--text-muted); font-weight: 600;">Brochure RAG Active</span>
+        </div>
+        <div class="simulator-messages" id="simMessages">
+          <div class="interview-msg architect">
+            <div class="interview-avatar">Bot</div>
+            <div class="interview-bubble" id="simGreeting">
+              Hello! How can I assist you today?
+            </div>
+          </div>
+        </div>
+        <div class="simulator-input-row">
+          <input type="text" id="simInput" class="form-input" placeholder="Ask your assistant a test question..." />
+          <button type="button" id="btnSendSim" class="btn-next" style="padding: 0 1.4rem;">Send</button>
+        </div>
+      </div>
+
+      <!-- Bot Summary for Directory -->
+      <div class="form-group">
+        <label class="form-label" for="botPublicSummary">Public Directory Summary (Visible to customers)</label>
+        <input type="text" id="botPublicSummary" class="form-input" placeholder="e.g. Specialized clinical assistant answering patient FAQs and booking appointments." />
+      </div>
+
+      <div id="deployStatusAlert" style="display: none; padding: 14px; border-radius: 12px; margin-bottom: 1.2rem; font-size: 0.88rem;"></div>
+
+      <div class="step-actions-row">
+        <button type="button" id="btnBackToStep3" class="btn-forest-ghost" style="padding: 0.6rem 1.2rem; font-size: 0.84rem;">
+          &larr; Back to Prompt
+        </button>
+        <button type="button" id="btnDeployBot" class="btn-next">
+          🚀 Deploy Assistant to Directory
+        </button>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/js/business_builder.js?v=12"></script>
+</body>
+</html>

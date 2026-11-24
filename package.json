@@ -1,0 +1,33 @@
+{
+  "name": "langchain-project",
+  "version": "1.0.0",
+  "description": "[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)\r [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)\r [![LangChain](https://img.shields.io/badge/LangChain-0.3+-1C3C3C.svg)](https://python.langchain.com)\r [![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-orange.svg)](https://langchain-ai.github.io/langgraph/)\r [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20Search-DC2626.svg?logo=qdrant&logoColor=white)](https://qdrant.tech/)\r [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E.svg?logo=supabase&logoColor=white)](https://supabase.com/)\r [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report",
+    "test:e2e": "playwright test tests/e2e/",
+    "test:security": "playwright test tests/security/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arpitkanani/RAG-Project_DocMind.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/arpitkanani/RAG-Project_DocMind/issues"
+  },
+  "homepage": "https://github.com/arpitkanani/RAG-Project_DocMind#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^26.6.6"
+  }
+}

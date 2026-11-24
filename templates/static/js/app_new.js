@@ -1,5 +1,31 @@
 "use strict";
 
+// ══════════════════════ PERFORMANCE TELEMETRY (Component 0) ══════════════════════
+const _appUrlParams = new URLSearchParams(window.location.search);
+const isPerf = _appUrlParams.get("perf") === "1" || sessionStorage.getItem("dv_perf") === "1";
+if (_appUrlParams.get("perf") === "1") {
+  sessionStorage.setItem("dv_perf", "1");
+}
+
+if (isPerf) {
+  const _origAppFetch = window.fetch;
+  window.fetch = async function (...args) {
+    const t0 = performance.now();
+    const url = typeof args[0] === "string" ? args[0] : (args[0]?.url || "unknown");
+    const method = (args[1]?.method || "GET").toUpperCase();
+    try {
+      const res = await _origAppFetch.apply(this, args);
+      const dt = (performance.now() - t0).toFixed(1);
+      console.log(`[perf-fetch] ${method} ${url} ${dt}ms (status ${res.status})`);
+      return res;
+    } catch (err) {
+      const dt = (performance.now() - t0).toFixed(1);
+      console.warn(`[perf-fetch] ${method} ${url} FAILED in ${dt}ms:`, err);
+      throw err;
+    }
+  };
+}
+
 // Emit initial load telemetry
 if (window.__reportTelemetry) {
   window.__reportTelemetry({ type: "info", message: "app_new.js (v47) top-level execution started" });
@@ -99,8 +125,8 @@ const API_KEY_STORAGE = "docuvortex.apiKey";
 const FALLBACK_ANSWER_TEXT = "I couldn't find information about that in the uploaded document(s).";
 
 // Server-provided last active session ID (recovered during auth check)
-// Server-provided last active session ID (recovered during auth check)
 let _serverLastSessionId = null;
+let _checkedSessionStatus = false;
 
 // Persistent WebSocket and background active stream manager
 let _chatWs = null;
@@ -133,38 +159,20 @@ async function initApp() {
     showToast("UI initialization warning: " + (err.message || err), "error");
   }
 
-  // Phase 2: Authenticate with API key
+  // Phase 2: Session Bootstrap & Workspace Restoration
   try {
-    const key = await ensureApiKey();
-    console.log("[DocuVortex] ✅ API key resolved. Authenticated:", Boolean(key));
-    if (key) {
+    const success = await ensureSessionAndBoot();
+    if (success) {
       connectWebSocket();
     }
+    console.log("[DocuVortex] ✅ Workspace boot complete. Authenticated session active.");
     if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "info", message: "ensureApiKey() completed. Valid key: " + Boolean(key) });
-    }
-    if (!key) {
-      console.warn("[DocuVortex] No API key available — some features may be limited.");
+      window.__reportTelemetry({ type: "info", message: "ensureSessionAndBoot() completed successfully" });
     }
   } catch (err) {
-    console.error("[DocuVortex] ❌ ensureApiKey error:", err);
+    console.error("[DocuVortex] ❌ Workspace boot error:", err);
     if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "error", message: "ensureApiKey error: " + (err.message || err), stack: err.stack });
-    }
-    showToast("Authentication warning: " + (err.message || err), "error");
-  }
-
-  // Phase 3: Load sessions and restore workspace
-  try {
-    await bootApp();
-    console.log("[DocuVortex] ✅ bootApp completed.");
-    if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "info", message: "bootApp() completed successfully" });
-    }
-  } catch (err) {
-    console.error("[DocuVortex] ❌ bootApp error:", err);
-    if (window.__reportTelemetry) {
-      window.__reportTelemetry({ type: "error", message: "bootApp error: " + (err.message || err), stack: err.stack });
+      window.__reportTelemetry({ type: "error", message: "Workspace boot error: " + (err.message || err), stack: err.stack });
     }
     showToast("Workspace load warning: " + (err.message || err), "error");
   }
@@ -172,6 +180,21 @@ async function initApp() {
   console.log("[DocuVortex] 🚀 Application initialization complete.");
   if (window.__reportTelemetry) {
     window.__reportTelemetry({ type: "info", message: "🚀 Application initialization complete." });
+  }
+
+  if (isPerf) {
+    const clickTs = sessionStorage.getItem("dv_perf_click_ts");
+    if (clickTs) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const elapsed = Date.now() - parseInt(clickTs, 10);
+          const action = sessionStorage.getItem("dv_perf_action") || "login";
+          console.log(`[perf-ui] ${action} | next page ready=${elapsed}ms since click`);
+          sessionStorage.removeItem("dv_perf_click_ts");
+          sessionStorage.removeItem("dv_perf_action");
+        });
+      });
+    }
   }
 }
 
@@ -183,239 +206,85 @@ if (document.readyState === "loading") {
 }
 
 /**
- * Ensures user has an active key or prompts directly with popup on fresh load.
- * Remembers key across browser refresh, restarts, and tabs.
+ * Ensures session is loaded directly from HTTP-only session cookie.
+ * No API key prompt is ever presented to the user.
  */
-async function ensureApiKey() {
-  // 1. Check if a newly generated key was passed via query parameter or sessionStorage from landing page
-  let stagedKey = "";
-  let stagedSessionId = "";
+async function ensureSessionAndBoot() {
+  // Check if returning from landing page or direct URL with preferred session
   try {
     const urlParams = new URLSearchParams(window.location.search);
-    stagedKey = (urlParams.get("api_key") || sessionStorage.getItem("staged_api_key") || "").trim();
-    stagedSessionId = (urlParams.get("session_id") || "").trim();
+    const stagedSessionId = (urlParams.get("session_id") || "").trim();
+    if (stagedSessionId) {
+      _serverLastSessionId = stagedSessionId;
+      localStorage.setItem(SESSION_KEY, stagedSessionId);
+      if (window.location.search) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
   } catch (e) {}
 
-  if (stagedKey && stagedKey.startsWith("dk_live_")) {
-    try {
-      const verifyRes = await fetch("/api/auth/verify-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: stagedKey }),
-      });
-      const verifyData = await verifyRes.json();
-      if (verifyData?.valid) {
-        const prevKey = localStorage.getItem(API_KEY_STORAGE);
-        if (prevKey && prevKey !== stagedKey) {
-          localStorage.removeItem(SESSION_KEY);
-        }
-        localStorage.setItem(API_KEY_STORAGE, stagedKey);
-        try {
-          sessionStorage.removeItem("staged_api_key");
-          sessionStorage.removeItem("dv_redirected_create_key");
-          if (window.location.search) {
-            window.history.replaceState({}, document.title, window.location.pathname);
-          }
-        } catch (e) {}
-        const activeSessionToSet = stagedSessionId || verifyData.last_session_id;
-        if (activeSessionToSet) {
-          _serverLastSessionId = activeSessionToSet;
-          localStorage.setItem(SESSION_KEY, activeSessionToSet);
-        }
-        showToast("API key authenticated! Welcome to your workspace.", "success");
-        return stagedKey;
-      }
-    } catch (err) {
-      console.debug("Staged API key verification note:", err);
-    }
-  }
-
-  // 2. Existing key in localStorage
-  const existing = (localStorage.getItem(API_KEY_STORAGE) || "").trim();
-  if (existing && existing !== "guest" && existing.startsWith("dk_live_")) {
-    try {
-      const statusRes = await fetch("/api/auth/session-status", {
-        headers: { "X-API-Key": existing },
-        credentials: "include",
-      });
-      if (statusRes.ok) {
-        const authData = await statusRes.json();
-        if (authData && authData.authenticated) {
-          _serverLastSessionId = authData.last_session_id || null;
-          return existing;
-        }
-      }
-      // If server explicitly returned not authenticated, remove stale key
-      localStorage.removeItem(API_KEY_STORAGE);
-    } catch (err) {
-      console.debug("API key check note:", err);
-      return existing; // Network blip; preserve key
-    }
-  }
-
-  // 3. Unauthenticated visit: redirect to landing page create_key modal
-  localStorage.removeItem(API_KEY_STORAGE);
-  sessionStorage.removeItem("staged_api_key");
-  window.location.replace("/?action=create_key");
-  return "";
+  return await bootApp();
 }
-
-/**
- * Opens the styled API key modal so users can input/update their seed_user.py key.
- */
-function openApiKeyModal({ forceRequired = false, prefillKey = "" } = {}) {
-  return new Promise((resolve) => {
-    const backdrop = el("apiKeyModalBackdrop");
-    const input = el("apiKeyInput");
-    const errorEl = el("apiKeyError");
-    const saveBtn = el("apiKeySave");
-    const closeBtn = el("apiKeyModalClose");
-
-    if (!backdrop || !input || !saveBtn) {
-      return resolve("");
-    }
-
-    if (errorEl) errorEl.style.display = "none";
-    const currentKey = prefillKey || localStorage.getItem(API_KEY_STORAGE) || "";
-    input.value = currentKey && currentKey !== "guest" ? currentKey : "";
-    backdrop.classList.add("open");
-    setTimeout(() => input.focus(), 60);
-
-    function cleanup() {
-      backdrop.classList.remove("open");
-      saveBtn.removeEventListener("click", trySave);
-      input.removeEventListener("keydown", onKeydown);
-      if (closeBtn) closeBtn.removeEventListener("click", onClose);
-      backdrop.removeEventListener("click", onBackdrop);
-    }
-
-    function onClose() {
-      cleanup();
-      resolve(localStorage.getItem(API_KEY_STORAGE) || "");
-    }
-
-    function onBackdrop(e) {
-      if (e.target === backdrop && !forceRequired) {
-        cleanup();
-        resolve(localStorage.getItem(API_KEY_STORAGE) || "");
-      }
-    }
-
-    async function trySave() {
-      const key = input.value.trim();
-      if (!key) {
-        if (errorEl) {
-          errorEl.textContent = "Please enter your API key.";
-          errorEl.style.display = "block";
-        }
-        return;
-      }
-
-      saveBtn.disabled = true;
-      saveBtn.textContent = "Verifying...";
-      if (errorEl) errorEl.style.display = "none";
-
-      try {
-        const verifyRes = await fetch("/api/auth/verify-key", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ api_key: key }),
-        });
-        const verifyData = await verifyRes.json();
-
-        if (!verifyData?.valid) {
-          if (errorEl) {
-            errorEl.textContent =
-              verifyData?.message ||
-              "Invalid API key. Please check the key generated with seed_user.py or landing page.";
-            errorEl.style.display = "block";
-          }
-          saveBtn.disabled = false;
-          saveBtn.textContent = "Save Key";
-          return;
-        }
-
-        // Cache and set last session ID returned from PostgreSQL
-        if (verifyData.last_session_id) {
-          _serverLastSessionId = verifyData.last_session_id;
-          localStorage.setItem(SESSION_KEY, verifyData.last_session_id);
-        } else {
-          localStorage.removeItem(SESSION_KEY);
-        }
-
-        localStorage.setItem(API_KEY_STORAGE, key);
-        cleanup();
-        showToast("API key authenticated! Loading your workspace...", "success");
-        await bootApp();
-        resolve(key);
-      } catch (err) {
-        if (errorEl) {
-          errorEl.textContent = "Network error verifying key. Please try again.";
-          errorEl.style.display = "block";
-        }
-        saveBtn.disabled = false;
-        saveBtn.textContent = "Save Key";
-      }
-    }
-
-    function onKeydown(e) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        trySave();
-      }
-      if (e.key === "Escape" && !forceRequired) {
-        cleanup();
-        resolve(localStorage.getItem(API_KEY_STORAGE) || "");
-      }
-    }
-
-    saveBtn.addEventListener("click", trySave);
-    input.addEventListener("keydown", onKeydown);
-    if (closeBtn) closeBtn.addEventListener("click", onClose);
-    backdrop.addEventListener("click", onBackdrop);
-  });
-}
-
-window.openApiKeyModal = openApiKeyModal;
 
 async function bootApp() {
   const apiKey = localStorage.getItem(API_KEY_STORAGE);
-  if (window.__reportTelemetry) {
-    window.__reportTelemetry({ type: "info", message: "bootApp() started. Has key: " + Boolean(apiKey) });
-  }
+  const preferredSessionId = localStorage.getItem(SESSION_KEY) || _serverLastSessionId || "";
 
-  // Fetch latest active session from PostgreSQL if not cached
-  if (!_serverLastSessionId && apiKey && apiKey !== "guest") {
-    try {
-      const statusRes = await fetch("/api/auth/session-status", {
-        headers: { "X-API-Key": apiKey },
+  // 1-Step Consolidated Fast Bootstrap: user info, sidebar sessions, active session in 1 request
+  try {
+    const bootstrapUrl = preferredSessionId
+      ? `/api/sessions/bootstrap?preferred_session_id=${encodeURIComponent(preferredSessionId)}`
+      : "/api/sessions/bootstrap";
+
+    const headers = {};
+    if (apiKey) headers["X-API-Key"] = apiKey;
+
+    let res = await fetch(bootstrapUrl, {
+      headers,
+      credentials: "include",
+    });
+
+    // If initial fetch returned 401 and an explicit API key was sent, retry with cookie credentials alone
+    if (res.status === 401 && apiKey) {
+      localStorage.removeItem(API_KEY_STORAGE);
+      res = await fetch(bootstrapUrl, {
         credentials: "include",
       });
-      if (statusRes.ok) {
-        const authData = await statusRes.json();
-        if (authData?.authenticated && authData.last_session_id) {
-          _serverLastSessionId = authData.last_session_id;
+    }
+
+    if (res.status === 401) {
+      _sessionCache.clear();
+      localStorage.removeItem(SESSION_KEY);
+      window.location.replace("/");
+      return;
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.authenticated) {
+        sidebarState.chats = data.sessions || [];
+        renderSidebar();
+
+
+
+        if (data.active_session && data.active_session.session_id) {
+          const activeId = data.active_session.session_id;
+          _sessionCache.set(activeId, data.active_session);
+          _applySessionData(activeId, data.active_session);
+          return;
+        } else {
+          await createNewSession();
+          renderWelcomeOnly();
+          return;
         }
       }
-    } catch (e) {
-      if (window.__reportTelemetry) {
-        window.__reportTelemetry({ type: "warn", message: "session-status fetch error: " + e.message });
-      }
     }
+  } catch (err) {
+    console.warn("[DocuVortex] Bootstrap fetch failed, falling back to legacy load:", err);
   }
 
+  // Fallback: Legacy load if bootstrap failed
   const sessions = await loadSessions();
-  if (window.__reportTelemetry) {
-    window.__reportTelemetry({
-      type: "info",
-      message: "loadSessions() returned " + (Array.isArray(sessions) ? sessions.length : 0) + " history chats"
-    });
-  }
-
-  // Resume where user left off:
-  // 1. Prioritize _serverLastSessionId (from verify-key, session-status, or URL param)
-  // 2. Next, check storedId from localStorage IF it exists in this user's sessions list
-  // 3. Next, fall back to sessions[0] (user's most recent chat from PostgreSQL)
   let candidateSessionId = null;
   const userSessionIds = Array.isArray(sessions) ? new Set(sessions.map((s) => s.session_id)) : new Set();
   const storedId = localStorage.getItem(SESSION_KEY);
@@ -431,12 +300,7 @@ async function bootApp() {
   // Restore the candidate session
   if (candidateSessionId) {
     const ok = await restoreSession(candidateSessionId);
-    if (ok) {
-      if (window.__reportTelemetry) {
-        window.__reportTelemetry({ type: "info", message: "Successfully resumed session: " + candidateSessionId });
-      }
-      return;
-    }
+    if (ok) return;
     localStorage.removeItem(SESSION_KEY);
   }
 
@@ -444,18 +308,10 @@ async function bootApp() {
   if (sessions && sessions.length > 0) {
     const latest = sessions[0];
     const ok = await restoreSession(latest.session_id);
-    if (ok) {
-      if (window.__reportTelemetry) {
-        window.__reportTelemetry({ type: "info", message: "Successfully restored latest session: " + latest.session_id });
-      }
-      return;
-    }
+    if (ok) return;
   }
 
   // No prior sessions found in PostgreSQL — start fresh
-  if (window.__reportTelemetry) {
-    window.__reportTelemetry({ type: "info", message: "No prior sessions found. Creating fresh session." });
-  }
   await createNewSession();
   renderWelcomeOnly();
 }
@@ -476,17 +332,81 @@ function safeOn(idOrEl, event, handler) {
 function bindUI() {
   // 1. Sidebar core & footer
   try {
-    safeOn("newChatBtn", "click", handleNewChat);
-    safeOn("searchInput", "input", (e) => {
-      sidebarState.searchQuery = e.target.value.toLowerCase();
-      renderSidebar();
+    safeOn("newChatBtn", "click", () => {
+      closeSidebarSearch();
+      handleNewChat();
     });
+
+    const searchToggleBtn = el("sidebarSearchToggleBtn");
+    const searchExpandable = el("sidebarSearchExpandable");
+    const searchInput = el("searchInput");
+    const searchCloseBtn = el("searchCloseBtn");
+    const sidebar = el("sidebar");
+
+    function openSidebarSearch() {
+      if (!searchExpandable) return;
+      searchExpandable.style.display = "block";
+      if (searchToggleBtn) searchToggleBtn.classList.add("active");
+      if (sidebar) sidebar.classList.add("search-active");
+      if (searchInput) {
+        searchInput.focus();
+        if (searchInput.value) {
+          sidebarState.searchQuery = searchInput.value.toLowerCase().trim();
+          renderSidebar();
+        }
+      }
+    }
+
+    function closeSidebarSearch() {
+      if (!searchExpandable) return;
+      searchExpandable.style.display = "none";
+      if (searchToggleBtn) searchToggleBtn.classList.remove("active");
+      if (sidebar) sidebar.classList.remove("search-active");
+      if (searchInput) searchInput.value = "";
+      if (sidebarState.searchQuery) {
+        sidebarState.searchQuery = "";
+        renderSidebar();
+      }
+    }
+
+    if (searchToggleBtn) {
+      searchToggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (searchExpandable && searchExpandable.style.display !== "none") {
+          closeSidebarSearch();
+        } else {
+          openSidebarSearch();
+        }
+      });
+    }
+
+    if (searchCloseBtn) {
+      searchCloseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeSidebarSearch();
+      });
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("input", (e) => {
+        sidebarState.searchQuery = e.target.value.toLowerCase().trim();
+        renderSidebar();
+      });
+      searchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeSidebarSearch();
+        }
+      });
+    }
+
     safeOn("clearAllBtn", "click", handleClearAll);
-    safeOn("apiKeyBtn", "click", openApiKeyModal);
+
     safeOn("settingsBtn", "click", () => openSettingsModal("embedding"));
     safeOn("settingsModalClose", "click", closeSettingsModal);
     safeOn("settingsModalCancel", "click", closeSettingsModal);
     safeOn("settingsModalSave", "click", saveSettingsModal);
+
   } catch (err) {
     console.warn("Sidebar core binding note:", err);
   }
@@ -495,7 +415,16 @@ function bindUI() {
   try {
     safeOn("attachBtn", "click", (e) => {
       e.preventDefault();
-      openModal();
+      if (window.innerWidth <= 1024) {
+        const m = el("mobileAttachMenu");
+        if (m) {
+          m.classList.toggle("open");
+          const p = el("sourcesPopover");
+          if (p) p.classList.remove("open");
+        }
+        return;
+      }
+      openModal("file");
     });
 
     safeOn("ytInput", "keydown", (e) => {
@@ -519,9 +448,18 @@ function bindUI() {
     safeOn("mobileMenuUpload", "click", () => {
       const m = el("mobileAttachMenu");
       if (m) m.classList.remove("open");
-      openModal();
+      openModal("file");
     });
-    safeOn("mobileMenuSources", "click", () => {
+    safeOn("mobileMenuYt", "click", () => {
+      const m = el("mobileAttachMenu");
+      if (m) m.classList.remove("open");
+      openModal("yt");
+    });
+    safeOn("mobileMenuSources", "click", (e) => {
+      if (e) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
       const m = el("mobileAttachMenu");
       if (m) m.classList.remove("open");
       toggleSourcesPopover();
@@ -539,19 +477,47 @@ function bindUI() {
         menu.classList.remove("open");
       }
     });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        const menu = el("mobileAttachMenu");
+        if (menu && menu.classList.contains("open")) {
+          menu.classList.remove("open");
+        }
+      }
+    });
 
-    safeOn("sourcesToggleBtn", "click", toggleSourcesPopover);
+    safeOn("sourcesToggleBtn", "click", (e) => {
+      if (e) {
+        e.stopPropagation();
+      }
+      toggleSourcesPopover();
+    });
     document.addEventListener("click", (e) => {
       const popover = el("sourcesPopover");
       const toggleBtn = el("sourcesToggleBtn");
+      const mobileSourcesBtn = el("mobileMenuSources");
+      const attachMenu = el("mobileAttachMenu");
+      const mobilePill = el("mobileActiveSourcesBar");
       if (
         popover &&
         popover.classList.contains("open") &&
         !popover.contains(e.target) &&
         e.target !== toggleBtn &&
-        (!toggleBtn || !toggleBtn.contains(e.target))
+        (!toggleBtn || !toggleBtn.contains(e.target)) &&
+        e.target !== mobileSourcesBtn &&
+        (!mobileSourcesBtn || !mobileSourcesBtn.contains(e.target)) &&
+        (!attachMenu || !attachMenu.contains(e.target)) &&
+        (!mobilePill || !mobilePill.contains(e.target))
       ) {
         popover.classList.remove("open");
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        const popover = el("sourcesPopover");
+        if (popover && popover.classList.contains("open")) {
+          popover.classList.remove("open");
+        }
       }
     });
     safeOn("modalClose", "click", closeModal);
@@ -740,9 +706,9 @@ function bindUI() {
 async function createNewSession() {
   try {
     const data = await apiFetch(API.sessions, { method: "POST" });
-    workspaceState.sessionId = data?.session_id || "default";
+    workspaceState.sessionId = data?.session_id || ("sess_" + Math.random().toString(36).substring(2, 10));
   } catch {
-    workspaceState.sessionId = "default";
+    workspaceState.sessionId = "sess_" + Math.random().toString(36).substring(2, 10);
   }
   workspaceState.sources = [];
   localStorage.setItem(SESSION_KEY, workspaceState.sessionId);
@@ -838,13 +804,27 @@ function _applySessionData(sessionId, data) {
   if (!msgs.length) {
     renderWelcomeOnly();
   } else {
+    const container = el("messages");
     msgs.forEach((m) =>
       appendMessage(
         m.content,
         m.role === "human" ? "user" : "ai",
-        m.role === "human" && Array.isArray(m.attachments) ? m.attachments : []
+        m.role === "human" && Array.isArray(m.attachments) ? m.attachments : [],
+        false // Do not scroll per-message during batch restoration
       )
     );
+    // Single smooth auto-scroll from first query to last query on switch/open
+    if (container) {
+      container.scrollTop = 0;
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          container.scrollTo({
+            top: container.scrollHeight,
+            behavior: "smooth",
+          });
+        }, 40);
+      });
+    }
   }
 
   // 7-day expiration alert if chat is older than 7 days or attachments are expired
@@ -891,6 +871,68 @@ function _applySessionData(sessionId, data) {
   updateSidebarGeneratingBadges();
 }
 
+function _syncSessionSourcesAndState(sessionId, data) {
+  workspaceState.sessionId = sessionId;
+  localStorage.setItem(SESSION_KEY, sessionId);
+
+  const msgs = Array.isArray(data.messages) ? data.messages : [];
+  const alreadyQueriedCollections = new Set();
+  msgs.forEach((m) => {
+    if (m.role === "human" && Array.isArray(m.attachments)) {
+      m.attachments.forEach((att) => {
+        if (typeof att === "string") {
+          alreadyQueriedCollections.add(att);
+        } else if (att && att.collection) {
+          alreadyQueriedCollections.add(att.collection);
+        }
+      });
+    }
+  });
+
+  workspaceState.sources = (data.attachments || []).map((a) => {
+    const isAlreadyQueried = Boolean(a.collection && alreadyQueriedCollections.has(a.collection));
+    const isExpired = Boolean(a.expired || data.is_older_than_7_days);
+    return {
+      localId: uid(),
+      name: a.name,
+      collection: a.collection,
+      type: a.type || "doc",
+      status: "ready",
+      isNew: !isAlreadyQueried && !isExpired,
+      active: !a.needs_reindex && !isExpired,
+      needs_reindex: Boolean(a.needs_reindex),
+      expired: isExpired,
+      embedding_model: a.embedding_model,
+      vector_dim: a.vector_dim,
+    };
+  });
+
+  renderComposerChips();
+  renderSourcesPanel();
+  updateSendButton();
+  updateSidebarActiveItem(sessionId);
+  updateSidebarGeneratingBadges();
+}
+
+function _areSessionMessagesEqual(cachedData, freshData) {
+  if (!cachedData || !freshData) return false;
+  const cMsgs = Array.isArray(cachedData.messages) ? cachedData.messages : [];
+  const fMsgs = Array.isArray(freshData.messages) ? freshData.messages : [];
+  if (cMsgs.length !== fMsgs.length) return false;
+  if (cMsgs.length > 0) {
+    const lastC = cMsgs[cMsgs.length - 1];
+    const lastF = fMsgs[fMsgs.length - 1];
+    if (lastC.content !== lastF.content || lastC.role !== lastF.role) return false;
+    const firstC = cMsgs[0];
+    const firstF = fMsgs[0];
+    if (firstC.content !== firstF.content || firstC.role !== firstF.role) return false;
+  }
+  const cAtts = Array.isArray(cachedData.attachments) ? cachedData.attachments : [];
+  const fAtts = Array.isArray(freshData.attachments) ? freshData.attachments : [];
+  if (cAtts.length !== fAtts.length) return false;
+  return true;
+}
+
 /**
  * Load a session from the backend and restore full workspace state.
  * Uses stale-while-revalidate client caching for instantaneous switching.
@@ -898,8 +940,10 @@ function _applySessionData(sessionId, data) {
  */
 async function restoreSession(sessionId) {
   // 1. Instant render from memory cache if available (0ms perceived latency)
-  if (_sessionCache.has(sessionId)) {
-    _applySessionData(sessionId, _sessionCache.get(sessionId));
+  const isCached = _sessionCache.has(sessionId);
+  const cachedData = isCached ? _sessionCache.get(sessionId) : null;
+  if (isCached && cachedData) {
+    _applySessionData(sessionId, cachedData);
   }
 
   // 2. Fresh fetch from server
@@ -907,12 +951,19 @@ async function restoreSession(sessionId) {
     `${API.sessions}/${encodeURIComponent(sessionId)}`
   );
   if (!data || data.error_code) {
-    if (!_sessionCache.has(sessionId)) return false;
+    if (!isCached) return false;
     return true;
   }
 
   _sessionCache.set(sessionId, data);
-  _applySessionData(sessionId, data);
+
+  // If already rendered from cache and fresh server data matches identical messages,
+  // do not wipe DOM or trigger a duplicate auto-scroll.
+  if (!isCached || !_areSessionMessagesEqual(cachedData, data)) {
+    _applySessionData(sessionId, data);
+  } else {
+    _syncSessionSourcesAndState(sessionId, data);
+  }
   return true;
 }
 
@@ -1113,9 +1164,9 @@ async function handleClearAll() {
 
 let _activeTab = "file";
 
-function openModal() {
+function openModal(defaultTab = "file") {
   el("modalBackdrop").classList.add("open");
-  switchTab("file");
+  switchTab(defaultTab || "file");
 }
 
 function closeModal() {
@@ -1228,7 +1279,9 @@ async function uploadFile(file) {
   try {
     const form = new FormData();
     form.append("file", file);
-    form.append("session_id", workspaceState.sessionId || "default");
+    if (workspaceState.sessionId) {
+      form.append("session_id", workspaceState.sessionId);
+    }
 
     const data = await apiFetch(API.upload, { method: "POST", body: form });
 
@@ -1397,12 +1450,13 @@ function connectWebSocket() {
     return;
   }
   const apiKey = getActiveApiKey();
-  if (!apiKey) return;
 
   try {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const wsUrl = `${proto}//${host}/ws/chat?api_key=${encodeURIComponent(apiKey)}`;
+    const wsUrl = apiKey
+      ? `${proto}//${host}/ws/chat?api_key=${encodeURIComponent(apiKey)}`
+      : `${proto}//${host}/ws/chat`;
 
     _chatWs = new WebSocket(wsUrl);
 
@@ -1664,6 +1718,17 @@ function handleActiveStreamErrorUI(sessionId, errData) {
   }
   if (errData?.error_code === "embedding_unavailable") {
     showToast("The embedding model is unavailable. You can switch the embedding model in Settings.", "error");
+    return;
+  }
+  if (
+    errData?.error_code === "vectorstore_unavailable" ||
+    (errData?.message && errData.message.toLowerCase().includes("vector database"))
+  ) {
+    showToast(
+      errData.message || "Vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your connection or try again.",
+      "error",
+      6000
+    );
     return;
   }
   if (
@@ -1960,6 +2025,7 @@ async function sendMessage() {
 
   input.value = "";
   input.style.height = "auto";
+  input.style.overflowY = "hidden";
   renderComposerChips();
   renderSourcesPanel();
   updateSendButton();
@@ -2120,16 +2186,29 @@ function renderSourcesPanel() {
   );
   const countBtn = el("sourcesToggleBtn");
   const countLabel = el("sourcesCount");
+  const mobileCount = el("mobileSourcesCount");
   const list = el("sourcesPopoverList");
 
   if (!readySources.length) {
-    countBtn.hidden = true;
+    if (countBtn) countBtn.hidden = true;
+    if (mobileCount) {
+      mobileCount.textContent = "";
+      mobileCount.style.display = "none";
+    }
+    if (list) {
+      list.innerHTML = '<div style="padding: 12px 8px; font-size: 0.82rem; color: var(--text-muted, #777); text-align: center;">No sources loaded in workspace yet.</div>';
+    }
+    renderMobileActiveSourcesBar();
     return;
   }
-  countBtn.hidden = false;
+  if (countBtn) countBtn.hidden = false;
 
   const activeCount = readySources.filter((s) => s.active !== false && !s.needs_reindex && !s.expired).length;
   countLabel.textContent = `${activeCount}/${readySources.length}`;
+  if (mobileCount) {
+    mobileCount.textContent = `${activeCount}/${readySources.length}`;
+    mobileCount.style.display = "inline-flex";
+  }
 
   list.innerHTML = readySources
     .map((src) => {
@@ -2185,10 +2264,52 @@ function renderSourcesPanel() {
       renderSourcesPanel();
     });
   });
+
+  renderMobileActiveSourcesBar();
+}
+
+function renderMobileActiveSourcesBar() {
+  const bar = el("mobileActiveSourcesBar");
+  if (!bar) return;
+  const readySources = workspaceState.sources.filter(
+    (s) => s.status === "ready" && s.collection && !s.expired
+  );
+  const activeSources = readySources.filter(
+    (s) => s.active !== false && !s.needs_reindex
+  );
+  if (!readySources.length) {
+    bar.hidden = true;
+    bar.innerHTML = "";
+    return;
+  }
+  bar.hidden = false;
+  bar.innerHTML = `
+    <div class="mobile-sources-pill" id="mobileSourcesPill">
+      <span class="mobile-sources-pill-dot ${activeSources.length ? 'active' : 'inactive'}"></span>
+      <span class="mobile-sources-pill-text">${activeSources.length} of ${readySources.length} sources active</span>
+      <button type="button" class="mobile-sources-pill-btn" id="mobilePillToggleBtn">${activeSources.length === readySources.length ? 'Filter' : 'Change'}</button>
+    </div>
+  `;
+  const toggleBtn = el("mobilePillToggleBtn");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleSourcesPopover();
+    });
+  }
 }
 
 function toggleSourcesPopover() {
-  el("sourcesPopover").classList.toggle("open");
+  const popover = el("sourcesPopover");
+  if (!popover) return;
+  const willOpen = !popover.classList.contains("open");
+  popover.classList.toggle("open");
+  if (willOpen) {
+    const attachMenu = el("mobileAttachMenu");
+    if (attachMenu) attachMenu.classList.remove("open");
+    renderSourcesPanel();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2200,8 +2321,9 @@ function toggleSourcesPopover() {
  * @param {string} content
  * @param {'user'|'ai'} role
  * @param {Array} attachments  — only populated on user messages when new files were added
+ * @param {boolean} autoScroll — whether to scroll to the bottom immediately
  */
-function appendMessage(content, role, attachments = []) {
+function appendMessage(content, role, attachments = [], autoScroll = true) {
   const container = el("messages");
   const row = document.createElement("div");
   row.className = `msg-row ${role}`;
@@ -2238,7 +2360,9 @@ function appendMessage(content, role, attachments = []) {
     btn.addEventListener("click", () => removeSource(btn.dataset.collection));
   });
 
-  container.scrollTop = container.scrollHeight;
+  if (autoScroll) {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 function cleanSourceName(name) {
@@ -2318,7 +2442,7 @@ function renderSidebar() {
     : sidebarState.chats;
 
   if (!chats.length) {
-    container.innerHTML = `<div class="empty-sidebar">No chats yet. Start a new conversation.</div>`;
+    container.innerHTML = `<div class="empty-sidebar">${q ? "No matching chats found." : "No chats yet. Start a new conversation."}</div>`;
     return;
   }
 
@@ -2707,8 +2831,10 @@ async function apiFetch(url, options = {}) {
 
     if (res.status === 401) {
       localStorage.removeItem(API_KEY_STORAGE);
-      showToast("Authentication required. Please enter your API key.", "error");
-      openApiKeyModal({ forceRequired: false });
+      showToast("Session expired or authentication required. Redirecting to sign in...", "warn");
+      setTimeout(() => {
+        window.location.replace("/?action=login");
+      }, 400);
       return null;
     }
 
@@ -2764,7 +2890,13 @@ function formatTime(iso) {
 
 function autoResize() {
   this.style.height = "auto";
-  this.style.height = `${Math.min(this.scrollHeight, 180)}px`;
+  const newHeight = Math.min(this.scrollHeight, 180);
+  this.style.height = `${newHeight}px`;
+  if (this.scrollHeight > 180) {
+    this.style.overflowY = "auto";
+  } else {
+    this.style.overflowY = "hidden";
+  }
 }
 
 /**
@@ -2878,55 +3010,10 @@ async function streamQueryAnswer(
 //  SETTINGS MODAL (Embedding Model Selector & API Key Management)
 // ═══════════════════════════════════════════════════════════════════
 
-function switchSettingsTab(tab) {
-  const tabBtnEmbedding = el("tabBtnEmbedding");
-  const tabBtnApiKey = el("tabBtnApiKey");
-  const panelEmbedding = el("settingsTabEmbedding");
-  const panelApiKey = el("settingsTabApiKey");
-
-  if (tab === "api-key") {
-    tabBtnEmbedding?.classList.remove("active");
-    tabBtnApiKey?.classList.add("active");
-    if (panelEmbedding) panelEmbedding.style.display = "none";
-    if (panelApiKey) panelApiKey.style.display = "block";
-  } else {
-    tabBtnApiKey?.classList.remove("active");
-    tabBtnEmbedding?.classList.add("active");
-    if (panelEmbedding) panelEmbedding.style.display = "block";
-    if (panelApiKey) panelApiKey.style.display = "none";
-  }
-}
-
-async function openSettingsModal(defaultTab = "embedding") {
+async function openSettingsModal() {
   const backdrop = el("settingsModalBackdrop");
   if (!backdrop) return;
   backdrop.classList.add("open");
-
-  // Wire tab switching
-  const tabBtnEmbeddingEl = el("tabBtnEmbedding");
-  if (tabBtnEmbeddingEl) tabBtnEmbeddingEl.onclick = () => switchSettingsTab("embedding");
-  const tabBtnApiKeyEl = el("tabBtnApiKey");
-  if (tabBtnApiKeyEl) tabBtnApiKeyEl.onclick = () => switchSettingsTab("api-key");
-  switchSettingsTab(defaultTab);
-
-  // Sync API Key status inside Settings modal
-  const keyInput = el("settingsApiKeyInput");
-  const keyStatus = el("settingsKeyStatus");
-  const currentKey = localStorage.getItem(API_KEY_STORAGE) || "";
-
-  if (keyInput) {
-    keyInput.value = currentKey && currentKey !== "guest" ? currentKey : "";
-  }
-  if (keyStatus) {
-    if (currentKey && currentKey.startsWith("dk_live_")) {
-      const masked = currentKey.slice(0, 10) + "..." + currentKey.slice(-4);
-      keyStatus.textContent = `Active Key: ${masked}`;
-      keyStatus.style.color = "var(--success, #27ae60)";
-    } else {
-      keyStatus.textContent = "No valid key configured";
-      keyStatus.style.color = "var(--text-muted, #777)";
-    }
-  }
 
   try {
     const data = await apiFetch(API.settingsEmbedding);
@@ -2965,37 +3052,6 @@ async function saveSettingsModal() {
   const radioBge = el("radioBge");
   const selectedProvider = radioBge && radioBge.checked ? "bge" : "azure";
 
-  // Check if API key was updated in the modal
-  const keyInput = el("settingsApiKeyInput");
-  const errEl = el("settingsApiKeyError");
-  if (errEl) errEl.style.display = "none";
-
-  const newKey = keyInput ? keyInput.value.trim() : "";
-  const currentKey = localStorage.getItem(API_KEY_STORAGE) || "";
-
-  if (newKey && newKey !== currentKey && newKey !== "guest") {
-    try {
-      const verifyRes = await fetch("/api/auth/verify-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: newKey }),
-      });
-      const verifyData = await verifyRes.json();
-      if (!verifyData?.valid) {
-        if (errEl) {
-          errEl.textContent = verifyData?.message || "Invalid API key.";
-          errEl.style.display = "block";
-        }
-        switchSettingsTab("api-key");
-        return;
-      }
-      localStorage.setItem(API_KEY_STORAGE, newKey);
-      await bootApp();
-    } catch (keyErr) {
-      console.error("Error verifying API key:", keyErr);
-    }
-  }
-
   try {
     const res = await apiFetch(API.settingsEmbedding, {
       method: "POST",
@@ -3005,8 +3061,10 @@ async function saveSettingsModal() {
       showToast(res.message || `Settings updated. Provider: ${selectedProvider}.`, "success");
       closeSettingsModal();
       // Reload current session details to refresh 'needs_reindex' flags on active chips/sources
-      const sessId = workspaceState.sessionId || localStorage.getItem(SESSION_KEY) || "default";
-      await restoreSession(sessId);
+      const sessId = workspaceState.sessionId || localStorage.getItem(SESSION_KEY) || "";
+      if (sessId) {
+        await restoreSession(sessId);
+      }
       renderComposerChips();
       renderSourcesPanel();
       updateSendButton();

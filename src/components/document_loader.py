@@ -1,6 +1,5 @@
 import sys
 from typing import List, Iterator
-import pandas as pd
 import yaml
 from langchain_community.document_loaders import (
     CSVLoader,
@@ -186,6 +185,7 @@ class DocumentLoader:
 
     def _load_xlsx(self, path: str) -> Iterator[Document]:
         try:
+            import pandas as pd
             dataframe = pd.read_excel(path)
             for index, row in dataframe.iterrows():
                 row_text = "\n".join(f"{column}: {value}" for column, value in row.items())

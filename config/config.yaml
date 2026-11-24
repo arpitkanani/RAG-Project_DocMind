@@ -19,7 +19,7 @@ llm:
   provider: "groq"
   model: "openai/gpt-oss-20b"
   temperature: 0.1
-  max_tokens: 1024
+  max_tokens: 2048
   rate_limit:
     patterns:
       rpd: ["requests per day", "request per day", "rpd", "daily limit", "requests_per_day"]
@@ -66,7 +66,24 @@ vectorstore:
 memory:
   persist_directory: "data/memory"
   window_days: 7
-  recent_messages_verbatim: 6
+  recent_messages_verbatim: 20
+  summary_batch_threshold: 10
+
+business_bot:
+  brochure:
+    max_file_size_mb: 30
+    max_files_count: 5
+    enable_vision_ocr: true
+    primary_vision_provider: "azure"
+    vision_model: "gpt-5.4-nano"
+    fallback_vision_provider: "gemini"
+    max_ocr_pages_per_doc: 15
+    min_text_chars_for_ocr: 80
+    allowed_extensions:
+      - ".pdf"
+  website:
+    max_pages_count: 5
+    scrape_timeout_seconds: 15.0
 
 upload:
   allowed_extensions:

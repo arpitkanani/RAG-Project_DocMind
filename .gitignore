@@ -117,3 +117,12 @@ Thumbs.db
 
 Evaluation/
 data/
+
+
+scratch/
+
+# ─── 10. Playwright Automated Testing & Test Results ─────────────────────────
+node_modules/
+tests/
+test-results/
+playwright-report/

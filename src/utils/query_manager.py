@@ -12,6 +12,7 @@ import asyncio
 import json
 import re
 import sys
+import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 from langchain_core.runnables import RunnableConfig
 
@@ -24,10 +25,12 @@ from src.exception import (
     CustomException,
     EmbeddingUnavailableError,
     KnowledgeBaseEmptyError,
+    VectorStoreUnavailableError,
 )
 from src.graph.builder import rag_graph
-from src.logger import logging
+from src.logger import logging, log_latency
 from src.utils.helpers import extract_text
+from src.utils.perf import log_perf_kv, mask_pii
 from src.utils.rate_limiter import LLMRateLimitError
 
 # Stage labels for status events
@@ -35,6 +38,7 @@ _STAGE_LABELS = {
     "load_context": ("classifying", "Analyzing query..."),
     "classify_intent": ("classifying", "Analyzing query..."),
     "clarify_question": ("classifying", "Checking question clarity..."),
+    "guardrail_response": ("guardrail", "Verifying request..."),
     "chitchat": ("thinking", "Thinking..."),
     "run_react_agent": ("thinking", "Thinking..."),
     "agent": ("thinking", "Thinking..."),
@@ -177,6 +181,7 @@ class QueryManager:
         app_graph: Any,
     ):
         """Executes the StateGraph inside an asyncio.shield block."""
+        t_query_start = time.perf_counter()
         user_id = active_query.user_id
         session_id = active_query.session_id
         query = active_query.query
@@ -192,6 +197,16 @@ class QueryManager:
         is_buffering = True
         suppress_stream = False
         streamed_any_tokens = False
+
+        # Fine-grained latency & TTFT telemetry
+        t_first_event: Optional[float] = None
+        t_first_token: Optional[float] = None
+        t_retrieval_start: Optional[float] = None
+        t_gen_start: Optional[float] = None
+        rag_ms = 0.0
+        turn_ttft_ms = 0.0
+        llm_ttft_ms = 0.0
+        token_count = 0
 
         config = {
             "configurable": {
@@ -229,6 +244,7 @@ class QueryManager:
             async def _execute():
                 nonlocal full_clean_answer, full_final_answer, full_citations, last_stage, has_tool_run, tools_active_count
                 nonlocal token_buffer, is_buffering, suppress_stream, streamed_any_tokens
+                nonlocal t_first_event, t_first_token, t_retrieval_start, t_gen_start, rag_ms, token_count, turn_ttft_ms, llm_ttft_ms
 
                 target_graph = graph
                 iterator = target_graph.astream_events(graph_input, config=config, version="v2").__aiter__()
@@ -266,9 +282,17 @@ class QueryManager:
                     kind = event.get("event", "")
                     name = event.get("name", "")
 
-                    # 1. Status event
-                    if kind == "on_chain_start" and name in _STAGE_LABELS:
-                        if not streamed_any_tokens:
+                    if t_first_event is None:
+                        t_first_event = time.perf_counter()
+
+                    if kind == "on_chain_start":
+                        if name in ("retrieve_qa", "retrieve_summary") and t_retrieval_start is None:
+                            t_retrieval_start = time.perf_counter()
+                        elif name in ("generate", "chitchat", "chitchat_agent") and t_gen_start is None:
+                            t_gen_start = time.perf_counter()
+
+                        # 1. Status event
+                        if name in _STAGE_LABELS and not streamed_any_tokens:
                             stage, message = _STAGE_LABELS[name]
                             if stage != last_stage:
                                 last_stage = stage
@@ -338,6 +362,11 @@ class QueryManager:
                             chunk = event.get("data", {}).get("chunk")
                             tok = getattr(chunk, "text", "") or getattr(chunk, "content", "")
                             if tok:
+                                if t_first_token is None:
+                                    t_first_token = time.perf_counter()
+                                    turn_ttft_ms = (t_first_token - t_query_start) * 1000.0
+                                    llm_ttft_ms = (t_first_token - t_gen_start) * 1000.0 if t_gen_start else turn_ttft_ms
+                                token_count += 1
                                 if is_buffering:
                                     token_buffer += tok
                                     if "DATA_NOT_FOUND" in token_buffer or '{"type":' in token_buffer:
@@ -360,6 +389,8 @@ class QueryManager:
 
                     # 5. Final output extraction
                     elif kind == "on_chain_end":
+                        if name in ("retrieve_qa", "retrieve_summary") and t_retrieval_start is not None and rag_ms == 0.0:
+                            rag_ms = (time.perf_counter() - t_retrieval_start) * 1000.0
                         output = event.get("data", {}).get("output", {})
                         if isinstance(output, dict):
                             if output.get("clean_answer"):
@@ -422,13 +453,51 @@ class QueryManager:
                     "citations": full_citations,
                 })
 
+            t_query_end = time.perf_counter()
+            total_duration_ms = (t_query_end - t_query_start) * 1000.0
+            if t_first_token is None:
+                turn_ttft_ms = total_duration_ms
+                llm_ttft_ms = total_duration_ms
+            stream_ms = (t_query_end - t_first_token) * 1000.0 if t_first_token else 0.0
+            tokens_per_sec = (token_count / (stream_ms / 1000.0)) if stream_ms > 0 else 0.0
+
+            latency_stats = {
+                "total_ms": round(total_duration_ms, 1),
+                "ttft_ms": round(turn_ttft_ms, 1),
+                "turn_ttft_ms": round(turn_ttft_ms, 1),
+                "llm_ttft_ms": round(llm_ttft_ms, 1),
+                "rag_ms": round(rag_ms, 1),
+                "tokens": token_count,
+                "tokens_per_sec": round(tokens_per_sec, 1),
+            }
+
             active_query.broadcast({
                 "type": "done",
                 "status": "completed",
                 "final_answer": full_final_answer,
                 "citations": full_citations,
+                "latency": latency_stats,
             })
             active_query.final_answer = full_final_answer
+
+            log_perf_kv(
+                "rag_workspace",
+                session=session_id,
+                user=mask_pii(user_id),
+                turn_ttft_ms=round(turn_ttft_ms, 1),
+                llm_ttft_ms=round(llm_ttft_ms, 1),
+                rag_ms=round(rag_ms, 1),
+                total_ms=round(total_duration_ms, 1),
+                tokens=token_count,
+                tok_sec=round(tokens_per_sec, 1),
+            )
+
+            log_latency(
+                "RAG_WORKSPACE",
+                f"Session: '{session_id}' | User: '{mask_pii(user_id)}' | Query: {mask_pii(query[:80])!r} | "
+                f"Total Latency: {total_duration_ms:.1f}ms | TTFT: {turn_ttft_ms:.1f}ms | RAG: {rag_ms:.1f}ms | "
+                f"Answer Length: {len(full_final_answer)} chars"
+            )
 
             logging.info(
                 "<<< [LIVE QUERY COMPLETED] session: %s | user: %s\nFinal Answer:\n%s%s",
@@ -467,6 +536,13 @@ class QueryManager:
                 "error_code": "collection_needs_reindex",
                 "message": exc.message,
             })
+        except VectorStoreUnavailableError as exc:
+            logging.warning("Vector store unavailable: %s", exc)
+            active_query.broadcast({
+                "type": "error",
+                "error_code": "vectorstore_unavailable",
+                "message": exc.message if hasattr(exc, "message") else "The vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your Qdrant connection or try again.",
+            })
         except Exception as exc:
             logging.exception("Exception in background query workflow for session %s", session_id)
             err_str = str(exc).lower()
@@ -476,6 +552,9 @@ class QueryManager:
             elif "vector dimension" in err_str or "dimension error" in err_str or "mismatch" in err_str:
                 msg = "This document was indexed with a different embedding model. Please switch your embedding model in Settings or re-upload the document."
                 code = "collection_needs_reindex"
+            elif "qdrant" in err_str or "vector database" in err_str or "client has been closed" in err_str:
+                msg = "The vector database service (Qdrant Cloud) is temporarily unavailable. Please verify your Qdrant connection or try again."
+                code = "vectorstore_unavailable"
             else:
                 msg = "I encountered an error generating the response. Please try again."
                 code = "generation_failed"

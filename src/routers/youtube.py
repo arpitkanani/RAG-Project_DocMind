@@ -7,9 +7,11 @@ from src.auth import get_current_user
 from src.components.memory_manager import MemoryManager
 from src.logger import logging
 from src.pipelines.ingestion_pipeline import IngestionPipeline
+from src.database.db import get_db_cursor
 from src.utils.helpers import (
     build_collection_name,
     build_error_response,
+    create_session_id,
     delete_collections,
 )
 from src.schemas import YouTubeRequest
@@ -115,7 +117,16 @@ async def process_youtube(
         logging.info("YouTube URL received: %s | session: %s", request.url, request.session_id)
 
         video_id = extract_video_id(request.url)
-        session_id = request.session_id or "default"
+        session_id = (request.session_id or "").strip()
+        if not session_id or session_id == "default":
+            session_id = create_session_id()
+        else:
+            with get_db_cursor(commit=False) as cur:
+                cur.execute("SELECT user_id FROM sessions WHERE session_id = %s LIMIT 1;", (session_id,))
+                row = cur.fetchone()
+                if row and row.get("user_id") and str(row["user_id"]) != str(user_id):
+                    session_id = create_session_id()
+
         memory = MemoryManager(session_id=session_id, user_id=user_id)
         existing_video_sources = [
             attachment
